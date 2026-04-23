@@ -1,0 +1,3 @@
+# No equivalent or unreachable mutations excluded yet.
+# Every exclusion must have a comment explaining why.
+exclude_re = []
