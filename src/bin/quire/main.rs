@@ -2,6 +2,8 @@ mod commands;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use miette::IntoDiagnostic;
+use miette::Result;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
@@ -37,8 +39,7 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> color_eyre::Result<()> {
-    color_eyre::install()?;
+async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
@@ -52,7 +53,7 @@ async fn main() -> color_eyre::Result<()> {
     }
 
     let Some(command) = cli.command else {
-        Cli::command().print_help()?;
+        Cli::command().print_help().into_diagnostic()?;
         return Ok(());
     };
 

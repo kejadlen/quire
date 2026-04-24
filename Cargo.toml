@@ -10,7 +10,7 @@ path = "src/bin/quire/main.rs"
 [dependencies]
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
-color-eyre = "*"
+miette = { version = "*", features = ["fancy"] }
 fs-err = "*"
 shell-words = "*"
 thiserror = "*"
