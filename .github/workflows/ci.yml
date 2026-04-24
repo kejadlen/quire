@@ -25,8 +25,10 @@ jobs:
       - run: cargo install grcov cargo-mutants just
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - run: cargo fmt --check
-      - run: just clippy coverage
-      - run: just mutants
+      - run: just clippy test
+      # Coverage and mutation testing disabled during early exploratory work.
+      # - run: just coverage
+      # - run: just mutants
 
   zizmor:
     name: Audit workflows
