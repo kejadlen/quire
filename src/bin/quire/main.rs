@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         return Ok(());
     };
 
-    let config = Config::load();
+    let config = Config::default();
 
     match command {
         Commands::Serve => commands::serve::run(&config).await?,

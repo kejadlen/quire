@@ -1,7 +1,7 @@
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use miette::{Context, IntoDiagnostic, Result, miette};
+use miette::{Context, IntoDiagnostic, Result, miette, bail, ensure};
 
 use quire::Config;
 
@@ -21,34 +21,30 @@ pub async fn run(config: &Config, command: Vec<String>) -> Result<()> {
         .into_diagnostic()
         .context("failed to parse command")?;
 
-    if words.is_empty() {
-        return Err(miette!("no command provided"));
-    }
+    ensure!(!words.is_empty(), "no command provided");
 
     let git_cmd = &words[0];
 
-    if !GIT_COMMANDS.contains(&git_cmd.as_str()) {
-        return Err(miette!("unsupported command: {git_cmd}"));
-    }
+    ensure!(
+        GIT_COMMANDS.contains(&git_cmd.as_str()),
+        "unsupported command: {git_cmd}"
+    );
 
-    if words.len() != 2 {
-        return Err(miette!(
-            "expected usage: {git_cmd} '<repo>', got {} arguments",
-            words.len() - 1
-        ));
-    }
+    ensure!(
+        words.len() == 2,
+        "expected usage: {git_cmd} '<repo>', got {} arguments",
+        words.len() - 1
+    );
 
     let repo = validate_repo_path(&words[1])?;
 
     let repo_dir = config.repos_dir.join(&repo);
-    if !repo_dir.is_dir() {
-        return Err(miette!("repository not found: {repo}"));
-    }
+    ensure!(repo_dir.is_dir(), "repository not found: {repo}");
 
     tracing::info!(%git_cmd, %repo, "dispatching git command");
     let err = Command::new(git_cmd).arg(".").current_dir(&repo_dir).exec();
 
-    Err(miette!("exec failed: {err}"))
+    bail!("exec failed: {err}")
 }
 
 /// Validate a repo path argument from the SSH protocol.
@@ -59,21 +55,13 @@ pub async fn run(config: &Config, command: Vec<String>) -> Result<()> {
 fn validate_repo_path(raw: &str) -> Result<String> {
     let path = raw.trim_start_matches('/');
 
-    if path.is_empty() {
-        return Err(miette!("empty repository path"));
-    }
-
-    if path.contains("..") {
-        return Err(miette!("invalid repository path: {raw}"));
-    }
-
-    if !path.ends_with(".git") {
-        return Err(miette!("invalid repository path (must end in .git): {raw}"));
-    }
-
-    if path.contains("//") {
-        return Err(miette!("invalid repository path: {raw}"));
-    }
+    ensure!(!path.is_empty(), "empty repository path");
+    ensure!(!path.contains(".."), "invalid repository path: {raw}");
+    ensure!(
+        path.ends_with(".git"),
+        "invalid repository path (must end in .git): {raw}"
+    );
+    ensure!(!path.contains("//"), "invalid repository path: {raw}");
 
     Ok(path.to_string())
 }
