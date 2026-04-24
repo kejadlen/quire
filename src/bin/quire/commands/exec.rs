@@ -1,14 +1,13 @@
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::process::Command;
 
-use miette::{miette, Context, IntoDiagnostic, Result};
+use miette::{Context, IntoDiagnostic, Result, miette};
+
+use quire::Config;
 
 const GIT_COMMANDS: &[&str] = &["git-receive-pack", "git-upload-pack", "git-upload-archive"];
 
-const REPOS_DIR: &str = "/var/quire/repos";
-
-pub async fn run(command: Vec<String>) -> Result<()> {
+pub async fn run(config: &Config, command: Vec<String>) -> Result<()> {
     let input = if command.len() == 1 {
         // Single argument: the full SSH_ORIGINAL_COMMAND string.
         // e.g. git-receive-pack '/foo.git'
@@ -41,14 +40,12 @@ pub async fn run(command: Vec<String>) -> Result<()> {
 
     let repo = validate_repo_path(&words[1])?;
 
-    let repo_dir = Path::new(REPOS_DIR).join(&repo);
+    let repo_dir = config.repos_dir.join(&repo);
     if !repo_dir.is_dir() {
         return Err(miette!("repository not found: {repo}"));
     }
 
     tracing::info!(%git_cmd, %repo, "dispatching git command");
-
-    let repo_dir = Path::new(REPOS_DIR).join(&repo);
     let err = Command::new(git_cmd).arg(".").current_dir(&repo_dir).exec();
 
     Err(miette!("exec failed: {err}"))

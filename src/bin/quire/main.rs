@@ -4,6 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
+use quire::Config;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
@@ -57,9 +58,11 @@ async fn main() -> Result<()> {
         return Ok(());
     };
 
+    let config = Config::load();
+
     match command {
-        Commands::Serve => commands::serve::run().await?,
-        Commands::Exec { command } => commands::exec::run(command).await?,
+        Commands::Serve => commands::serve::run(&config).await?,
+        Commands::Exec { command } => commands::exec::run(&config, command).await?,
     }
 
     Ok(())
