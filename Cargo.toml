@@ -8,6 +8,7 @@ name = "quire"
 path = "src/bin/quire/main.rs"
 
 [dependencies]
+axum = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
 miette = { version = "*", features = ["fancy"] }
