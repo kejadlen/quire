@@ -1,3 +1,13 @@
+# Build stage.
+FROM rust:1.88-bookworm AS builder
+
+WORKDIR /usr/src/quire
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/quire/target \
+    cargo install --path .
+
+# Runtime stage.
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -6,6 +16,8 @@ RUN apt-get update \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=builder /usr/local/cargo/bin/quire /usr/local/bin/quire
+
 RUN groupadd --system quire \
     && useradd --system --gid quire --create-home quire
 
@@ -13,20 +25,8 @@ RUN groupadd --system quire \
 RUN mkdir -p /var/quire/repos /var/quire/runs \
     && chown -R quire:quire /var/quire
 
-# Pre-create a test repo for step 1 verification.
-RUN git init --bare /var/quire/repos/foo.git \
-    && chown -R quire:quire /var/quire/repos/foo.git
-
-COPY <<'EOF' /usr/local/bin/entrypoint
-#!/usr/bin/env bash
-set -euo pipefail
-
-exec "$@"
-EOF
-RUN chmod +x /usr/local/bin/entrypoint
-
 USER quire
 WORKDIR /var/quire
 
-ENTRYPOINT ["/usr/local/bin/entrypoint"]
-CMD ["sleep", "infinity"]
+ENTRYPOINT ["quire"]
+CMD ["serve"]
