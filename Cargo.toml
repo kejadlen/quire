@@ -11,6 +11,8 @@ path = "src/bin/quire/main.rs"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
 color-eyre = "*"
+fs-err = "*"
+shell-words = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 tracing = "*"

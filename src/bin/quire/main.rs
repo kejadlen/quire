@@ -30,7 +30,8 @@ enum Commands {
 
     /// Dispatch an SSH-originated command.
     Exec {
-        /// The original SSH command string to parse and execute.
+        /// The original SSH command string (e.g. git-receive-pack '/foo.git').
+        /// Pass as a single argument: quire exec "git-receive-pack '/foo.git'"
         command: Vec<String>,
     },
 }
