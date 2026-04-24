@@ -1,7 +1,7 @@
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use miette::{Context, IntoDiagnostic, Result, miette, bail, ensure};
+use miette::{Context, IntoDiagnostic, Result, bail, ensure};
 
 use quire::Config;
 
