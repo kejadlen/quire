@@ -1,0 +1,340 @@
+use std::path::Path;
+
+use miette::{Result, SourceOffset};
+use mlua::{Lua, LuaSerdeExt};
+
+const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
+
+/// Error kinds from the Fennel loader.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum FennelError {
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+
+    #[error(transparent)]
+    #[diagnostic(code(fennel::io))]
+    Io(#[from] std::io::Error),
+
+    #[error("{message}")]
+    #[diagnostic(code(fennel::eval))]
+    Eval {
+        message: String,
+        #[source_code]
+        source_code: String,
+        #[label("here")]
+        label: SourceOffset,
+    },
+
+    #[error("empty config: {name}")]
+    #[diagnostic(code(fennel::empty))]
+    Empty { name: String },
+
+    #[error("{0}")]
+    #[diagnostic(code(fennel::type_mismatch))]
+    TypeMismatch(String),
+}
+
+/// Owns a Lua VM with the Fennel compiler registered as a module.
+///
+/// Constructed once and reused across `load_string` / `load_file` calls.
+pub struct Fennel {
+    lua: Lua,
+}
+
+impl Fennel {
+    /// Create a new Fennel instance.
+    ///
+    /// Loads the vendored `fennel.lua` into a fresh Lua VM and registers it
+    /// as the `"fennel"` global so `fennel.eval` is available for compiling
+    /// Fennel source.
+    pub fn new() -> Result<Self, FennelError> {
+        // Load all standard libraries including debug, which Fennel
+        // requires internally (traceback, getinfo). The debug library is
+        // marked unsafe by mlua because it can break Lua sandboxing, but
+        // we only run trusted, vendored Fennel code in this VM.
+        let lua = unsafe { Lua::unsafe_new() };
+
+        // Load fennel.lua. The file returns its module table directly.
+        let fennel_module: mlua::Table = lua
+            .load(FENNEL_LUA)
+            .set_name("fennel.lua")
+            .eval()
+            .map_err(|e| FennelError::Eval {
+                message: format!("failed to load fennel compiler: {e}"),
+                source_code: String::new(),
+                label: SourceOffset::from(0),
+            })?;
+
+        lua.globals()
+            .set("fennel", fennel_module)
+            .map_err(|e| FennelError::Eval {
+                message: format!("failed to register fennel module: {e}"),
+                source_code: String::new(),
+                label: SourceOffset::from(0),
+            })?;
+
+        Ok(Self { lua })
+    }
+
+    /// Compile and evaluate a Fennel source string, deserializing the result
+    /// into `T`.
+    ///
+    /// `name` is used in error messages — typically a filename or a synthetic
+    /// label like `HEAD:.quire/config.fnl`.
+    pub fn load_string<T>(&self, source: &str, name: &str) -> Result<T, FennelError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        if source.trim().is_empty() {
+            return Err(FennelError::Empty {
+                name: name.to_string(),
+            });
+        }
+
+        let fennel: mlua::Table =
+            self.lua
+                .globals()
+                .get("fennel")
+                .map_err(|e| FennelError::Eval {
+                    message: format!("fennel module not found: {e}"),
+                    source_code: source.to_string(),
+                    label: SourceOffset::from(0),
+                })?;
+
+        let eval: mlua::Function = fennel.get("eval").map_err(|e| FennelError::Eval {
+            message: format!("fennel.eval not found: {e}"),
+            source_code: source.to_string(),
+            label: SourceOffset::from(0),
+        })?;
+
+        let opts = self.lua.create_table().map_err(|e| FennelError::Eval {
+            message: format!("failed to create options table: {e}"),
+            source_code: source.to_string(),
+            label: SourceOffset::from(0),
+        })?;
+
+        opts.set("filename", name).map_err(|e| FennelError::Eval {
+            message: format!("failed to set filename option: {e}"),
+            source_code: source.to_string(),
+            label: SourceOffset::from(0),
+        })?;
+
+        let result = eval
+            .call::<mlua::Value>((source, opts))
+            .map_err(|e| eval_error(source, name, &e))?;
+
+        // Reject nil results — a config file that evaluates to nothing is
+        // almost always a mistake.
+        if matches!(result, mlua::Value::Nil) {
+            return Err(FennelError::Empty {
+                name: name.to_string(),
+            });
+        }
+
+        self.lua
+            .from_value(result)
+            .map_err(|e| FennelError::TypeMismatch(format!("{name}: {e}")))
+    }
+
+    /// Load and evaluate a Fennel file from disk, deserializing the result
+    /// into `T`.
+    pub fn load_file<T>(&self, path: &Path) -> Result<T, FennelError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        if !path.exists() {
+            return Err(FennelError::FileNotFound(path.display().to_string()));
+        }
+
+        let source = fs_err::read_to_string(path)?;
+        self.load_string(&source, &path.display().to_string())
+    }
+}
+
+fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelError {
+    let message = format!("{name}: {err}");
+
+    // Try to extract a line number from the Lua error for a label.
+    let offset = extract_line_offset(err)
+        .and_then(|line| line_offset(source, line))
+        .unwrap_or(SourceOffset::from(0));
+
+    FennelError::Eval {
+        message,
+        source_code: source.to_string(),
+        label: offset,
+    }
+}
+
+/// Try to extract a line number from a Lua error message.
+///
+/// Lua errors look like `filename:LINE: message`.
+fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
+    let msg = err.to_string();
+    let mut parts = msg.split(':');
+    // Skip the filename part.
+    parts.next()?;
+    // Next should be the line number.
+    let line_str = parts.next()?.trim();
+    line_str.parse::<usize>().ok().filter(|&n| n > 0)
+}
+
+/// Convert a 1-based line number to a byte offset in the source.
+fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
+    if line == 0 {
+        return None;
+    }
+    let mut current_line = 1;
+    for (i, ch) in source.char_indices() {
+        if current_line == line {
+            return Some(SourceOffset::from(i));
+        }
+        if ch == '\n' {
+            current_line += 1;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct MirrorConfig {
+        mirror: Mirror,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Mirror {
+        url: String,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct FullConfig {
+        mirror: Mirror,
+        notifications: Notifications,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Notifications {
+        to: Vec<String>,
+        on: Vec<String>,
+    }
+
+    fn fennel() -> Fennel {
+        Fennel::new().expect("Fennel::new() should succeed")
+    }
+
+    #[test]
+    fn load_string_round_trips_simple_table() {
+        let f = fennel();
+        let config: MirrorConfig = f
+            .load_string(
+                r#"{:mirror {:url "https://github.com/owner/repo.git"}}"#,
+                "test",
+            )
+            .expect("load_string should succeed");
+
+        assert_eq!(
+            config,
+            MirrorConfig {
+                mirror: Mirror {
+                    url: "https://github.com/owner/repo.git".to_string(),
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn load_string_round_trips_nested_table_with_lists() {
+        let f = fennel();
+        let source = r#"
+{:mirror {:url "https://github.com/owner/repo.git"}
+ :notifications {:to ["alpha@example.com"]
+                 :on [:ci-failed :mirror-failed]}}
+"#;
+        let config: FullConfig = f
+            .load_string(source, "config.fnl")
+            .expect("load_string should succeed");
+
+        assert_eq!(
+            config,
+            FullConfig {
+                mirror: Mirror {
+                    url: "https://github.com/owner/repo.git".to_string(),
+                },
+                notifications: Notifications {
+                    to: vec!["alpha@example.com".to_string()],
+                    on: vec!["ci-failed".to_string(), "mirror-failed".to_string()],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn load_string_rejects_empty_source() {
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_string("", "empty.fnl");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FennelError::Empty { .. }));
+    }
+
+    #[test]
+    fn load_string_rejects_whitespace_only() {
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_string("  \n  ", "blank.fnl");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FennelError::Empty { .. }));
+    }
+
+    #[test]
+    fn load_string_rejects_malformed_fennel() {
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_string("{:bad {:}", "bad.fnl");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("bad.fnl"),
+            "error should mention source name: {err}"
+        );
+    }
+
+    #[test]
+    fn load_string_rejects_type_mismatch() {
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_string("{:mirror {:url 42}}", "types.fnl");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_file_reads_from_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.fnl");
+        fs_err::write(
+            &path,
+            r#"{:mirror {:url "https://github.com/owner/repo.git"}}"#,
+        )
+        .expect("write");
+
+        let f = fennel();
+        let config: MirrorConfig = f.load_file(&path).expect("load_file should succeed");
+        assert_eq!(
+            config,
+            MirrorConfig {
+                mirror: Mirror {
+                    url: "https://github.com/owner/repo.git".to_string(),
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn load_file_rejects_missing_file() {
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_file(Path::new("/no/such/file.fnl"));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FennelError::FileNotFound(..)));
+    }
+}

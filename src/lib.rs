@@ -1,5 +1,6 @@
 mod config;
 mod error;
+pub mod fennel;
 pub mod quire;
 
 pub use config::Config;
