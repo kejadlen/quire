@@ -1,4 +1,32 @@
-# Build stage.
+# Git build stage.
+#
+# Debian bookworm ships git 2.39, but we need 2.54+ for hook.<name>.command
+# config support. This lets quire register hooks via git config instead of
+# writing shim scripts to disk — the hook dispatches directly into the
+# quire binary as `quire hook <name>`.
+ARG GIT_VERSION=2.54.0
+FROM debian:bookworm-slim AS git-builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gcc \
+        gettext \
+        libcurl4-openssl-dev \
+        libexpat1-dev \
+        libssl-dev \
+        libz-dev \
+        make \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.gz \
+    | tar xz \
+    && cd git-${GIT_VERSION} \
+    && make -j$(nproc) prefix=/usr/local NO_TCLTK=1 NO_GETTEXT= \
+    && make prefix=/usr/local install
+
+# Quire build stage.
 FROM rust:1.88-bookworm AS builder
 
 WORKDIR /usr/src/quire
@@ -12,10 +40,13 @@ FROM debian:bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git \
         ca-certificates \
+        libcurl4 \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
+COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
 COPY --from=builder /usr/local/cargo/bin/quire /usr/local/bin/quire
 
 # Volume layout per PLAN.md. Ownership is set on the host; the container

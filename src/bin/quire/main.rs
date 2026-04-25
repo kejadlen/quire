@@ -37,6 +37,12 @@ enum Commands {
         /// Pass as a single argument: quire exec "git-receive-pack '/foo.git'"
         command: Vec<String>,
     },
+
+    /// Invoked by git hooks configured via hook.<name>.command.
+    Hook {
+        /// The hook name (e.g. pre-receive, post-receive).
+        hook_name: String,
+    },
 }
 
 #[tokio::main]
@@ -63,6 +69,7 @@ async fn main() -> Result<()> {
     match command {
         Commands::Serve => commands::serve::run(&config).await?,
         Commands::Exec { command } => commands::exec::run(&config, command).await?,
+        Commands::Hook { hook_name } => commands::hook::run(&hook_name).await?,
     }
 
     Ok(())
