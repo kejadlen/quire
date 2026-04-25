@@ -1,14 +1,14 @@
 use miette::{IntoDiagnostic, Result, ensure};
 
 use quire::Config;
-use quire::repo::validate_name;
+use quire::repo::Repo;
 
 pub async fn run(config: &Config, name: &str) -> Result<()> {
-    let name = validate_name(name)?;
-    let repo_dir = config.repos_dir.join(&name);
+    let repo = Repo::from_name(name)?;
+    let repo_dir = repo.path(&config.repos_dir);
 
-    ensure!(repo_dir.exists(), "repository not found: {name}");
-    ensure!(repo_dir.is_dir(), "not a directory: {name}");
+    ensure!(repo_dir.exists(), "repository not found: {}", repo.name());
+    ensure!(repo_dir.is_dir(), "not a directory: {}", repo.name());
 
     fs_err::remove_dir_all(&repo_dir).into_diagnostic()?;
 
@@ -19,7 +19,7 @@ pub async fn run(config: &Config, name: &str) -> Result<()> {
         let _ = fs_err::remove_dir(parent);
     }
 
-    tracing::info!(%name, "removed repository");
+    tracing::info!(name = %repo.name(), "removed repository");
 
     Ok(())
 }

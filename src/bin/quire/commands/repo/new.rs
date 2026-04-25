@@ -3,15 +3,16 @@ use std::process::Command;
 use miette::{IntoDiagnostic, Result, ensure};
 
 use quire::Config;
-use quire::repo::validate_name;
+use quire::repo::Repo;
 
 pub async fn run(config: &Config, name: &str) -> Result<()> {
-    let name = validate_name(name)?;
-    let repo_dir = config.repos_dir.join(&name);
+    let repo = Repo::from_name(name)?;
+    let repo_dir = repo.path(&config.repos_dir);
 
     ensure!(
         !repo_dir.exists(),
-        "repository already exists: {name}"
+        "repository already exists: {}",
+        repo.name()
     );
 
     // Create parent directory for grouped repos (e.g. work/foo.git).
@@ -20,15 +21,15 @@ pub async fn run(config: &Config, name: &str) -> Result<()> {
     }
 
     let status = Command::new("git")
-        .args(["init", "--bare", &name])
+        .args(["init", "--bare", repo.name()])
         .current_dir(&config.repos_dir)
         .status()
         .into_diagnostic()?;
 
     ensure!(status.success(), "git init failed");
 
-    tracing::info!(%name, "created repository");
-    println!("{name}");
+    tracing::info!(name = %repo.name(), "created repository");
+    println!("{}", repo.name());
 
     Ok(())
 }
