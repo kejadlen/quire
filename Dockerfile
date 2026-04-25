@@ -18,14 +18,11 @@ RUN apt-get update \
 
 COPY --from=builder /usr/local/cargo/bin/quire /usr/local/bin/quire
 
-RUN groupadd --system quire \
-    && useradd --system --gid quire --create-home quire
+# Volume layout per PLAN.md. Ownership is set on the host; the container
+# runs as the host uid/gid passed via `docker exec --user`, so no user
+# is created in the image.
+RUN mkdir -p /var/quire/repos /var/quire/runs
 
-# Volume layout per PLAN.md.
-RUN mkdir -p /var/quire/repos /var/quire/runs \
-    && chown -R quire:quire /var/quire
-
-USER quire
 WORKDIR /var/quire
 
 ENTRYPOINT ["quire"]
