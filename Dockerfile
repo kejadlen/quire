@@ -1,11 +1,11 @@
 # Git build stage.
 #
-# Debian bookworm ships git 2.39, but we need 2.54+ for hook.<name>.command
+# Debian trixie ships git 2.47, but we need 2.54+ for hook.<name>.command
 # config support. This lets quire register hooks via git config instead of
 # writing shim scripts to disk — the hook dispatches directly into the
 # quire binary as `quire hook <name>`.
 ARG GIT_VERSION=2.54.0
-FROM debian:bookworm-slim AS git-builder
+FROM debian:trixie-slim AS git-builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -27,7 +27,7 @@ RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.
     && make prefix=/usr/local install
 
 # Quire build stage.
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-trixie AS builder
 
 WORKDIR /usr/src/quire
 COPY . .
@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo install --path .
 
 # Runtime stage.
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
