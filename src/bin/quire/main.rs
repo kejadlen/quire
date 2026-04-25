@@ -40,8 +40,8 @@ enum Commands {
 
     /// Invoked by git hooks configured via hook.<name>.command.
     Hook {
-        /// The hook name (e.g. pre-receive, post-receive).
-        hook_name: String,
+        /// The hook name (e.g. post-receive).
+        hook_name: crate::commands::hook::HookName,
     },
 }
 
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
     match command {
         Commands::Serve => commands::serve::run(&config).await?,
         Commands::Exec { command } => commands::exec::run(&config, command).await?,
-        Commands::Hook { hook_name } => commands::hook::run(&hook_name).await?,
+        Commands::Hook { hook_name } => commands::hook::run(hook_name).await?,
     }
 
     Ok(())
