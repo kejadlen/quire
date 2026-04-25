@@ -3,15 +3,10 @@ use std::process::Command;
 
 use miette::{Context, IntoDiagnostic, Result, bail, ensure};
 
-use quire::repo::Repo;
 use quire::Config;
+use quire::repo::Repo;
 
-const GIT_COMMANDS: &[&str] = &[
-    "git-receive-pack",
-    "git-upload-pack",
-    "git-upload-archive",
-];
-
+const GIT_COMMANDS: &[&str] = &["git-receive-pack", "git-upload-pack", "git-upload-archive"];
 
 pub async fn run(config: &Config, command: Vec<String>) -> Result<()> {
     let input = if command.len() == 1 {
@@ -51,14 +46,16 @@ fn dispatch_git(config: &Config, git_cmd: &str, args: &[String]) -> Result<()> {
     ensure!(!path.is_empty(), "empty repository path");
 
     let repo = Repo::from_name(path)?;
+    ensure!(
+        repo.exists(&config.repos_dir),
+        "repository not found: {}",
+        repo.name()
+    );
+
     let repo_dir = repo.path(&config.repos_dir);
-    ensure!(repo_dir.is_dir(), "repository not found: {}", repo.name());
 
     tracing::info!(%git_cmd, name = %repo.name(), "dispatching git command");
-    let err = Command::new(git_cmd)
-        .arg(".")
-        .current_dir(&repo_dir)
-        .exec();
+    let err = Command::new(git_cmd).arg(".").current_dir(&repo_dir).exec();
 
     bail!("exec failed: {err}")
 }
@@ -72,5 +69,3 @@ fn dispatch_quire(_config: &Config, args: &[String]) -> Result<()> {
     let err = Command::new("quire").arg("repo").args(&args[1..]).exec();
     bail!("exec failed: {err}")
 }
-
-

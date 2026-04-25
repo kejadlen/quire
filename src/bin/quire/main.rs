@@ -95,9 +95,9 @@ async fn main() -> Result<()> {
         Commands::Exec { command } => commands::exec::run(&config, command).await?,
         Commands::Hook { hook_name } => commands::hook::run(hook_name).await?,
         Commands::Repo { command } => match command {
-            RepoCommands::New { name } => commands::repo::new::run(&config, &name).await?,
-            RepoCommands::List => commands::repo::list::run(&config).await?,
-            RepoCommands::Rm { name } => commands::repo::rm::run(&config, &name).await?,
+            RepoCommands::New { name } => commands::repo::new(&config, &name).await?,
+            RepoCommands::List => commands::repo::list(&config).await?,
+            RepoCommands::Rm { name } => commands::repo::rm(&config, &name).await?,
         },
     }
 

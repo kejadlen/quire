@@ -27,6 +27,10 @@ impl Repo {
     pub fn path(&self, repos_dir: &Path) -> PathBuf {
         repos_dir.join(&self.name)
     }
+
+    pub fn exists(&self, repos_dir: &Path) -> bool {
+        self.path(repos_dir).is_dir()
+    }
 }
 
 /// Validate segments of a repository name.
