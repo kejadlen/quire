@@ -1,7 +1,8 @@
 mod config;
 mod error;
-pub mod repo;
+pub mod quire;
 
 pub use config::Config;
 pub use error::Error;
 pub use error::Result;
+pub use quire::Quire;
