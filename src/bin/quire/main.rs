@@ -43,6 +43,30 @@ enum Commands {
         /// The hook name (e.g. post-receive).
         hook_name: crate::commands::hook::HookName,
     },
+
+    /// Manage repositories.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RepoCommands {
+    /// Create a new bare repository.
+    New {
+        /// Repository name (e.g. foo.git or work/foo.git).
+        name: String,
+    },
+
+    /// List all repositories.
+    List,
+
+    /// Delete a repository.
+    Rm {
+        /// Repository name (e.g. foo.git or work/foo.git).
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -70,6 +94,11 @@ async fn main() -> Result<()> {
         Commands::Serve => commands::serve::run(&config).await?,
         Commands::Exec { command } => commands::exec::run(&config, command).await?,
         Commands::Hook { hook_name } => commands::hook::run(hook_name).await?,
+        Commands::Repo { command } => match command {
+            RepoCommands::New { name } => commands::repo::new::run(&config, &name).await?,
+            RepoCommands::List => commands::repo::list::run(&config).await?,
+            RepoCommands::Rm { name } => commands::repo::rm::run(&config, &name).await?,
+        },
     }
 
     Ok(())

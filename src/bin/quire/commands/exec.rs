@@ -5,7 +5,12 @@ use miette::{Context, IntoDiagnostic, Result, bail, ensure};
 
 use quire::Config;
 
-const GIT_COMMANDS: &[&str] = &["git-receive-pack", "git-upload-pack", "git-upload-archive"];
+const GIT_COMMANDS: &[&str] = &[
+    "git-receive-pack",
+    "git-upload-pack",
+    "git-upload-archive",
+];
+
 
 pub async fn run(config: &Config, command: Vec<String>) -> Result<()> {
     let input = if command.len() == 1 {
@@ -23,27 +28,45 @@ pub async fn run(config: &Config, command: Vec<String>) -> Result<()> {
 
     ensure!(!words.is_empty(), "no command provided");
 
-    let git_cmd = &words[0];
+    let cmd = &words[0];
 
-    ensure!(
-        GIT_COMMANDS.contains(&git_cmd.as_str()),
-        "unsupported command: {git_cmd}"
-    );
+    if GIT_COMMANDS.contains(&cmd.as_str()) {
+        dispatch_git(config, cmd, &words[1..])
+    } else if cmd == "quire" {
+        dispatch_quire(config, &words[1..])
+    } else {
+        bail!("unsupported command: {cmd}")
+    }
+}
 
+fn dispatch_git(config: &Config, git_cmd: &str, args: &[String]) -> Result<()> {
     ensure!(
-        words.len() == 2,
+        args.len() == 1,
         "expected usage: {git_cmd} '<repo>', got {} arguments",
-        words.len() - 1
+        args.len()
     );
 
-    let repo = validate_repo_path(&words[1])?;
+    let repo = validate_repo_path(&args[0])?;
 
     let repo_dir = config.repos_dir.join(&repo);
     ensure!(repo_dir.is_dir(), "repository not found: {repo}");
 
     tracing::info!(%git_cmd, %repo, "dispatching git command");
-    let err = Command::new(git_cmd).arg(".").current_dir(&repo_dir).exec();
+    let err = Command::new(git_cmd)
+        .arg(".")
+        .current_dir(&repo_dir)
+        .exec();
 
+    bail!("exec failed: {err}")
+}
+
+fn dispatch_quire(_config: &Config, args: &[String]) -> Result<()> {
+    ensure!(!args.is_empty(), "no quire subcommand provided");
+
+    ensure!(args[0] == "repo", "unsupported quire command: {}", args[0]);
+
+    tracing::info!(subcmd = "repo", "dispatching quire command");
+    let err = Command::new("quire").arg("repo").args(&args[1..]).exec();
     bail!("exec failed: {err}")
 }
 
