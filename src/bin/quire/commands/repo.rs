@@ -5,11 +5,11 @@ use miette::{IntoDiagnostic, Result, ensure};
 use quire::Quire;
 
 pub async fn new(quire: &Quire, name: &str) -> Result<()> {
-    let repo_dir = quire.repo(name)?;
-    ensure!(!repo_dir.is_dir(), "repository already exists: {name}");
+    let repo = quire.repo(name)?;
+    ensure!(!repo.exists(), "repository already exists: {name}");
 
     // Create parent directory for grouped repos (e.g. work/foo.git).
-    if let Some(parent) = repo_dir.parent() {
+    if let Some(parent) = repo.path().parent() {
         fs_err::create_dir_all(parent).into_diagnostic()?;
     }
 
@@ -35,13 +35,13 @@ pub async fn list(quire: &Quire) -> Result<()> {
 }
 
 pub async fn rm(quire: &Quire, name: &str) -> Result<()> {
-    let repo_dir = quire.repo(name)?;
-    ensure!(repo_dir.is_dir(), "repository not found: {name}");
+    let repo = quire.repo(name)?;
+    ensure!(repo.exists(), "repository not found: {name}");
 
-    fs_err::remove_dir_all(&repo_dir).into_diagnostic()?;
+    fs_err::remove_dir_all(repo.path()).into_diagnostic()?;
 
     // Clean up empty parent directory for grouped repos.
-    if let Some(parent) = repo_dir.parent()
+    if let Some(parent) = repo.path().parent()
         && parent != quire.repos_dir()
     {
         let _ = fs_err::remove_dir(parent);

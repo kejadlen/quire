@@ -4,6 +4,23 @@ use miette::{IntoDiagnostic, Result, ensure};
 
 use crate::config::Config;
 
+/// A resolved repository path.
+///
+/// Created by `Quire::repo` after validating the name.
+pub struct Repo {
+    path: PathBuf,
+}
+
+impl Repo {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn exists(&self) -> bool {
+        self.path.is_dir()
+    }
+}
+
 /// Application runtime context.
 ///
 /// Carries configuration and provides resolved paths to repositories.
@@ -25,9 +42,11 @@ impl Quire {
     ///
     /// Rejects path traversal, missing `.git` suffix, empty segments,
     /// reserved path components, and more than one level of grouping.
-    pub fn repo(&self, name: &str) -> Result<PathBuf> {
+    pub fn repo(&self, name: &str) -> Result<Repo> {
         validate_repo_name(name)?;
-        Ok(self.config.repos_dir.join(name))
+        Ok(Repo {
+            path: self.config.repos_dir.join(name),
+        })
     }
 
     /// List all repository names under the repos directory.
@@ -124,8 +143,8 @@ mod tests {
     fn repo_resolves_path() {
         let q = quire();
         assert_eq!(
-            q.repo("foo.git").unwrap(),
-            PathBuf::from("/var/quire/repos/foo.git")
+            q.repo("foo.git").unwrap().path(),
+            Path::new("/var/quire/repos/foo.git")
         );
     }
 

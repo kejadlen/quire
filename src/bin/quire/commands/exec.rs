@@ -44,11 +44,14 @@ fn dispatch_git(quire: &Quire, git_cmd: &str, args: &[String]) -> Result<()> {
     let path = args[0].trim_start_matches('/');
     ensure!(!path.is_empty(), "empty repository path");
 
-    let repo_dir = quire.repo(path)?;
-    ensure!(repo_dir.is_dir(), "repository not found: {path}");
+    let repo = quire.repo(path)?;
+    ensure!(repo.exists(), "repository not found: {path}");
 
     tracing::info!(%git_cmd, %path, "dispatching git command");
-    let err = Command::new(git_cmd).arg(".").current_dir(&repo_dir).exec();
+    let err = Command::new(git_cmd)
+        .arg(".")
+        .current_dir(repo.path())
+        .exec();
 
     bail!("exec failed: {err}")
 }
