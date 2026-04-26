@@ -1,10 +1,10 @@
 # Fennel embedding
 
-Design note for chunk 1 of step 5 (GitHub mirror via post-receive). Loads
-`.fnl` config files into typed Rust structs. Used by global config
-(`/var/quire/config.fnl`) and per-repo config (`.quire/config.fnl`, read
-via `git show HEAD:.quire/config.fnl`). Will eventually support CI
-pipeline definitions, but not yet designed for that.
+How quire loads `.fnl` config files into typed Rust structs. Covers the
+global config at `/var/quire/config.fnl` and the per-repo config checked
+in at `.quire/config.fnl` (read from the bare repo via
+`git show HEAD:.quire/config.fnl`). CI pipeline support will reuse this
+machinery later, but its design is out of scope here.
 
 ## Components
 
@@ -25,6 +25,8 @@ Files evaluate to a single Lua table literal. Pure data, not a
 DSL. PLAN.md sketches `(notifications :to [...] :on [...])` which reads
 as a function call, but a DSL adds parser machinery for no v1 win. Move
 to a DSL when CI lands and there's a real reason.
+
+A representative per-repo config:
 
 ```fennel
 {:mirror {:url "https://github.com/owner/repo.git"}

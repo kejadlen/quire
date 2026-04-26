@@ -4,6 +4,7 @@ Reference configs for dispatching SSH connections into the quire container.
 
 ## Files
 
+- `README.md` — this file
 - `sshd_config` — drop into `/etc/ssh/sshd_config.d/` on the host
 
 ## Setup
@@ -38,7 +39,11 @@ Reference configs for dispatching SSH connections into the quire container.
    with the values templated from `id -u git` / `id -g git` during host
    setup.
 
-5. Test:
+5. Create a test repo inside the container:
+
+       docker exec quire-container quire new foo.git
+
+6. Test the dispatch path:
 
        git clone git@localhost:foo.git /tmp/test-clone
 

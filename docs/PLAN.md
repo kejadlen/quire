@@ -26,11 +26,19 @@ The **host** does auth and network plumbing. The **container** is pure quire.
 
 Repo content is public by default because most of it ends up on GitHub anyway. CI logs require auth because "my CI never prints secrets" is easy to break (env values echoed by a misbehaving script, stack traces with file paths, dependency debug output). Per-repo opt-ins cover the exceptions: `(private true)` for repos that should require auth even to browse; `(public_runs true)` for repos where build status is worth publishing.
 
-**How auth is enforced.** The reverse proxy is the only web ingress — the container publishes its HTTP port to host loopback only, nothing else can reach it. When a request comes in, the proxy authenticates the user (by whatever scheme it's configured for), strips any client-supplied `Remote-User` header, and injects its own. Quire trusts that header because the proxy is the only source of it. Stripping is load-bearing: without it, anyone could impersonate anyone by setting the header themselves. Quire's handlers read the header, apply per-repo visibility rules, and serve or 404 accordingly. A missing header means "unauthenticated" — handled gracefully, not an error.
+**How auth is enforced.** The reverse proxy is the only web ingress — the container publishes its HTTP port to host loopback only, nothing else can reach it. When a request comes in, the proxy authenticates the user (by whatever scheme it's configured for), strips any client-supplied `Remote-User` header, and injects its own. Quire trusts that header because the proxy is the only source of it.
+
+Stripping is load-bearing: without it, anyone could impersonate anyone by setting the header themselves. Quire's handlers read the header, apply per-repo visibility rules, and serve or 404 accordingly. A missing header means "unauthenticated" — handled gracefully, not an error.
 
 **Why this shape.** SSH pass-through from host to container is a requirement (host sshd on 22 can't coexist with a second sshd bound to the same port). Once the host is doing auth for SSH, running another sshd in the container is redundant at best and confusing at worst. Putting web auth at the reverse proxy — rather than building it into quire — means the auth scheme can change (basic → OAuth → SSO) without touching the container, and quire's HTTP layer stays small and focused.
 
-**Try to avoid a database entirely.** Run history lives on disk as one directory per run. Refs and repo metadata are in the git repos themselves. Per-repo config is Fennel on disk. The threshold for reaching for SQLite is "the filesystem approach is visibly causing problems" — not "I vaguely feel like querying would be nice." Likely triggers, ordered by probability: CI concurrency control that outgrows a lock file; aggregate queries across repos (e.g. "all failed runs this week"); full-text search over commit messages or file content. CI is the most likely to force the issue first.
+**Try to avoid a database entirely.** Run history lives on disk as one directory per run. Refs and repo metadata are in the git repos themselves. Per-repo config is Fennel on disk. The threshold for reaching for SQLite is "the filesystem approach is visibly causing problems" — not "I vaguely feel like querying would be nice." Likely triggers, ordered by probability:
+
+1. CI concurrency control that outgrows a lock file.
+2. Aggregate queries across repos (e.g. "all failed runs this week").
+3. Full-text search over commit messages or file content.
+
+CI is the most likely to force the issue first.
 
 ## Volume layout
 
@@ -41,7 +49,6 @@ One volume mounted into the container:
   repos/
     foo.git/
       quire/
-        config.fnl           per-repo config (mirror, public_runs, etc.)
         mirror-deploy-key    SSH private key for GitHub mirror (mode 0600)
     work/
       bar.git/
@@ -54,7 +61,9 @@ One volume mounted into the container:
   config.fnl                 global config
 ```
 
-No SSH config or host keys in this volume — those live on the host. The container image brings the `quire` binary and git; the volume brings repos, runs, and per-repo configs. Bubblewrap is only needed if CI sandboxing is enabled (it isn't by default).
+Per-repo config (`mirror`, `public_runs`, etc.) is checked into the repo at `.quire/config.fnl`, not stored in the bare repo's `quire/` directory. Quire reads it from the bare repo via `git show HEAD:.quire/config.fnl`. The `quire/` directory holds only generated artifacts like the mirror deploy key.
+
+No SSH config or host keys in this volume — those live on the host. The container image brings the `quire` binary and git; the volume brings repos, runs, and per-repo state. Bubblewrap is only needed if CI sandboxing is enabled (it isn't by default).
 
 `docker compose down && up` loses nothing in the volume. Host identity (ssh host keys, reverse-proxy certs and state) persists on the host.
 
@@ -73,7 +82,15 @@ The host config is documented and version-controlled, not pretending to be handl
 
 Worth noting for completeness: nothing in the base image's design prevents a second, derivative image that layers sshd + a supervisor on top and handles the auth layer inside the container. That would be the turnkey "docker run this and you have a git server" story — useful for people deploying quire on a VPS without existing host infrastructure, or for quick evaluation.
 
-The shape: `quire:standalone` extends `quire:latest` with openssh-server, a supervisor (tini or s6), an entrypoint that starts sshd and `quire serve` together, and sshd configured with `ForceCommand /usr/local/bin/quire exec "$SSH_ORIGINAL_COMMAND"` in its sshd_config. Authorized keys would come from a volume-mounted file or env var. Everything downstream of `quire exec` is identical to the host-mediated path — same allowlist, same dispatch logic — so there's no divergent code to maintain.
+The shape, sketched: `quire:standalone` extends `quire:latest` with:
+
+- openssh-server.
+- A supervisor (tini or s6) so sshd and `quire serve` can run together.
+- An entrypoint that starts both processes.
+- sshd configured with `ForceCommand /usr/local/bin/quire exec "$SSH_ORIGINAL_COMMAND"` in its sshd_config.
+- Authorized keys from a volume-mounted file or env var.
+
+Everything downstream of `quire exec` is identical to the host-mediated path — same allowlist, same dispatch logic — so there's no divergent code to maintain.
 
 Flagging the possibility now because it costs nothing at design time (the `quire exec` dispatch boundary is already the right shape for either deployment), and it'd be a thoughtful contribution from someone who wants it later. Not building it for v1 — I don't need it, and the base image plus reference host configs cover the deployment story I actually want.
 
@@ -90,6 +107,8 @@ Nothing here requires jj-specific code. It's all just "don't make git-flow-shape
 
 ## Build sequence
 
+The build sequence is ordered by integration risk, not feature priority — the unfamiliar plumbing comes first so the rest can be built on solid ground.
+
 ### 1. Host-mediated dispatch to a pushable repo
 
 This is the step with real integration risk — getting host sshd to dispatch authenticated connections into the container cleanly, and making sure stdio is preserved end-to-end. Do it before anything else.
@@ -98,13 +117,17 @@ Minimal Dockerfile: `quire` user, git installed, a bare repo pre-created at `/va
 
 On the host: create a `git` user, put your pubkey in its `~/.ssh/authorized_keys`, add the `Match User git` block with `ForceCommand /usr/local/bin/quire-dispatch`, write the quire-dispatch script (parses `$SSH_ORIGINAL_COMMAND`, execs `docker exec -i quire-container /bin/sh -c "cd /var/quire/repos/$REPO && git-receive-pack ."` or similar).
 
-Verify: `git push git@host:foo main` works end-to-end. Push a commit, confirm it lands in the bare repo.
+Verify with `git push git@host:foo main`. Push a commit, confirm it lands in the bare repo.
 
-The things most likely to go wrong here: stdio buffering between ssh → docker exec → git-receive-pack; argument quoting through three layers of shell; `docker exec -i` vs `-it` (no TTY when invoked from ForceCommand).
+Things most likely to go wrong here:
+
+- Stdio buffering between ssh → docker exec → git-receive-pack.
+- Argument quoting through three layers of shell.
+- `docker exec -i` vs `-it` (no TTY when invoked from ForceCommand).
 
 ### 2. `quire exec` dispatch subcommand
 
-Replace the ad-hoc shell dispatch from step 1 with `docker exec -i quire-container quire exec "$SSH_ORIGINAL_COMMAND"`. The `quire exec` subcommand takes the original command string, parses it properly (shell-style with a real parser, not regex), validates it against a strict allowlist — `git-receive-pack`, `git-upload-pack`, and a specific set of `quire` subcommands (`new`, `list`, `rm`, `mirror *`) — and execs the appropriate binary.
+Replace the ad-hoc shell dispatch from step 1 with `docker exec -i quire-container quire exec "$SSH_ORIGINAL_COMMAND"`. The `quire exec` subcommand takes the original command string, parses it properly (shell-style with a real parser, not regex), validates it against a strict allowlist — `git-receive-pack`, `git-upload-pack`, `git-upload-archive`, and a specific set of `quire` subcommands (`new`, `list`, `rm`, `mirror *`) — and execs the appropriate binary.
 
 **This is the only dispatch surface into the container.** There's no sshd in the container to backstop a permissive parser; anything that gets past `quire exec` runs as trusted. The allowlist is the security boundary — not a UX convenience, the actual boundary. Treat it that way: explicit enumeration, reject by default, no regex-based "looks safe enough," tests for the rejection paths as well as the accept paths.
 
@@ -114,11 +137,11 @@ Write the quire binary's `hook` subcommand as a no-op that logs what it was invo
 
 ### 4. Explicit repo creation
 
-`ssh git@host quire new <n>` → `quire exec` → `quire new <n>`. Creates a bare repo under `repos/`, validates the name (no `..`, one level of grouping max, no reserved names), sets `hook.<n>.command` configs. Also: `quire list`, `quire rm`, basic ops. All accessed via the same ssh-dispatch path.
+`ssh git@host quire new <name>` → `quire exec` → `quire new <name>`. Creates a bare repo under `repos/`, validates the name (no `..`, one level of grouping max, no reserved names), sets `hook.<name>.command` configs. Also: `quire list`, `quire rm`, basic ops. All accessed via the same ssh-dispatch path.
 
 ### 5. GitHub mirror via post-receive (deploy key)
 
-Per-repo config in `<repo>.git/quire/config.fnl` with a `mirror` key (GitHub remote URL). A matching private key at `<repo>.git/quire/mirror-deploy-key` (generated by `quire mirror add <remote-url>`, which also prints the public key for the user to paste into GitHub's deploy-keys UI).
+Per-repo config checked into the repo at `.quire/config.fnl` with a `mirror` key (GitHub remote URL); quire reads it from the bare repo via `git show HEAD:.quire/config.fnl`. A matching private key at `<repo>.git/quire/mirror-deploy-key` (generated by `quire mirror add <remote-url>`, which also prints the public key for the user to paste into GitHub's deploy-keys UI).
 
 Post-receive hook reads the config, invokes `git push --mirror` with `GIT_SSH_COMMAND="ssh -i /var/quire/repos/<repo>.git/quire/mirror-deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"`. Simple, no agent forwarding, no host↔container socket plumbing.
 
@@ -132,7 +155,7 @@ Quire reads the `Remote-User` header (injected by Caddy). If present, the reques
 
 ### 7. Web view, nicer
 
-Per-file history following renames (`git log --follow`), compare-between-refs, blame, submodule-aware tree browsing. Skip branch-graph viz. Start thinking about where caching would help (rendered README, syntax-highlighted blobs) and measure before adding it.
+Per-file history following renames (`git log --follow`), compare-between-refs, blame, submodule-aware tree browsing. Skip branch-graph viz. Measure before caching anything — likely candidates if it's needed are rendered READMEs and syntax-highlighted blobs.
 
 ### 8. Fennel CI MVP
 
@@ -150,14 +173,14 @@ One directory per run, `meta.fnl` storing status, ref, sha, pipeline source, tim
 
 Shell out to `msmtp` (or `sendmail`-compatible) as a subprocess — the container ships `msmtp`, and global config (`config.fnl`) specifies SMTP server + credentials once. Quire builds the message, pipes it to `msmtp -t`, done. No native SMTP library, no retry queue, no HTML templates; a plain-text email with subject and body is the whole thing.
 
-What triggers a notification, per-repo-configurable in `<repo>.git/quire/config.fnl`:
+What triggers a notification, per-repo-configurable in `.quire/config.fnl`:
 
 - CI run failed (default: on, if any address is configured)
 - CI run that was previously failing now succeeds (default: on — the "fixed" notification is the one you actually want)
 - CI run succeeded after a success (default: off — noise)
 - Mirror push to GitHub failed (default: on — silent mirror failure is exactly the drift we don't want)
 
-Config shape, sketch:
+The minimal config to enable failure-and-recovery emails:
 
 ```fennel
 (notifications
@@ -202,7 +225,13 @@ Keyboard navigation in the web UI. Atom feeds for recent commits (public, subjec
 - **Secrets for CI.** Injected from container env or loaded from a file on the volume. Since CI is unsandboxed, there's no meaningful isolation story anyway — any pipeline step has full access to whatever the CI runner has. Env is simplest; punt encrypted-at-rest to "if I ever want it."
 - **Backup story.** `tar` the data volume. Deploy keys are in the volume, so they travel with the backup — convenient but also means the backup is sensitive. Worth thinking about encryption-at-rest for the backup, not just the source volume. Defer, but don't forget.
 - **`docker exec` performance.** Each git push spawns a new `docker exec`. Container startup is not involved (the container is already running), but there's still some latency — tens to hundreds of milliseconds. Probably fine for interactive use, possibly noticeable if something scripts many pushes. Measure, don't optimize preemptively.
-- **Reverse-proxy auth scheme.** Which auth mechanism does the proxy actually run? Candidates: HTTP basic (simplest, but the login UI is the browser's ugly default dialog), Caddy's built-in `basic_auth` (same UI, slightly cleaner config), `forward_auth` to a small SSO service like Authelia or oauth2-proxy (proper login page, more moving parts), or GitHub OAuth via oauth2-proxy (nice "sign in with GitHub" flow, ties identity to something real). Leaning basic auth for v1 — it's ugly but trivial, and "my password is a 40-character string in 1Password" is fine at single-user scale. Can swap to OAuth later without changing quire at all.
+- **Reverse-proxy auth scheme.** Which auth mechanism does the proxy actually run? Candidates:
+  - HTTP basic — simplest, but the login UI is the browser's ugly default dialog.
+  - Caddy's built-in `basic_auth` — same UI, slightly cleaner config.
+  - `forward_auth` to a small SSO service like Authelia or oauth2-proxy — proper login page, more moving parts.
+  - GitHub OAuth via oauth2-proxy — nice "sign in with GitHub" flow, ties identity to something real.
+
+  Leaning basic auth for v1 — it's ugly but trivial, and "my password is a 40-character string in 1Password" is fine at single-user scale. Can swap to OAuth later without changing quire at all.
 - **Identity header name.** Various proxies use various names (`Remote-User`, `X-Remote-User`, `X-Forwarded-User`, `X-Auth-User`). Quire should pick one and the reference Caddyfile should match. `Remote-User` is short and traditional; `X-Remote-User` signals "this is a custom header, not the standard CGI one." Lean: `Remote-User`, matches the CGI convention and nginx/apache ecosystem.
 - **SMTP credentials.** Global config holds SMTP user + password. Storing in `config.fnl` plain-text is fine for a personal instance where the volume is trusted, but worth noting: anyone who reads the volume can read the password. Alternatives: env var (fine, same trust boundary), file outside the volume that the container reads on startup (marginal), actually encrypt (overkill for this). Lean: plain in `config.fnl`, document the trust assumption.
 - **Notification deduplication.** If CI is flaky and the same build fails twice in a row, that's two emails. If it fails ten times, that's ten. Probably fine at personal scale (flaky CI is itself a problem worth noticing), but if it becomes annoying, add simple per-event throttling ("don't send the same event for this repo more than once per N minutes"). Defer; fix if it's actually a nuisance.

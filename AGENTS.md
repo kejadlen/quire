@@ -2,7 +2,7 @@
 
 ## Task management
 
-Use ranger for backlog and task tracking.
+The backlog lives in the `ranger` CLI, not GitHub Issues. Use `ranger` to read and update tasks.
 
 ## Before committing
 
