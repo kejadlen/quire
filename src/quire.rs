@@ -58,7 +58,7 @@ impl Repo {
     ///
     /// Returns a `Command` with `current_dir` set. The caller decides
     /// `.status()`, `.output()`, or anything else.
-    fn git(&self, args: &[&str]) -> std::process::Command {
+    pub fn git(&self, args: &[&str]) -> std::process::Command {
         let mut cmd = std::process::Command::new("git");
         cmd.args(args).current_dir(&self.path);
         cmd
@@ -162,6 +162,22 @@ impl Quire {
         validate_repo_name(name)?;
         Ok(Repo {
             path: self.repos_dir().join(name),
+        })
+    }
+
+    /// Resolve a filesystem path to a `Repo`.
+    ///
+    /// Verifies the path falls under the repos directory and has a
+    /// `.git` suffix. Used by hooks that receive `GIT_DIR` from git.
+    pub fn repo_from_path(&self, path: &Path) -> Result<Repo> {
+        let resolved = self.repos_dir();
+        let relative = path.strip_prefix(&resolved).map_err(|_| {
+            miette::miette!("path is not under repos directory: {}", path.display())
+        })?;
+        let name = relative.to_string_lossy();
+        validate_repo_name(&name)?;
+        Ok(Repo {
+            path: path.to_path_buf(),
         })
     }
 
@@ -440,6 +456,37 @@ mod tests {
     fn rejects_dot_git_segment() {
         let q = quire();
         assert!(q.repo("foo/.git").is_err());
+    }
+
+    #[test]
+    fn repo_from_path_valid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let path = dir.path().join("repos").join("foo.git");
+        let repo = q.repo_from_path(&path).expect("should resolve");
+        assert_eq!(repo.path(), path);
+    }
+
+    #[test]
+    fn repo_from_path_outside_repos() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let path = PathBuf::from("/tmp/evil.git");
+        assert!(q.repo_from_path(&path).is_err());
+    }
+
+    #[test]
+    fn repo_from_path_rejects_bad_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let path = dir.path().join("repos").join("foo"); // missing .git
+        assert!(q.repo_from_path(&path).is_err());
     }
 
     #[test]

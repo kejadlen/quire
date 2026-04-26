@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
     match command {
         Commands::Serve => commands::serve::run(&quire).await?,
         Commands::Exec { command } => commands::exec::run(&quire, command).await?,
-        Commands::Hook { hook_name } => commands::hook::run(hook_name).await?,
+        Commands::Hook { hook_name } => commands::hook::run(&quire, hook_name).await?,
         Commands::Repo { command } => match command {
             RepoCommands::New { name } => commands::repo::new(&quire, &name).await?,
             RepoCommands::List => commands::repo::list(&quire).await?,
