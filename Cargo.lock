@@ -882,6 +882,7 @@ dependencies = [
  "miette",
  "mlua",
  "predicates",
+ "regex",
  "serde",
  "shell-words",
  "tempfile",

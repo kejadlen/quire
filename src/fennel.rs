@@ -168,15 +168,19 @@ fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelError {
 
 /// Try to extract a line number from a Lua error message.
 ///
-/// Lua errors look like `filename:LINE: message`.
+/// Lua/Fennel errors embed the source location as `name:LINE:COLUMN: message`.
+/// The name may contain colons (e.g. `HEAD:.quire/config.fnl`), so splitting
+/// from the left breaks. Match the first `:LINE:COLUMN: ` run, which is
+/// unambiguous — filenames don't end with `:digits:digits:`.
 fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
     let msg = err.to_string();
-    let mut parts = msg.split(':');
-    // Skip the filename part.
-    parts.next()?;
-    // Next should be the line number.
-    let line_str = parts.next()?.trim();
-    line_str.parse::<usize>().ok().filter(|&n| n > 0)
+    let re = regex::Regex::new(r":(\d+):\d+: ").ok()?;
+    let caps = re.captures(&msg)?;
+    caps.get(1)?
+        .as_str()
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n > 0)
 }
 
 /// Convert a 1-based line number to a byte offset in the source.
@@ -336,5 +340,20 @@ mod tests {
         let result: Result<MirrorConfig, _> = f.load_file(Path::new("/no/such/file.fnl"));
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), FennelError::FileNotFound(..)));
+    }
+
+    #[test]
+    fn error_label_works_with_colon_in_name() {
+        let f = fennel();
+        let source = "\n{:bad {:}";
+        let result: Result<MirrorConfig, _> = f.load_string(source, "HEAD:.quire/config.fnl");
+        let err = result.unwrap_err();
+        if let FennelError::Eval { label, .. } = &err {
+            assert_eq!(
+                label.offset(),
+                1,
+                "label should point at line 2 despite colons in name"
+            );
+        }
     }
 }
