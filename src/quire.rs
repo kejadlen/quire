@@ -18,6 +18,20 @@ pub struct GithubConfig {
     pub token: SecretString,
 }
 
+/// Per-repo configuration parsed from `.quire/config.fnl`.
+///
+/// Loaded from `HEAD:.quire/config.fnl` in the bare repo via `git show`.
+#[derive(serde::Deserialize, Debug, Default, PartialEq)]
+pub struct RepoConfig {
+    #[serde(default)]
+    pub mirror: Option<MirrorConfig>,
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq)]
+pub struct MirrorConfig {
+    pub url: String,
+}
+
 /// A resolved repository path.
 ///
 /// Created by `Quire::repo` after validating the name.
@@ -32,6 +46,43 @@ impl Repo {
 
     pub fn exists(&self) -> bool {
         self.path.is_dir()
+    }
+
+    /// Load per-repo config from `HEAD:.quire/config.fnl`.
+    ///
+    /// Returns a default (empty) `RepoConfig` when:
+    /// - HEAD doesn't exist (fresh repo, no pushes yet).
+    /// - The config file is absent from HEAD.
+    /// - The `:mirror` key is absent from the parsed config.
+    ///
+    /// Returns an error when the config file exists but contains
+    /// malformed Fennel — source labels point at the right line.
+    pub fn config(&self) -> crate::Result<RepoConfig> {
+        let output = std::process::Command::new("git")
+            .args(["show", "HEAD:.quire/config.fnl"])
+            .current_dir(&self.path)
+            .output()
+            .map_err(crate::Error::Io)?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // HEAD missing (fresh repo) or file absent — both mean "no config".
+            if stderr.contains("invalid object name") || stderr.contains("does not exist") {
+                return Ok(RepoConfig::default());
+            }
+            // Unexpected git error.
+            return Err(crate::Error::NotFound(format!(
+                "failed to read HEAD:.quire/config.fnl: {stderr}"
+            )));
+        }
+
+        let source = String::from_utf8(output.stdout)
+            .map_err(|e| crate::Error::NotFound(format!("config is not valid UTF-8: {e}")))?;
+
+        let fennel = Fennel::new().map_err(|e| crate::Error::Fennel(e.to_string()))?;
+        fennel
+            .load_string(&source, "HEAD:.quire/config.fnl")
+            .map_err(|e| crate::Error::Fennel(e.to_string()))
     }
 }
 
@@ -175,6 +226,137 @@ fn validate_repo_name(name: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Helper: create a temp dir with a bare repo that has one commit
+    /// containing `.quire/config.fnl` with the given content.
+    fn bare_repo_with_config(config_content: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let bare = dir.path().join("repos").join("test.git");
+
+        // Create a worktree repo, commit the config, then clone --bare.
+        fs_err::create_dir_all(&work).expect("mkdir work");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("git command");
+            if !output.status.success() {
+                panic!(
+                    "git {:?} failed:\n{}",
+                    args,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            output
+        };
+
+        git(&["init"]);
+        git(&["commit", "--allow-empty", "-m", "initial"]);
+
+        let config_dir = work.join(".quire");
+        fs_err::create_dir_all(&config_dir).expect("mkdir .quire");
+        fs_err::write(config_dir.join("config.fnl"), config_content).expect("write config");
+        git(&["add", "."]);
+        git(&["commit", "-m", "add config"]);
+
+        git(&[
+            "clone",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ]);
+
+        dir
+    }
+
+    /// Helper: create a temp dir with an empty bare repo (no HEAD).
+    fn empty_bare_repo() -> (tempfile::TempDir, Repo) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bare = dir.path().join("repos").join("test.git");
+        fs_err::create_dir_all(&bare).expect("mkdir repos/test.git");
+
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&bare)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("git command");
+            if !output.status.success() {
+                panic!(
+                    "git {:?} failed:\n{}",
+                    args,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            output
+        };
+
+        git(&["init", "--bare"]);
+
+        let repo = Repo { path: bare };
+
+        (dir, repo)
+    }
+
+    /// Helper: create a bare repo with at least one commit but no `.quire/config.fnl`.
+    fn bare_repo_without_config() -> (tempfile::TempDir, Repo) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let bare = dir.path().join("repos").join("test.git");
+
+        let git = |args: &[&str], cwd: &Path| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("git command");
+            if !output.status.success() {
+                panic!(
+                    "git {:?} failed:\n{}",
+                    args,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            output
+        };
+
+        fs_err::create_dir_all(&work).expect("mkdir work");
+        git(&["init"], &work);
+        // Commit with no .quire directory.
+        git(&["commit", "--allow-empty", "-m", "initial"], &work);
+        git(
+            &[
+                "clone",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+            &work,
+        );
+
+        let repo = Repo { path: bare };
+        (dir, repo)
+    }
+
     fn quire() -> Quire {
         Quire::default()
     }
@@ -239,6 +421,60 @@ mod tests {
     fn rejects_dot_git_segment() {
         let q = quire();
         assert!(q.repo("foo/.git").is_err());
+    }
+
+    #[test]
+    fn repo_config_loads_mirror_url() {
+        let dir = bare_repo_with_config(r#"{:mirror {:url "https://github.com/owner/repo.git"}}"#);
+        let bare = dir.path().join("repos").join("test.git");
+        let repo = Repo { path: bare };
+
+        let config = repo.config().expect("config should load");
+        assert_eq!(
+            config.mirror,
+            Some(MirrorConfig {
+                url: "https://github.com/owner/repo.git".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn repo_config_returns_no_mirror_when_head_missing() {
+        let (_dir, repo) = empty_bare_repo();
+        let config = repo.config().expect("should return default config");
+        assert_eq!(config.mirror, None);
+    }
+
+    #[test]
+    fn repo_config_returns_no_mirror_when_file_absent() {
+        let (_dir, repo) = bare_repo_without_config();
+        let config = repo.config().expect("should return default config");
+        assert_eq!(config.mirror, None);
+    }
+
+    #[test]
+    fn repo_config_returns_no_mirror_when_key_absent() {
+        let dir = bare_repo_with_config("{}");
+        let bare = dir.path().join("repos").join("test.git");
+        let repo = Repo { path: bare };
+
+        let config = repo.config().expect("should return default config");
+        assert_eq!(config.mirror, None);
+    }
+
+    #[test]
+    fn repo_config_errors_on_malformed_fennel() {
+        let dir = bare_repo_with_config("{:bad {:}");
+        let bare = dir.path().join("repos").join("test.git");
+        let repo = Repo { path: bare };
+
+        let err = repo.config().unwrap_err();
+        // The error message should reference the config path.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("HEAD:.quire/config.fnl"),
+            "error should mention the config path: {msg}"
+        );
     }
 
     #[test]
