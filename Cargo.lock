@@ -884,6 +884,7 @@ dependencies = [
  "predicates",
  "regex",
  "serde",
+ "serde_json",
  "shell-words",
  "tempfile",
  "thiserror",
