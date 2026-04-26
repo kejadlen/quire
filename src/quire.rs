@@ -58,6 +58,21 @@ impl Repo {
     /// Returns an error when the config file exists but contains
     /// malformed Fennel — source labels point at the right line.
     pub fn config(&self) -> crate::Result<RepoConfig> {
+        // Check whether HEAD exists first — exit code distinguishes this
+        // reliably without parsing stderr text.
+        let has_head = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&self.path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(crate::Error::Io)?
+            .success();
+
+        if !has_head {
+            return Ok(RepoConfig::default());
+        }
+
         let output = std::process::Command::new("git")
             .args(["show", "HEAD:.quire/config.fnl"])
             .current_dir(&self.path)
@@ -65,15 +80,8 @@ impl Repo {
             .map_err(crate::Error::Io)?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // HEAD missing (fresh repo) or file absent — both mean "no config".
-            if stderr.contains("invalid object name") || stderr.contains("does not exist") {
-                return Ok(RepoConfig::default());
-            }
-            // Unexpected git error.
-            return Err(crate::Error::Git(format!(
-                "failed to read HEAD:.quire/config.fnl: {stderr}"
-            )));
+            // HEAD exists but the file doesn't — not an error.
+            return Ok(RepoConfig::default());
         }
 
         let source = String::from_utf8(output.stdout).map_err(|e| {
