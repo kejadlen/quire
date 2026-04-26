@@ -4,7 +4,6 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
-use quire::Config;
 use quire::Quire;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -89,7 +88,7 @@ async fn main() -> Result<()> {
         return Ok(());
     };
 
-    let quire = Quire::new(Config::default());
+    let quire = Quire::default();
 
     match command {
         Commands::Serve => commands::serve::run(&quire).await?,

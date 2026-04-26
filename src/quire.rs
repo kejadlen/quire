@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use miette::{IntoDiagnostic, Result, ensure};
 
-use crate::config::Config;
-
 /// A resolved repository path.
 ///
 /// Created by `Quire::repo` after validating the name.
@@ -24,18 +22,28 @@ impl Repo {
 /// Application runtime context.
 ///
 /// Carries configuration and provides resolved paths to repositories.
-/// Commands receive a `&Quire` instead of threading `&Config` around.
+/// Commands receive a `&Quire` instead of threading config around.
 pub struct Quire {
-    config: Config,
+    repos_dir: PathBuf,
+    config_path: PathBuf,
+}
+
+impl Default for Quire {
+    fn default() -> Self {
+        Self {
+            repos_dir: PathBuf::from("/var/quire/repos"),
+            config_path: PathBuf::from("/var/quire/config.fnl"),
+        }
+    }
 }
 
 impl Quire {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn repos_dir(&self) -> &Path {
+        &self.repos_dir
     }
 
-    pub fn repos_dir(&self) -> &Path {
-        &self.config.repos_dir
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Validate a repository name and return its resolved path.
@@ -45,13 +53,13 @@ impl Quire {
     pub fn repo(&self, name: &str) -> Result<Repo> {
         validate_repo_name(name)?;
         Ok(Repo {
-            path: self.config.repos_dir.join(name),
+            path: self.repos_dir.join(name),
         })
     }
 
     /// List all repository names under the repos directory.
     pub fn repos(&self) -> Result<impl Iterator<Item = String> + '_> {
-        let entries = fs_err::read_dir(&self.config.repos_dir).into_diagnostic()?;
+        let entries = fs_err::read_dir(&self.repos_dir).into_diagnostic()?;
 
         let mut repos: Vec<String> = Vec::new();
         for entry in entries {
@@ -62,7 +70,7 @@ impl Quire {
                 continue;
             }
 
-            let Ok(relative) = path.strip_prefix(&self.config.repos_dir) else {
+            let Ok(relative) = path.strip_prefix(&self.repos_dir) else {
                 continue;
             };
             let name = relative.to_string_lossy();
@@ -129,7 +137,14 @@ mod tests {
     use super::*;
 
     fn quire() -> Quire {
-        Quire::new(Config::default())
+        Quire::default()
+    }
+
+    #[test]
+    fn default_paths() {
+        let q = Quire::default();
+        assert_eq!(q.repos_dir(), Path::new("/var/quire/repos"));
+        assert_eq!(q.config_path(), Path::new("/var/quire/config.fnl"));
     }
 
     #[test]
