@@ -23,7 +23,6 @@ pub struct GithubConfig {
 /// Loaded from `HEAD:.quire/config.fnl` in the bare repo via `git show`.
 #[derive(serde::Deserialize, Debug, Default, PartialEq)]
 pub struct RepoConfig {
-    #[serde(default)]
     pub mirror: Option<MirrorConfig>,
 }
 
@@ -48,6 +47,16 @@ impl Repo {
         self.path.is_dir()
     }
 
+    /// Start a git command rooted in this bare repo.
+    ///
+    /// Returns a `Command` with `current_dir` set. The caller decides
+    /// `.status()`, `.output()`, or anything else.
+    fn git(&self, args: &[&str]) -> std::process::Command {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(args).current_dir(&self.path);
+        cmd
+    }
+
     /// Load per-repo config from `HEAD:.quire/config.fnl`.
     ///
     /// Returns a default (empty) `RepoConfig` when:
@@ -60,9 +69,8 @@ impl Repo {
     pub fn config(&self) -> crate::Result<RepoConfig> {
         // Check whether HEAD exists first — exit code distinguishes this
         // reliably without parsing stderr text.
-        let has_head = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", "HEAD"])
-            .current_dir(&self.path)
+        let has_head = self
+            .git(&["rev-parse", "--verify", "HEAD"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -73,9 +81,8 @@ impl Repo {
             return Ok(RepoConfig::default());
         }
 
-        let output = std::process::Command::new("git")
-            .args(["show", "HEAD:.quire/config.fnl"])
-            .current_dir(&self.path)
+        let output = self
+            .git(&["show", "HEAD:.quire/config.fnl"])
             .output()
             .map_err(crate::Error::Io)?;
 
@@ -128,9 +135,6 @@ impl Quire {
     /// Load and parse the global Fennel config file.
     ///
     /// Caches the result — subsequent calls return the same instance.
-    /// Returns a typed error if the file is missing or malformed.
-    /// Load and parse the global Fennel config file.
-    ///
     /// Returns a typed error if the file is missing or malformed.
     pub fn global_config(&self) -> crate::Result<GlobalConfig> {
         let config_path = self.config_path();
