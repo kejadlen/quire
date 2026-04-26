@@ -5,6 +5,7 @@ use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
 use quire::Quire;
+use sentry::ClientInitGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
@@ -69,9 +70,46 @@ enum RepoCommands {
     },
 }
 
+/// Initialize Sentry if the global config provides a DSN.
+///
+/// Returns the guard if initialized, or None if Sentry is not configured.
+/// Logs a warning on failure but does not abort.
+fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
+    let config = match quire.global_config() {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(%e, "failed to load global config, skipping Sentry init");
+            return None;
+        }
+    };
+
+    let sentry_config = config.sentry.as_ref()?;
+    let dsn = match sentry_config.dsn.reveal() {
+        Ok(dsn) => dsn,
+        Err(e) => {
+            tracing::warn!(%e, "failed to resolve Sentry DSN, skipping Sentry init");
+            return None;
+        }
+    };
+
+    let guard = sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: Some(VERSION.into()),
+            ..Default::default()
+        },
+    ));
+
+    Some(guard)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let quire = Quire::default();
+    let _sentry = init_sentry(&quire);
+
     tracing_subscriber::registry()
+        .with(sentry_tracing::layer())
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
         .init();
@@ -87,8 +125,6 @@ async fn main() -> Result<()> {
         Cli::command().print_help().into_diagnostic()?;
         return Ok(());
     };
-
-    let quire = Quire::default();
 
     match command {
         Commands::Serve => commands::serve::run(&quire).await?,

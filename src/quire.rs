@@ -11,11 +11,18 @@ use crate::secret::SecretString;
 #[derive(serde::Deserialize, Debug)]
 pub struct GlobalConfig {
     pub github: GithubConfig,
+    #[serde(default)]
+    pub sentry: Option<SentryConfig>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 pub struct GithubConfig {
     pub token: SecretString,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct SentryConfig {
+    pub dsn: SecretString,
 }
 
 /// Per-repo configuration parsed from `.quire/config.fnl`.
@@ -514,5 +521,37 @@ mod tests {
             matches!(err, crate::Error::ConfigNotFound(_)),
             "expected ConfigNotFound, got {err:?}"
         );
+    }
+
+    #[test]
+    fn global_config_loads_with_sentry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(
+            &config_path,
+            r#"{:github {:token "ghp_test"} :sentry {:dsn "https://key@sentry.io/123"}}"#,
+        )
+        .expect("write");
+
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let config = q.global_config().expect("global_config should load");
+        assert_eq!(config.github.token.reveal().unwrap(), "ghp_test");
+        let sentry = config.sentry.expect("sentry should be present");
+        assert_eq!(sentry.dsn.reveal().unwrap(), "https://key@sentry.io/123");
+    }
+
+    #[test]
+    fn global_config_sentry_is_optional() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(&config_path, r#"{:github {:token "ghp_test"}}"#).expect("write");
+
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let config = q.global_config().expect("global_config should load");
+        assert!(config.sentry.is_none());
     }
 }
