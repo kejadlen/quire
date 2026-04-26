@@ -204,7 +204,7 @@ Keyboard navigation in the web UI. Atom feeds for recent commits (public, subjec
 - **Web visibility: public by default, per-repo opt-outs.** Repos are public (they go to GitHub anyway); CI logs require auth. Per-repo `(private true)` and `(public_runs true)` flags cover the exceptions.
 - **Trust the proxy-injected identity header.** `Remote-User` is trusted because the reverse proxy is the only ingress. Proxy must strip any client-supplied version before injecting its own — this is the security-critical invariant.
 - **Explicit repo creation, not implicit on first push.** `ssh git@host quire new <n>`. No magic, no shims parsing first pushes.
-- **Hooks via `hook.<n>.command` config.** Git 2.36+. No shim scripts on disk; `hook.<n>.command = /usr/local/bin/quire hook <n>`. Set at creation time.
+- **Hooks via `hook.<n>.command` config.** Git 2.54+ (the version we build into the container image). No shim scripts on disk; `hook.<n>.command = /usr/local/bin/quire hook <n>`. Set at creation time.
 - **Mirror push is synchronous in post-receive.** Slow GitHub = slow push. Worth it; silent drift is the worst outcome.
 - **No reverse-direction mirroring.** quire is the source of truth; GitHub is the replica.
 - **CI pipelines are Fennel macros, not data tables.** The whole point is real code. Shared steps can be factored into `.quire/lib/*.fnl` and `require`'d.

@@ -8,7 +8,7 @@ Named after the old bookbinding term: a gathering of folded leaves, sewn togethe
 
 A Rust binary that runs in a Docker container, fronted by the host's sshd and a TLS-terminating reverse proxy. It gives you:
 
-- **Git hosting over SSH**, via the host's sshd dispatching into the container. Explicit repo creation (`ssh git@host quire new <name>`).
+- **Git hosting over SSH**, via the host's sshd dispatching into the container. Explicit repo creation (`ssh git@host quire repo new <name>`).
 - **A read-only web view** for browsing README, tree, history, blame, diffs, and refs.
 - **Automatic mirroring to GitHub** on push, when configured per-repo. Each repo carries its own deploy key — no agent socket to plumb across the host/container boundary.
 - **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Unsandboxed by default since every pipeline is code I've written; a bubblewrap-based opt-in is available for the day quire ever runs code I haven't.
@@ -45,4 +45,4 @@ Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on th
 
 ## Status
 
-Design phase. See `PLAN.md` for the build sequence and open questions.
+Early development. SSH dispatch, repo management, and Fennel config loading work; web view, CI, mirroring, and notifications are still ahead. See `PLAN.md` for the build sequence and open questions.

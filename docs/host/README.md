@@ -33,6 +33,7 @@ Reference configs for dispatching SSH connections into the quire container.
            --user "$(id -u git):$(id -g git)" \
            -e HOME=/tmp \
            -v /var/quire:/var/quire \
+           -p 127.0.0.1:3000:3000 \
            quire
 
    In a compose file, the equivalent is `user: "${QUIRE_UID}:${QUIRE_GID}"`
@@ -41,7 +42,7 @@ Reference configs for dispatching SSH connections into the quire container.
 
 5. Create a test repo inside the container:
 
-       docker exec quire-container quire new foo.git
+       docker exec quire-container quire repo new foo.git
 
 6. Test the dispatch path:
 
@@ -61,3 +62,7 @@ errors from git when the bind-mounted repo dir's host uid wouldn't
 otherwise match a container user. `HOME=/tmp` is set because the host
 uid has no `/etc/passwd` entry inside the container, and git needs a
 writable `HOME` for its config probing.
+
+The HTTP port (3000) is published to host loopback only. A reverse proxy
+on the host terminates TLS and reverse-proxies to it; nothing else
+should reach it directly.

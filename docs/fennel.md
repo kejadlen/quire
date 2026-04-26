@@ -15,9 +15,9 @@ machinery later, but its design is out of scope here.
 - **Vendored Fennel compiler** — `fennel.lua` from upstream (BSD-3,
   single Lua file). Bundled via `include_str!`, registered into the VM
   as a module at construction.
-- **`Fennel` struct** — owns the `Lua` instance and a reference to the
-  loaded `fennel` module. Constructed once per process; `load_file` and
-  `load_string` are methods.
+- **`Fennel` struct** — owns a `Lua` instance with the Fennel compiler
+  registered as a Lua global. `load_file` and `load_string` are methods
+  that look the global up on each call.
 
 ## Decisions
 
@@ -34,9 +34,10 @@ A representative per-repo config:
                  :on [:ci-failed :mirror-failed]}}
 ```
 
-One `Fennel` per process, reused across loads. Hooks load 1–2 files;
-`quire serve` loads many. Avoids re-loading the compiler on each
-call. Cheap enough that tests construct freely.
+Today each call site (`Quire::global_config`, `Repo::config`)
+constructs a fresh `Fennel`. Cheap enough at current call volume.
+Reusing a single instance across loads is a planned optimization for
+when `quire serve` lands and starts loading per-request.
 
 `load_string` is the primitive; `load_file` wraps it. Per-repo config
 comes from `git show` stdout, not a path on disk, so the string form is
@@ -47,8 +48,9 @@ Errors flow through miette. Wrap `mlua::Error` with the source name
 and any line/column info Lua surfaces. Hook log lines should point at
 the offending file and line, not just "syntax error."
 
-New top-level `src/fennel.rs`. Used by the still-to-come
-`src/config/global.rs` and `src/config/repo.rs`.
+Lives in `src/fennel.rs`. Used by `Quire::global_config` and
+`Repo::config` in `src/quire.rs`, which also define the `GlobalConfig`
+and `RepoConfig` schemas.
 
 ## Contracts
 
@@ -65,13 +67,13 @@ impl Fennel {
 Errors: file-not-found, parse error, eval error, type mismatch — all
 `miette::Result` with named source labels where Lua provides them.
 
-## Out of scope
+## Related modules
 
-- `SecretString` / `!cmd` resolution — chunk 2. Fennel produces plain
-  strings; `SecretString` is a `serde` newtype that resolves on access.
-- `git show HEAD:.quire/config.fnl` plumbing — chunk 3.
-- Any `mirror`/`notifications`/`private` schema — defined when chunks 2
-  and 3 land.
+- `src/secret.rs` — `SecretString` wraps Fennel-loaded strings that
+  resolve from a file or shell command on access.
+- `src/quire.rs` — `Repo::config` reads per-repo Fennel via `git show
+  HEAD:.quire/config.fnl`; `Quire::global_config` reads the global
+  config from disk. Both define the schema structs they parse into.
 
 ## Test plan
 
