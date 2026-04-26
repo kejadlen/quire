@@ -91,10 +91,8 @@ impl Repo {
             ))
         })?;
 
-        let fennel = Fennel::new().map_err(|e| crate::Error::Fennel(e.to_string()))?;
-        fennel
-            .load_string(&source, "HEAD:.quire/config.fnl")
-            .map_err(|e| crate::Error::Fennel(e.to_string()))
+        let fennel = Fennel::new()?;
+        Ok(fennel.load_string(&source, "HEAD:.quire/config.fnl")?)
     }
 }
 
@@ -141,10 +139,8 @@ impl Quire {
                 config_path.display().to_string(),
             ));
         }
-        let fennel = Fennel::new().map_err(|e| crate::Error::Fennel(e.to_string()))?;
-        fennel
-            .load_file(&config_path)
-            .map_err(|e| crate::Error::Fennel(e.to_string()))
+        let fennel = Fennel::new()?;
+        Ok(fennel.load_file(&config_path)?)
     }
 
     /// Validate a repository name and return its resolved path.

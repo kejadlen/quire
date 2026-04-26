@@ -12,8 +12,8 @@ pub enum Error {
     #[error("config not found: {0}")]
     ConfigNotFound(String),
 
-    #[error("fennel error: {0}")]
-    Fennel(String),
+    #[error(transparent)]
+    Fennel(#[from] crate::fennel::FennelError),
 
     #[error("git error: {0}")]
     Git(String),
