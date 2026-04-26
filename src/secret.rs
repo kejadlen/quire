@@ -12,24 +12,28 @@ use std::sync::OnceLock;
 /// from file contents (Docker secrets convention).
 ///
 /// The [`std::fmt::Debug`] impl redacts the value.
-pub struct SecretString {
-    source: SecretSource,
-    resolved: OnceLock<std::result::Result<String, String>>,
-}
-
-impl Clone for SecretString {
-    fn clone(&self) -> Self {
-        Self {
-            source: self.source.clone(),
-            resolved: OnceLock::new(),
-        }
-    }
-}
-
 #[derive(Clone)]
+pub struct SecretString(SecretSource);
+
 enum SecretSource {
     Plain(String),
-    File(PathBuf),
+    File {
+        path: PathBuf,
+        resolved: OnceLock<std::result::Result<String, String>>,
+    },
+}
+
+impl Clone for SecretSource {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Plain(s) => Self::Plain(s.clone()),
+            // File clones get a fresh OnceLock — they re-read from disk on next reveal.
+            Self::File { path, .. } => Self::File {
+                path: path.clone(),
+                resolved: OnceLock::new(),
+            },
+        }
+    }
 }
 
 impl SecretString {
@@ -39,22 +43,41 @@ impl SecretString {
     /// result. Returns a typed error if the file is missing or unreadable.
     /// Errors are also cached — subsequent calls return the same error.
     pub fn reveal(&self) -> crate::Result<&str> {
-        self.resolved
-            .get_or_init(|| match &self.source {
-                SecretSource::Plain(s) => Ok(s.clone()),
-                SecretSource::File(path) => fs_err::read_to_string(path)
-                    .map(|s| s.trim_end_matches('\n').to_string())
-                    .map_err(|e| format!("{}: {e}", path.display())),
-            })
-            .as_ref()
-            .map(|s| s.as_str())
-            .map_err(|msg| crate::Error::SecretResolve(msg.clone()))
+        match &self.0 {
+            SecretSource::Plain(s) => Ok(s.as_str()),
+            SecretSource::File { path, resolved } => resolved
+                .get_or_init(|| {
+                    fs_err::read_to_string(path)
+                        .map(|s| s.strip_suffix('\n').unwrap_or(&s).to_string())
+                        .map_err(|e| format!("{}: {e}", path.display()))
+                })
+                .as_ref()
+                .map(|s| s.as_str())
+                .map_err(|msg| crate::Error::SecretResolve(msg.clone())),
+        }
     }
 }
 
 impl std::fmt::Debug for SecretString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("SecretString").field(&"<redacted>").finish()
+    }
+}
+
+impl SecretString {
+    /// Build from a plain string literal.
+    pub fn from_plain(value: impl Into<String>) -> Self {
+        Self(SecretSource::Plain(value.into()))
+    }
+
+    /// Build from a file path. Contents are read lazily on first [`reveal`].
+    ///
+    /// [`reveal`]: SecretString::reveal
+    pub fn from_file(path: impl Into<PathBuf>) -> Self {
+        Self(SecretSource::File {
+            path: path.into(),
+            resolved: OnceLock::new(),
+        })
     }
 }
 
@@ -73,37 +96,19 @@ impl<'de> serde::Deserialize<'de> for SecretString {
         let raw = Raw::deserialize(deserializer)?;
         let source = match raw {
             Raw::Plain(s) => SecretSource::Plain(s),
-            Raw::File { file } => SecretSource::File(file),
+            Raw::File { file } => SecretSource::File {
+                path: file,
+                resolved: OnceLock::new(),
+            },
         };
 
-        Ok(Self {
-            source,
-            resolved: OnceLock::new(),
-        })
+        Ok(Self(source))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
-
-    impl SecretString {
-        fn from_plain(value: &str) -> Self {
-            Self {
-                source: SecretSource::Plain(value.to_string()),
-                resolved: OnceLock::new(),
-            }
-        }
-
-        fn from_file(path: &Path) -> Self {
-            Self {
-                source: SecretSource::File(path.to_path_buf()),
-                resolved: OnceLock::new(),
-            }
-        }
-    }
 
     #[test]
     fn debug_redacts_value() {
@@ -147,6 +152,18 @@ mod tests {
     }
 
     #[test]
+    fn reveal_strips_only_one_trailing_newline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secret");
+        // Docker secrets convention: strip exactly one trailing newline.
+        // Any additional trailing newlines are part of the secret.
+        fs_err::write(&path, "value\n\n\n").expect("write");
+
+        let secret = SecretString::from_file(&path);
+        assert_eq!(secret.reveal().unwrap(), "value\n\n");
+    }
+
+    #[test]
     fn reveal_errors_on_missing_file() {
         let secret = SecretString::from_file(PathBuf::from("/no/such/file/ever").as_path());
         let err = secret.reveal().unwrap_err();
@@ -157,17 +174,21 @@ mod tests {
     }
 
     #[test]
-    fn clone_resolves_independently() {
+    fn clone_resets_cache_and_rereads_from_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("pw");
-        fs_err::write(&path, "secret\n").expect("write");
+        fs_err::write(&path, "initial\n").expect("write");
 
         let original = SecretString::from_file(&path);
-        assert_eq!(original.reveal().unwrap(), "secret");
+        assert_eq!(original.reveal().unwrap(), "initial");
 
-        // Clone gets a fresh OnceLock — it re-reads from disk.
+        // Overwrite after the original cached "initial". The clone gets a fresh
+        // OnceLock, so it re-reads the current file contents.
+        fs_err::write(&path, "changed\n").expect("overwrite");
         let cloned = original.clone();
-        assert_eq!(cloned.reveal().unwrap(), "secret");
+        assert_eq!(cloned.reveal().unwrap(), "changed");
+        // Original's cache is untouched.
+        assert_eq!(original.reveal().unwrap(), "initial");
     }
 
     #[test]
