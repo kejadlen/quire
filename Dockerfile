@@ -6,6 +6,7 @@
 # quire binary as `quire hook <name>`.
 ARG GIT_VERSION=2.54.0
 FROM debian:trixie-slim AS git-builder
+ARG GIT_VERSION
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
