@@ -2,6 +2,22 @@ use std::path::{Path, PathBuf};
 
 use miette::{IntoDiagnostic, Result, ensure};
 
+use crate::fennel::Fennel;
+use crate::secret::SecretString;
+
+/// Parsed global configuration (`/var/quire/config.fnl`).
+///
+/// Top-level stays open for future keys (notifications defaults, SMTP, etc.).
+#[derive(serde::Deserialize, Debug)]
+pub struct GlobalConfig {
+    pub github: GithubConfig,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct GithubConfig {
+    pub token: SecretString,
+}
+
 /// A resolved repository path.
 ///
 /// Created by `Quire::repo` after validating the name.
@@ -24,26 +40,48 @@ impl Repo {
 /// Carries configuration and provides resolved paths to repositories.
 /// Commands receive a `&Quire` instead of threading config around.
 pub struct Quire {
-    repos_dir: PathBuf,
-    config_path: PathBuf,
+    base_dir: PathBuf,
 }
 
 impl Default for Quire {
     fn default() -> Self {
         Self {
-            repos_dir: PathBuf::from("/var/quire/repos"),
-            config_path: PathBuf::from("/var/quire/config.fnl"),
+            base_dir: PathBuf::from("/var/quire"),
         }
     }
 }
 
 impl Quire {
-    pub fn repos_dir(&self) -> &Path {
-        &self.repos_dir
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
     }
 
-    pub fn config_path(&self) -> &Path {
-        &self.config_path
+    pub fn repos_dir(&self) -> PathBuf {
+        self.base_dir.join("repos")
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.base_dir.join("config.fnl")
+    }
+
+    /// Load and parse the global Fennel config file.
+    ///
+    /// Caches the result — subsequent calls return the same instance.
+    /// Returns a typed error if the file is missing or malformed.
+    /// Load and parse the global Fennel config file.
+    ///
+    /// Returns a typed error if the file is missing or malformed.
+    pub fn global_config(&self) -> crate::Result<GlobalConfig> {
+        let config_path = self.config_path();
+        if !config_path.exists() {
+            return Err(crate::Error::ConfigNotFound(
+                config_path.display().to_string(),
+            ));
+        }
+        let fennel = Fennel::new().map_err(|e| crate::Error::Fennel(e.to_string()))?;
+        fennel
+            .load_file(&config_path)
+            .map_err(|e| crate::Error::Fennel(e.to_string()))
     }
 
     /// Validate a repository name and return its resolved path.
@@ -53,13 +91,14 @@ impl Quire {
     pub fn repo(&self, name: &str) -> Result<Repo> {
         validate_repo_name(name)?;
         Ok(Repo {
-            path: self.repos_dir.join(name),
+            path: self.repos_dir().join(name),
         })
     }
 
     /// List all repository names under the repos directory.
     pub fn repos(&self) -> Result<impl Iterator<Item = String> + '_> {
-        let entries = fs_err::read_dir(&self.repos_dir).into_diagnostic()?;
+        let repos_dir = self.repos_dir();
+        let entries = fs_err::read_dir(&repos_dir).into_diagnostic()?;
 
         let mut repos: Vec<String> = Vec::new();
         for entry in entries {
@@ -70,7 +109,7 @@ impl Quire {
                 continue;
             }
 
-            let Ok(relative) = path.strip_prefix(&self.repos_dir) else {
+            let Ok(relative) = path.strip_prefix(&repos_dir) else {
                 continue;
             };
             let name = relative.to_string_lossy();
@@ -143,8 +182,9 @@ mod tests {
     #[test]
     fn default_paths() {
         let q = Quire::default();
-        assert_eq!(q.repos_dir(), Path::new("/var/quire/repos"));
-        assert_eq!(q.config_path(), Path::new("/var/quire/config.fnl"));
+        assert_eq!(q.base_dir(), Path::new("/var/quire"));
+        assert_eq!(q.repos_dir(), PathBuf::from("/var/quire/repos"));
+        assert_eq!(q.config_path(), PathBuf::from("/var/quire/config.fnl"));
     }
 
     #[test]
@@ -199,5 +239,32 @@ mod tests {
     fn rejects_dot_git_segment() {
         let q = quire();
         assert!(q.repo("foo/.git").is_err());
+    }
+
+    #[test]
+    fn global_config_loads_from_fennel_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(&config_path, r#"{:github {:token "ghp_test123"}}"#).expect("write");
+
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let config = q.global_config().expect("global_config should load");
+        assert_eq!(config.github.token.reveal().unwrap(), "ghp_test123");
+    }
+
+    #[test]
+    fn global_config_missing_file_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let err = q.global_config().unwrap_err();
+        assert!(
+            matches!(err, crate::Error::ConfigNotFound(_)),
+            "expected ConfigNotFound, got {err:?}"
+        );
     }
 }
