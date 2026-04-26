@@ -18,6 +18,7 @@ RUN apt-get update \
         libssl-dev \
         libz-dev \
         make \
+        perl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.gz \
