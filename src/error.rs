@@ -14,6 +14,9 @@ pub enum Error {
 
     #[error("fennel error: {0}")]
     Fennel(String),
+
+    #[error("git error: {0}")]
+    Git(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

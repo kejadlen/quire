@@ -71,13 +71,17 @@ impl Repo {
                 return Ok(RepoConfig::default());
             }
             // Unexpected git error.
-            return Err(crate::Error::NotFound(format!(
+            return Err(crate::Error::Git(format!(
                 "failed to read HEAD:.quire/config.fnl: {stderr}"
             )));
         }
 
-        let source = String::from_utf8(output.stdout)
-            .map_err(|e| crate::Error::NotFound(format!("config is not valid UTF-8: {e}")))?;
+        let source = String::from_utf8(output.stdout).map_err(|e| {
+            crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("config is not valid UTF-8: {e}"),
+            ))
+        })?;
 
         let fennel = Fennel::new().map_err(|e| crate::Error::Fennel(e.to_string()))?;
         fennel
