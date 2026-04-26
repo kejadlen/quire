@@ -10,7 +10,7 @@ A Rust binary that runs in a Docker container, fronted by the host's sshd and a 
 
 - **Git hosting over SSH**, via the host's sshd dispatching into the container. Explicit repo creation (`ssh git@host quire repo new <name>`).
 - **A read-only web view** for browsing README, tree, history, blame, diffs, and refs.
-- **Automatic mirroring to GitHub** on push, when configured per-repo. Each repo carries its own deploy key — no agent socket to plumb across the host/container boundary.
+- **Automatic mirroring to GitHub** on push, when configured per-repo. A single GitHub PAT lives in global config and rides on the push as an `http.extraHeader` — no per-repo deploy keys, no agent socket plumbing.
 - **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Unsandboxed by default since every pipeline is code I've written; a bubblewrap-based opt-in is available for the day quire ever runs code I haven't.
 - **Email notifications** for CI failures, recoveries, and mirror-push failures. SMTP via `msmtp`; plain text; per-repo config for what to send and to whom.
 
@@ -36,9 +36,9 @@ Quire's data lives under one volume:
 
 ```
 /var/quire/
-  repos/           bare git repos; each has a .git/quire/ dir with config + mirror deploy key
+  repos/           bare git repos; per-repo config lives in-tree at .quire/config.fnl
   runs/            CI run metadata, artifacts, and logs; retention-policied
-  config.fnl       global config
+  config.fnl       global config (GitHub PAT, SMTP creds, etc.)
 ```
 
 Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `PLAN.md` for the reference layout.

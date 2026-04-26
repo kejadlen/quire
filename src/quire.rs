@@ -35,7 +35,28 @@ pub struct RepoConfig {
 
 #[derive(serde::Deserialize, Debug, PartialEq)]
 pub struct MirrorConfig {
+    #[serde(deserialize_with = "deserialize_mirror_url")]
     pub url: String,
+}
+
+/// Reject URLs with embedded user[:password]@ credentials so a misconfigured
+/// repo can't leak a token via tracing, Sentry, or git's own error output.
+/// Tokens come from global config and ride in `http.extraHeader`.
+fn deserialize_mirror_url<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let url = String::deserialize(deserializer)?;
+    if let Some((_, after_scheme)) = url.split_once("://")
+        && let Some(at) = after_scheme.find('@')
+        && !after_scheme[..at].contains('/')
+    {
+        return Err(serde::de::Error::custom(
+            "mirror URL must not embed credentials; tokens come from global config",
+        ));
+    }
+    Ok(url)
 }
 
 /// A resolved repository path.
@@ -62,6 +83,33 @@ impl Repo {
         let mut cmd = std::process::Command::new("git");
         cmd.args(args).current_dir(&self.path);
         cmd
+    }
+
+    /// Push `main` to the configured mirror, injecting the GitHub token via
+    /// `http.extraHeader` so it never appears in the URL or git's error output.
+    ///
+    /// The token is passed through `GIT_CONFIG_*` env vars on the child
+    /// process. This keeps it out of the command line (visible via `ps`),
+    /// but it remains visible in `/proc/<pid>/environ` to anything running
+    /// as the same uid for the lifetime of the push. Acceptable today
+    /// (single-user container, no CI runner yet); revisit when CI lands.
+    pub fn push_to_mirror(&self, mirror: &MirrorConfig, token: &str) -> crate::Result<()> {
+        let status = self
+            .git(&["push", "--porcelain", &mirror.url, "main"])
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+            .env(
+                "GIT_CONFIG_VALUE_0",
+                format!("Authorization: Bearer {token}"),
+            )
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map_err(crate::Error::Io)?;
+
+        if !status.success() {
+            return Err(crate::Error::Git(format!("push to {} failed", mirror.url)));
+        }
+        Ok(())
     }
 
     /// Load per-repo config from `HEAD:.quire/config.fnl`.
@@ -141,8 +189,8 @@ impl Quire {
 
     /// Load and parse the global Fennel config file.
     ///
-    /// Caches the result — subsequent calls return the same instance.
-    /// Returns a typed error if the file is missing or malformed.
+    /// Re-reads on every call. Cheap at current call volume; revisit if
+    /// `quire serve` ends up loading per-request.
     pub fn global_config(&self) -> crate::Result<GlobalConfig> {
         let config_path = self.config_path();
         if !config_path.exists() {
@@ -600,5 +648,113 @@ mod tests {
         };
         let config = q.global_config().expect("global_config should load");
         assert!(config.sentry.is_none());
+    }
+
+    /// Helper: run a git subcommand in `cwd` with hermetic env, panicking on failure.
+    fn git_in(cwd: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git command");
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed:\n{}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// Helper: create a bare repo at `bare` with `main` and one commit.
+    fn make_bare_with_main(work: &Path, bare: &Path) {
+        fs_err::create_dir_all(work).expect("mkdir work");
+        git_in(work, &["init", "-b", "main"]);
+        git_in(work, &["commit", "--allow-empty", "-m", "initial"]);
+        git_in(
+            work.parent().unwrap_or(work),
+            &[
+                "clone",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+    }
+
+    fn rev_parse(repo: &Path, rev: &str) -> String {
+        let output = std::process::Command::new("git")
+            .args(["-C", repo.to_str().unwrap(), "rev-parse", rev])
+            .output()
+            .expect("rev-parse");
+        assert!(output.status.success(), "rev-parse failed");
+        String::from_utf8(output.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn push_to_mirror_pushes_main_to_file_mirror() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let source = dir.path().join("source.git");
+        let target = dir.path().join("target.git");
+
+        make_bare_with_main(&work, &source);
+        fs_err::create_dir_all(&target).expect("mkdir target");
+        git_in(&target, &["init", "--bare", "-b", "main"]);
+
+        let repo = Repo {
+            path: source.clone(),
+        };
+        let mirror = MirrorConfig {
+            url: format!("file://{}", target.display()),
+        };
+        repo.push_to_mirror(&mirror, "ignored-for-file-url")
+            .expect("push should succeed");
+
+        assert_eq!(rev_parse(&source, "main"), rev_parse(&target, "main"));
+    }
+
+    #[test]
+    fn push_to_mirror_errors_when_target_unreachable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let source = dir.path().join("source.git");
+
+        make_bare_with_main(&work, &source);
+
+        let repo = Repo { path: source };
+        let mirror = MirrorConfig {
+            url: "file:///nonexistent/quire-test/target.git".to_string(),
+        };
+        let err = repo.push_to_mirror(&mirror, "x").unwrap_err();
+        assert!(
+            matches!(err, crate::Error::Git(_)),
+            "expected Git error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn mirror_url_rejects_embedded_credentials() {
+        let dir = bare_repo_with_config(
+            r#"{:mirror {:url "https://x:token@github.com/owner/repo.git"}}"#,
+        );
+        let bare = dir.path().join("repos").join("test.git");
+        let repo = Repo { path: bare };
+
+        let err = repo.config().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("credentials"),
+            "expected credential error, got: {msg}"
+        );
     }
 }
