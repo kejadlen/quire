@@ -38,10 +38,10 @@ Quire's data lives under one volume:
 /var/quire/
   repos/           bare git repos; per-repo config lives in-tree at .quire/config.fnl
   runs/            CI run metadata, artifacts, and logs; retention-policied
-  config.fnl       global config (GitHub PAT, SMTP creds, etc.)
+  config.fnl       global config; see docs/config.md for the schema
 ```
 
-Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `PLAN.md` for the reference layout.
+Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `PLAN.md` for the reference layout, `docs/config.md` for the global and per-repo Fennel schemas.
 
 ## Status
 
