@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use miette::{Result, SourceOffset};
+use miette::{Diagnostic, Result, SourceOffset};
 use mlua::{Lua, LuaSerdeExt};
 
 const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
 
 /// Error kinds from the Fennel loader.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum FennelError {
     #[error("file not found: {0}")]
     FileNotFound(String),

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use miette::{IntoDiagnostic, Result, ensure};
+use miette::{IntoDiagnostic, Result, ensure, miette};
 
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
@@ -219,9 +219,9 @@ impl Quire {
     /// `.git` suffix. Used by hooks that receive `GIT_DIR` from git.
     pub fn repo_from_path(&self, path: &Path) -> Result<Repo> {
         let resolved = self.repos_dir();
-        let relative = path.strip_prefix(&resolved).map_err(|_| {
-            miette::miette!("path is not under repos directory: {}", path.display())
-        })?;
+        let relative = path
+            .strip_prefix(&resolved)
+            .map_err(|_| miette!("path is not under repos directory: {}", path.display()))?;
         let name = relative.to_string_lossy();
         validate_repo_name(&name)?;
         Ok(Repo {

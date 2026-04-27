@@ -1,4 +1,6 @@
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+use miette::Diagnostic;
+
+#[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
     #[error("not found: {0}")]
     NotFound(String),
