@@ -93,7 +93,12 @@ impl Repo {
     /// but it remains visible in `/proc/<pid>/environ` to anything running
     /// as the same uid for the lifetime of the push. Acceptable today
     /// (single-user container, no CI runner yet); revisit when CI lands.
-    pub fn push_to_mirror(&self, mirror: &MirrorConfig, token: &str, refs: &[&str]) -> crate::Result<()> {
+    pub fn push_to_mirror(
+        &self,
+        mirror: &MirrorConfig,
+        token: &str,
+        refs: &[&str],
+    ) -> crate::Result<()> {
         let mut args = vec!["push", "--porcelain", &mirror.url];
         args.extend(refs);
 

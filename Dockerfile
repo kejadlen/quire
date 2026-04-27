@@ -71,7 +71,10 @@ COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core
 COPY --from=builder /build/quire /usr/local/bin/quire
 
 # Configure git hooks globally so all repos inherit the post-receive dispatch.
-RUN git config --system hook.postReceive.command "quire hook post-receive"
+# `hook.<label>` is an arbitrary identifier; the hook is bound to an event
+# via `event` and run via `command`.
+RUN git config --system hook.quire.event "post-receive" \
+ && git config --system hook.quire.command "quire hook post-receive"
 
 # Volume layout per PLAN.md. Ownership is set on the host; the container
 # runs as the host uid/gid passed via `docker exec --user`, so no user
