@@ -48,7 +48,13 @@ fn dispatch_git(quire: &Quire, git_cmd: &str, args: &[String]) -> Result<()> {
     ensure!(repo.exists(), "repository not found: {path}");
 
     tracing::info!(%git_cmd, %path, "dispatching git command");
-    let err = Command::new(git_cmd)
+    // Use `git <subcommand>` instead of `git-<subcommand>` so the git
+    // binary handles dispatch to libexec/git-core/ internally.
+    let subcommand = git_cmd
+        .strip_prefix("git-")
+        .ok_or_else(|| miette::miette!("unexpected git command: {git_cmd}"))?;
+    let err = Command::new("git")
+        .arg(subcommand)
         .arg(".")
         .current_dir(repo.path())
         .exec();
