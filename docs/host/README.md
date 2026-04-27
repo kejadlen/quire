@@ -33,7 +33,7 @@ Reference configs for dispatching SSH connections into the quire container.
            --user "$(id -u git):$(id -g git)" \
            -e HOME=/tmp \
            -v /var/quire:/var/quire \
-           -p 127.0.0.1:3000:3000 \
+           -p 127.0.0.1:8080:8080 \
            quire
 
    In a compose file, the equivalent is `user: "${QUIRE_UID}:${QUIRE_GID}"`
@@ -63,6 +63,9 @@ otherwise match a container user. `HOME=/tmp` is set because the host
 uid has no `/etc/passwd` entry inside the container, and git needs a
 writable `HOME` for its config probing.
 
-The HTTP port (3000) is published to host loopback only. A reverse proxy
+The HTTP port (8080) is published to host loopback only. A reverse proxy
 on the host terminates TLS and reverse-proxies to it; nothing else
 should reach it directly.
+
+Currently the container runs lighttpd + gitweb as an interim web view.
+This will be replaced by `quire serve` once the built-in web view is ready.

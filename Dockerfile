@@ -26,7 +26,10 @@ RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.
     | tar xz \
     && cd git-${GIT_VERSION} \
     && make -j$(nproc) prefix=/usr/local NO_TCLTK=1 NO_GETTEXT= \
-    && make prefix=/usr/local install
+    && make prefix=/usr/local install \
+    && make -j$(nproc) prefix=/usr/local NO_TCLTK=1 NO_GETTEXT= gitweb \
+    && make prefix=/usr/local install-gitweb
+# TODO(vys): remove gitweb build when quire serve has its own web view
 
 # Cargo-chef stage for dependency caching.
 FROM rust:1.88-trixie AS chef
@@ -64,10 +67,16 @@ RUN apt-get update \
         ca-certificates \
         libcurl4 \
         libexpat1 \
+        lighttpd \
+        perl \
     && rm -rf /var/lib/apt/lists/*
+# TODO(vys): lighttpd and perl are interim deps for gitweb; remove both
+# when quire serve has its own web view.
 
 COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
 COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
+COPY --from=git-builder /usr/local/share/gitweb/ /usr/local/share/gitweb/
+# TODO(vys): remove the gitweb COPY above with gitweb
 COPY --from=builder /build/quire /usr/local/bin/quire
 
 # Configure git hooks globally so all repos inherit the post-receive dispatch.
@@ -83,5 +92,10 @@ RUN mkdir -p /var/quire/repos /var/quire/runs
 
 WORKDIR /var/quire
 
-ENTRYPOINT ["quire"]
-CMD ["serve"]
+# TODO(vys): everything below is interim gitweb scaffolding — remove when
+# quire serve has its own web view. Restore ENTRYPOINT ["quire"] / CMD ["serve"].
+COPY conf/gitweb.conf /etc/gitweb.conf
+COPY conf/lighttpd.conf /etc/lighttpd/lighttpd.conf
+
+EXPOSE 8080
+ENTRYPOINT ["lighttpd", "-D", "-f", "/etc/lighttpd/lighttpd.conf"]
