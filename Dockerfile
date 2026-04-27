@@ -28,14 +28,33 @@ RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.
     && make -j$(nproc) prefix=/usr/local NO_TCLTK=1 NO_GETTEXT= \
     && make prefix=/usr/local install
 
-# Quire build stage.
-FROM rust:1.88-trixie AS builder
-
-WORKDIR /usr/src/quire
-COPY . .
+# Cargo-chef stage for dependency caching.
+FROM rust:1.88-trixie AS chef
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/quire/target \
-    cargo install --path .
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    cargo install --locked cargo-chef
+WORKDIR /build
+
+# Plan stage: inspect source and produce a recipe of dependencies.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Build stage: cook dependencies first (cached across rebuilds), then build
+# the binary. Changes to source code do not retrigger dependency compilation.
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json
+COPY . .
+# Copy the binary out of the cache mount so it survives into the runtime stage.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --bin quire && \
+    cp target/release/quire /build/quire
 
 # Runtime stage.
 FROM debian:trixie-slim
@@ -49,7 +68,7 @@ RUN apt-get update \
 
 COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
 COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
-COPY --from=builder /usr/local/cargo/bin/quire /usr/local/bin/quire
+COPY --from=builder /build/quire /usr/local/bin/quire
 
 # Configure git hooks globally so all repos inherit the post-receive dispatch.
 RUN git config --system hook.postReceive.command "quire hook post-receive"
