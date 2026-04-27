@@ -1,7 +1,6 @@
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
 
-use miette::{Context, Result, bail, ensure, miette};
+use miette::{Context, IntoDiagnostic, Result, bail, ensure, miette};
 use quire::Quire;
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -32,10 +31,17 @@ fn post_receive(quire: &Quire) -> Result<()> {
         bail!("quire hook is for git to invoke, not for direct CLI use");
     }
 
-    // GIT_DIR is set by git when running hooks in bare repos.
+    // GIT_DIR is set by git when running hooks in bare repos. When hooks
+    // are invoked via hook.<name>.command, GIT_DIR may be relative (e.g.
+    // "."), so canonicalize before resolving.
     let git_dir = std::env::var("GIT_DIR")
-        .map(PathBuf::from)
-        .map_err(|e| miette!("GIT_DIR not set — hook must run inside a bare repo: {e}"))?;
+        .map_err(|e| miette!("GIT_DIR not set — hook must run inside a bare repo: {e}"))
+        .and_then(|git_dir| {
+            std::path::Path::new(&git_dir)
+                .canonicalize()
+                .into_diagnostic()
+        })
+        .map_err(|e| miette!("failed to resolve GIT_DIR: {e}"))?;
 
     let repo = quire
         .repo_from_path(&git_dir)
