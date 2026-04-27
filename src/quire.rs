@@ -67,6 +67,59 @@ pub struct Repo {
 }
 
 impl Repo {
+    /// Validate a repository name and create a `Repo` at the given path.
+    ///
+    /// Allows at most one level of grouping (e.g. `foo.git` or `work/foo.git`).
+    /// Rejects path traversal, missing `.git` suffix, empty segments, and
+    /// reserved path components.
+    pub fn new(base: &Path, name: &str) -> Result<Self> {
+        Self::validate_name(name)?;
+        Ok(Self {
+            path: base.join(name),
+        })
+    }
+
+    /// Create a `Repo` from an already-resolved filesystem path.
+    ///
+    /// Verifies the path falls under `base` and passes name validation.
+    /// Used by hooks that receive `GIT_DIR` from git.
+    pub fn from_path(base: &Path, path: &Path) -> Result<Self> {
+        let relative = path
+            .strip_prefix(base)
+            .map_err(|_| miette!("path is not under repos directory: {}", path.display()))?;
+        let name = relative.to_string_lossy();
+        Self::validate_name(&name)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn validate_name(name: &str) -> Result<()> {
+        ensure!(!name.is_empty(), "repository name cannot be empty");
+        ensure!(!name.contains(".."), "invalid repository name: {name}");
+        ensure!(
+            name.ends_with(".git"),
+            "repository name must end in .git: {name}"
+        );
+        ensure!(!name.contains("//"), "invalid repository name: {name}");
+
+        let segments = name.split('/').collect::<Vec<_>>();
+        ensure!(
+            segments.len() <= 2,
+            "repository name allows at most one level of grouping: {name}"
+        );
+
+        for seg in &segments {
+            ensure!(!seg.is_empty(), "invalid repository name: {name}");
+            ensure!(
+                *seg != "." && *seg != ".." && *seg != ".git",
+                "invalid repository name: {name}"
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -212,29 +265,16 @@ impl Quire {
 
     /// Validate a repository name and return its resolved path.
     ///
-    /// Rejects path traversal, missing `.git` suffix, empty segments,
-    /// reserved path components, and more than one level of grouping.
+    /// Delegates to `Repo::new` for name validation.
     pub fn repo(&self, name: &str) -> Result<Repo> {
-        validate_repo_name(name)?;
-        Ok(Repo {
-            path: self.repos_dir().join(name),
-        })
+        Repo::new(&self.repos_dir(), name)
     }
 
     /// Resolve a filesystem path to a `Repo`.
     ///
-    /// Verifies the path falls under the repos directory and has a
-    /// `.git` suffix. Used by hooks that receive `GIT_DIR` from git.
+    /// Delegates to `Repo::from_path` for path and name validation.
     pub fn repo_from_path(&self, path: &Path) -> Result<Repo> {
-        let resolved = self.repos_dir();
-        let relative = path
-            .strip_prefix(&resolved)
-            .map_err(|_| miette!("path is not under repos directory: {}", path.display()))?;
-        let name = relative.to_string_lossy();
-        validate_repo_name(&name)?;
-        Ok(Repo {
-            path: path.to_path_buf(),
-        })
+        Repo::from_path(&self.repos_dir(), path)
     }
 
     /// List all repository names under the repos directory.
@@ -280,37 +320,6 @@ impl Quire {
         repos.sort();
         Ok(repos.into_iter())
     }
-}
-
-/// Validate a repository name.
-///
-/// Allows at most one level of grouping (e.g. `foo.git` or `work/foo.git`).
-/// Rejects path traversal, missing `.git` suffix, empty segments, and
-/// reserved path components.
-fn validate_repo_name(name: &str) -> Result<()> {
-    ensure!(!name.is_empty(), "repository name cannot be empty");
-    ensure!(!name.contains(".."), "invalid repository name: {name}");
-    ensure!(
-        name.ends_with(".git"),
-        "repository name must end in .git: {name}"
-    );
-    ensure!(!name.contains("//"), "invalid repository name: {name}");
-
-    let segments = name.split('/').collect::<Vec<_>>();
-    ensure!(
-        segments.len() <= 2,
-        "repository name allows at most one level of grouping: {name}"
-    );
-
-    for seg in &segments {
-        ensure!(!seg.is_empty(), "invalid repository name: {name}");
-        ensure!(
-            *seg != "." && *seg != ".." && *seg != ".git",
-            "invalid repository name: {name}"
-        );
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
