@@ -58,8 +58,31 @@ fn post_receive(quire: &Quire) -> Result<()> {
         .reveal()
         .context("failed to resolve GitHub token")?;
 
-    tracing::info!(url = %mirror.url, "pushing to mirror");
-    repo.push_to_mirror(&mirror, token)?;
+    // Parse pushed refs from stdin. Each line is:
+    //   <old-sha> <new-sha> <refname>
+    // Only push refs that were actually updated (new sha is not all zeros).
+    let stdin = io::stdin();
+    let mut refs: Vec<String> = Vec::new();
+    for line in stdin.lines() {
+        let line = line.map_err(|e| miette!("failed to read hook stdin: {e}"))?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 3 {
+            continue;
+        }
+        let new_sha = parts[1];
+        if new_sha == "0000000000000000000000000000000000000000" {
+            continue;
+        }
+        refs.push(parts[2].to_string());
+    }
+
+    if refs.is_empty() {
+        return Ok(());
+    }
+
+    let ref_slices: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+    tracing::info!(url = %mirror.url, refs = ?ref_slices, "pushing to mirror");
+    repo.push_to_mirror(&mirror, token, &ref_slices)?;
     tracing::info!(url = %mirror.url, "mirror push complete");
     Ok(())
 }

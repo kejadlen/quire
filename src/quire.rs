@@ -93,9 +93,12 @@ impl Repo {
     /// but it remains visible in `/proc/<pid>/environ` to anything running
     /// as the same uid for the lifetime of the push. Acceptable today
     /// (single-user container, no CI runner yet); revisit when CI lands.
-    pub fn push_to_mirror(&self, mirror: &MirrorConfig, token: &str) -> crate::Result<()> {
+    pub fn push_to_mirror(&self, mirror: &MirrorConfig, token: &str, refs: &[&str]) -> crate::Result<()> {
+        let mut args = vec!["push", "--porcelain", &mirror.url];
+        args.extend(refs);
+
         let status = self
-            .git(&["push", "--porcelain", &mirror.url, "main"])
+            .git(&args)
             .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "http.extraHeader")
             .env(
@@ -717,7 +720,7 @@ mod tests {
         let mirror = MirrorConfig {
             url: format!("file://{}", target.display()),
         };
-        repo.push_to_mirror(&mirror, "ignored-for-file-url")
+        repo.push_to_mirror(&mirror, "ignored-for-file-url", &["main"])
             .expect("push should succeed");
 
         assert_eq!(rev_parse(&source, "main"), rev_parse(&target, "main"));
@@ -735,7 +738,7 @@ mod tests {
         let mirror = MirrorConfig {
             url: "file:///nonexistent/quire-test/target.git".to_string(),
         };
-        let err = repo.push_to_mirror(&mirror, "x").unwrap_err();
+        let err = repo.push_to_mirror(&mirror, "x", &["main"]).unwrap_err();
         assert!(
             matches!(err, crate::Error::Git(_)),
             "expected Git error, got {err:?}"
