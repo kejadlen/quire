@@ -65,14 +65,15 @@ FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        highlight \
         libcgi-pm-perl \
         libcurl4 \
         libexpat1 \
         lighttpd \
         perl \
     && rm -rf /var/lib/apt/lists/*
-# TODO(vys): lighttpd, perl, and libcgi-pm-perl are interim deps for gitweb;
-# remove all three when quire serve has its own web view.
+# TODO(vys): highlight, lighttpd, libcgi-pm-perl, and perl are interim deps
+# for gitweb; remove all four when quire serve has its own web view.
 
 COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
 COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
