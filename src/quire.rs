@@ -387,7 +387,7 @@ mod tests {
             output
         };
 
-        git(&["init", "--bare"]);
+        git(&["init", "--bare", "-b", "main"]);
 
         let repo = Repo { path: bare };
 

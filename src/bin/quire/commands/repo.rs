@@ -14,7 +14,7 @@ pub async fn new(quire: &Quire, name: &str) -> Result<()> {
     }
 
     let status = Command::new("git")
-        .args(["init", "--bare", name])
+        .args(["init", "--bare", "--initial-branch=main", name])
         .current_dir(quire.repos_dir())
         .status()
         .into_diagnostic()?;
