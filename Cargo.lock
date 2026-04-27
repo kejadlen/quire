@@ -1855,6 +1855,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "axum",
+ "base64",
  "clap",
  "clap_complete",
  "fs-err",

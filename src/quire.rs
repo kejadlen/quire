@@ -159,10 +159,7 @@ impl Repo {
             .git(&args)
             .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-            .env(
-                "GIT_CONFIG_VALUE_0",
-                format!("Authorization: Bearer {token}"),
-            )
+            .env("GIT_CONFIG_VALUE_0", github_auth_header(token))
             .stdout(std::process::Stdio::null())
             .status()
             .map_err(crate::Error::Io)?;
@@ -217,6 +214,21 @@ impl Repo {
         let fennel = Fennel::new()?;
         Ok(fennel.load_string(&source, "HEAD:.quire/config.fnl")?)
     }
+}
+
+/// Build the `Authorization` header value used to authenticate `git push`
+/// to GitHub over HTTPS.
+///
+/// GitHub's git smart HTTP endpoint (`/info/refs`, `git-receive-pack`)
+/// rejects `Authorization: Bearer <PAT>` with 401, even though the REST
+/// API accepts the same token via Bearer. Git then falls back to
+/// prompting for a username, which fails inside a post-receive hook
+/// because there's no TTY. HTTP Basic with any non-empty username and
+/// the token as the password is the documented form for git push.
+fn github_auth_header(token: &str) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let encoded = STANDARD.encode(format!("x-access-token:{token}"));
+    format!("Authorization: Basic {encoded}")
 }
 
 /// Application runtime context.
@@ -715,6 +727,24 @@ mod tests {
             .expect("utf-8")
             .trim()
             .to_string()
+    }
+
+    #[test]
+    fn github_auth_header_is_basic_with_x_access_token_username() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let header = super::github_auth_header("ghp_test");
+        let encoded = header
+            .strip_prefix("Authorization: Basic ")
+            .unwrap_or_else(|| panic!("missing Basic prefix: {header}"));
+        // libcurl rejects header values containing newlines, so the encoded
+        // form must not wrap.
+        assert!(
+            !encoded.contains('\n'),
+            "encoded header value must not wrap: {encoded:?}"
+        );
+        let decoded = STANDARD.decode(encoded).expect("valid base64");
+        assert_eq!(decoded, b"x-access-token:ghp_test");
     }
 
     #[test]

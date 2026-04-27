@@ -9,6 +9,7 @@ path = "src/bin/quire/main.rs"
 
 [dependencies]
 axum = "*"
+base64 = "*"
 mlua = { version = "*", features = ["lua54", "serde", "vendored"] }
 regex = "*"
 serde = { version = "*", features = ["derive"] }
