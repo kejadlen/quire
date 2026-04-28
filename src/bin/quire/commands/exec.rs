@@ -1,7 +1,7 @@
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use miette::{Context, IntoDiagnostic, Result, bail, ensure, miette};
+use miette::{Context, IntoDiagnostic, Result, bail, ensure};
 
 use quire::Quire;
 
@@ -50,9 +50,9 @@ fn dispatch_git(quire: &Quire, git_cmd: &str, args: &[String]) -> Result<()> {
     tracing::info!(%git_cmd, %path, "dispatching git command");
     // Use `git <subcommand>` instead of `git-<subcommand>` so the git
     // binary handles dispatch to libexec/git-core/ internally.
-    let subcommand = git_cmd
-        .strip_prefix("git-")
-        .ok_or_else(|| miette!("unexpected git command: {git_cmd}"))?;
+    let Some(subcommand) = git_cmd.strip_prefix("git-") else {
+        bail!("unexpected git command: {git_cmd}");
+    };
     let err = Command::new("git")
         .arg(subcommand)
         .arg(".")
