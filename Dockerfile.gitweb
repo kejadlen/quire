@@ -1,0 +1,56 @@
+# Gitweb image — interim web view until quire serve has its own.
+#
+# Build with: docker build -f Dockerfile.gitweb -t quire-gitweb .
+#
+# This image only contains gitweb + lighttpd. It mounts the same
+# /var/quire/repos volume as the main quire container (read-only is
+# sufficient) and serves gitweb on port 8080.
+
+ARG GIT_VERSION=2.54.0
+FROM debian:trixie-slim AS git-builder
+ARG GIT_VERSION
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gcc \
+        gettext \
+        libcurl4-openssl-dev \
+        libexpat1-dev \
+        libssl-dev \
+        libz-dev \
+        make \
+        perl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.gz \
+    | tar xz \
+    && cd git-${GIT_VERSION} \
+    && make -j$(nproc) prefix=/usr/local NO_TCLTK=1 NO_GETTEXT= \
+    && make prefix=/usr/local install \
+    && make -j$(nproc) prefix=/usr/local NO_TCLTK=1 NO_GETTEXT= gitweb \
+    && make prefix=/usr/local install-gitweb
+
+FROM debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        highlight \
+        libcgi-pm-perl \
+        libcurl4 \
+        libexpat1 \
+        lighttpd \
+        perl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
+COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
+COPY --from=git-builder /usr/local/share/gitweb/ /usr/local/share/gitweb/
+
+COPY conf/gitweb.conf /etc/gitweb.conf
+COPY conf/lighttpd.conf /etc/lighttpd/lighttpd.conf
+
+EXPOSE 8080
+ENTRYPOINT ["lighttpd", "-D", "-f", "/etc/lighttpd/lighttpd.conf"]
