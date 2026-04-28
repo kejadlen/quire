@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use mlua::Lua;
+
 use crate::Result;
 
 /// The state of a CI run.
@@ -298,7 +300,219 @@ pub struct OrphanedRun {
     pub state: RunStateFile,
 }
 
-/// Write a value to a YAML file atomically.
+/// A registered job definition extracted from ci.fnl.
+pub struct JobDef {
+    pub id: String,
+    pub inputs: Vec<String>,
+}
+
+/// The result of evaluating a ci.fnl file.
+pub struct EvalResult {
+    pub jobs: Vec<JobDef>,
+}
+
+/// Evaluate a ci.fnl source string, registering jobs via the `job` macro.
+///
+/// Creates a fresh Lua VM with Fennel loaded, injects a `job` global
+/// that accumulates into a registration table, evaluates the source,
+/// and extracts the registered jobs.
+pub fn eval_ci(
+    _fennel: &crate::fennel::Fennel,
+    source: &str,
+    name: &str,
+) -> crate::Result<EvalResult> {
+    fn lua_err(e: mlua::Error) -> crate::Error {
+        crate::Error::Lua(e.to_string())
+    }
+
+    // Create a fresh VM with Fennel loaded.
+    let lua = unsafe { Lua::unsafe_new() };
+    let fennel_lua: &str = include_str!("../vendor/fennel.lua");
+    let fennel_module: mlua::Table = lua
+        .load(fennel_lua)
+        .set_name("fennel.lua")
+        .eval()
+        .map_err(lua_err)?;
+    lua.globals()
+        .set("fennel", fennel_module)
+        .map_err(lua_err)?;
+
+    // Create a registration table. `job` will push into this.
+    let registry: mlua::Table = lua.create_table().map_err(lua_err)?;
+    lua.globals()
+        .set("_quire_jobs", registry)
+        .map_err(lua_err)?;
+
+    // Define the `job` global: (job id inputs run-fn)
+    let job_fn = lua
+        .create_function(
+            |lua, (id, inputs, run_fn): (mlua::String, mlua::Table, mlua::Function)| {
+                let registry: mlua::Table = lua.globals().get("_quire_jobs")?;
+                let entry = lua.create_table()?;
+                entry.set("id", id)?;
+                entry.set("inputs", inputs)?;
+                entry.set("run", run_fn)?;
+                registry.push(entry)?;
+                Ok(())
+            },
+        )
+        .map_err(lua_err)?;
+    lua.globals().set("job", job_fn).map_err(lua_err)?;
+
+    // Eval the ci.fnl source via Fennel.
+    let fennel: mlua::Table = lua.globals().get("fennel").map_err(lua_err)?;
+    let eval: mlua::Function = fennel.get("eval").map_err(lua_err)?;
+    let opts = lua.create_table().map_err(lua_err)?;
+    opts.set("filename", name).map_err(lua_err)?;
+    eval.call::<mlua::MultiValue>((source, opts))
+        .map_err(lua_err)?;
+
+    // Extract the registration table.
+    let registry: mlua::Table = lua.globals().get("_quire_jobs").map_err(lua_err)?;
+    let mut jobs = Vec::new();
+    for entry in registry.sequence_values::<mlua::Table>() {
+        let entry = entry.map_err(lua_err)?;
+        let id: String = entry.get("id").map_err(lua_err)?;
+        let inputs_table: mlua::Table = entry.get("inputs").map_err(lua_err)?;
+        let mut inputs = Vec::new();
+        for input in inputs_table.sequence_values::<String>() {
+            inputs.push(input.map_err(lua_err)?);
+        }
+        jobs.push(JobDef { id, inputs });
+    }
+
+    Ok(EvalResult { jobs })
+}
+
+/// A validation error found in the job graph.
+#[derive(Debug)]
+pub struct ValidationError {
+    pub message: String,
+}
+
+/// Validate the structural rules of a job graph.
+///
+/// Returns `Ok(())` if all four rules pass, or `Err` with all violations found.
+pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>> {
+    let mut errors = Vec::new();
+
+    // Build a set of known job ids.
+    let job_ids: std::collections::HashSet<&str> = jobs.iter().map(|j| j.id.as_str()).collect();
+
+    // Rule 4: no '/' in user job ids.
+    for job in jobs {
+        if job.id.contains('/') {
+            errors.push(ValidationError {
+                message: format!(
+                    "Job id '{}' contains '/', which is reserved for the 'quire/' source namespace.",
+                    job.id
+                ),
+            });
+        }
+    }
+
+    // Rule 2: non-empty inputs.
+    for job in jobs {
+        if job.inputs.is_empty() {
+            errors.push(ValidationError {
+                message: format!(
+                    "Job '{}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it.",
+                    job.id
+                ),
+            });
+        }
+    }
+
+    // Rule 1: acyclic (Kahn's algorithm).
+    let mut in_degree: std::collections::HashMap<&str, usize> =
+        jobs.iter().map(|j| (j.id.as_str(), 0)).collect();
+    let mut adjacency: std::collections::HashMap<&str, Vec<&str>> =
+        jobs.iter().map(|j| (j.id.as_str(), Vec::new())).collect();
+
+    for job in jobs {
+        for input in &job.inputs {
+            if job_ids.contains(input.as_str()) {
+                *in_degree.entry(job.id.as_str()).or_insert(0) += 1;
+                adjacency
+                    .entry(input.as_str())
+                    .or_default()
+                    .push(job.id.as_str());
+            }
+        }
+    }
+
+    let mut queue: Vec<&str> = in_degree
+        .iter()
+        .filter(|&(_, &deg)| deg == 0)
+        .map(|(&id, _)| id)
+        .collect();
+    let mut sorted = Vec::new();
+
+    while let Some(id) = queue.pop() {
+        sorted.push(id);
+        if let Some(dependents) = adjacency.get(id) {
+            for &dep in dependents {
+                if let Some(deg) = in_degree.get_mut(dep) {
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push(dep);
+                    }
+                }
+            }
+        }
+    }
+
+    if sorted.len() != jobs.len() {
+        let cycle_jobs: Vec<&str> = jobs
+            .iter()
+            .map(|j| j.id.as_str())
+            .filter(|id| !sorted.contains(id))
+            .collect();
+        errors.push(ValidationError {
+            message: format!("Cycle detected among jobs: {}", cycle_jobs.join(", ")),
+        });
+    }
+
+    // Rule 3: reachability — every job's transitive inputs must include a source ref.
+    let is_source = |name: &str| name.starts_with("quire/");
+
+    for job in jobs {
+        let mut visited = std::collections::HashSet::new();
+        let mut stack: Vec<&str> = job.inputs.iter().map(|s| s.as_str()).collect();
+        let mut found_source = false;
+
+        while let Some(name) = stack.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            if is_source(name) {
+                found_source = true;
+                break;
+            }
+            if let Some(upstream) = jobs.iter().find(|j| j.id == name) {
+                for input in &upstream.inputs {
+                    stack.push(input.as_str());
+                }
+            }
+        }
+
+        if !found_source {
+            errors.push(ValidationError {
+                message: format!(
+                    "Job '{}' is not reachable from any source ref (e.g. :quire/push).",
+                    job.id
+                ),
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp_path = path.with_extension("yml.tmp");
     let f = fs_err::File::create(&tmp_path)?;
@@ -480,5 +694,122 @@ mod tests {
         // Meta is unchanged.
         let loaded_meta = run.read_meta().expect("read meta");
         assert_eq!(loaded_meta, test_meta());
+    }
+
+    // --- eval_ci tests ---
+
+    fn fennel() -> crate::fennel::Fennel {
+        crate::fennel::Fennel::new().expect("Fennel::new() should succeed")
+    }
+
+    #[test]
+    fn eval_ci_registers_a_job() {
+        let f = fennel();
+        let source = r#"(job :test [:quire/push] (fn [_] nil))"#;
+        let result = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        assert_eq!(result.jobs.len(), 1);
+        assert_eq!(result.jobs[0].id, "test");
+        assert_eq!(result.jobs[0].inputs, vec!["quire/push"]);
+    }
+
+    #[test]
+    fn eval_ci_registers_multiple_jobs() {
+        let f = fennel();
+        let source = r#"
+(job :build [:quire/push] (fn [_] nil))
+(job :test [:build] (fn [_] nil))
+"#;
+        let result = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        assert_eq!(result.jobs.len(), 2);
+        assert_eq!(result.jobs[0].id, "build");
+        assert_eq!(result.jobs[0].inputs, vec!["quire/push"]);
+        assert_eq!(result.jobs[1].id, "test");
+        assert_eq!(result.jobs[1].inputs, vec!["build"]);
+    }
+
+    #[test]
+    fn eval_ci_errors_on_bad_fennel() {
+        let f = fennel();
+        let result = eval_ci(&f, "{:bad {:}", "ci.fnl");
+        assert!(result.is_err(), "malformed Fennel should fail");
+    }
+
+    // --- validate tests ---
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        let jobs = vec![
+            JobDef {
+                id: "build".into(),
+                inputs: vec!["quire/push".into()],
+            },
+            JobDef {
+                id: "test".into(),
+                inputs: vec!["build".into(), "quire/push".into()],
+            },
+        ];
+        assert!(validate(&jobs).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_cycle() {
+        let jobs = vec![
+            JobDef {
+                id: "a".into(),
+                inputs: vec!["b".into()],
+            },
+            JobDef {
+                id: "b".into(),
+                inputs: vec!["a".into()],
+            },
+        ];
+        let errs = validate(&jobs).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.to_lowercase().contains("cycle")),
+            "should report a cycle: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_inputs() {
+        let jobs = vec![JobDef {
+            id: "setup".into(),
+            inputs: vec![],
+        }];
+        let errs = validate(&jobs).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("setup") && e.message.contains("empty inputs")),
+            "should report empty inputs for 'setup': {errs:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_unreachable_jobs() {
+        let jobs = vec![JobDef {
+            id: "orphan".into(),
+            inputs: vec!["orphan".into()],
+        }];
+        let errs = validate(&jobs).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("orphan") && e.message.contains("source")),
+            "should report unreachable job 'orphan': {errs:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_slash_in_job_id() {
+        let jobs = vec![JobDef {
+            id: "foo/bar".into(),
+            inputs: vec!["quire/push".into()],
+        }];
+        let errs = validate(&jobs).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("foo/bar") && e.message.contains("'/'")),
+            "should report slash in job id: {errs:?}"
+        );
     }
 }

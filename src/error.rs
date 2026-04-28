@@ -17,6 +17,12 @@ pub enum Error {
     #[error(transparent)]
     Fennel(#[from] crate::fennel::FennelError),
 
+    #[error("CI validation failed: {}", .0.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))]
+    Validation(Vec<crate::ci::ValidationError>),
+
+    #[error("lua error: {0}")]
+    Lua(String),
+
     #[error("git error: {0}")]
     Git(String),
 
@@ -26,3 +32,9 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<Vec<crate::ci::ValidationError>> for Error {
+    fn from(errs: Vec<crate::ci::ValidationError>) -> Self {
+        Error::Validation(errs)
+    }
+}

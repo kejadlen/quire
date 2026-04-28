@@ -53,13 +53,50 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
                         "created CI run"
                     );
 
-                    // No eval yet — immediately complete.
-                    if let Err(e) = run.transition(crate::ci::RunState::Complete) {
-                        tracing::error!(
-                            run_id = %run.id(),
-                            %e,
-                            "failed to transition run to complete"
-                        );
+                    // Transition to active, eval ci.fnl, validate.
+                    run.transition(crate::ci::RunState::Active)
+                        .unwrap_or_else(|e| {
+                            tracing::error!(run_id = %run.id(), %e, "failed to transition run to active");
+                        });
+
+                    let result = (|| -> crate::Result<()> {
+                        let source = repo.ci_fnl_source(&push_ref.new_sha)?;
+                        let fennel = crate::fennel::Fennel::new()?;
+                        let eval_result = crate::ci::eval_ci(
+                            &fennel,
+                            &source,
+                            &format!("{}:.quire/ci.fnl", &push_ref.new_sha),
+                        )?;
+                        crate::ci::validate(&eval_result.jobs)?;
+                        Ok(())
+                    })();
+
+                    match result {
+                        Ok(()) => {
+                            if let Err(e) = run.transition(crate::ci::RunState::Complete) {
+                                tracing::error!(
+                                    run_id = %run.id(),
+                                    %e,
+                                    "failed to transition run to complete"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                run_id = %run.id(),
+                                %e,
+                                "CI evaluation failed"
+                            );
+                            if let Err(te) = run.transition(crate::ci::RunState::Failed) {
+                                tracing::error!(run_id = %run.id(), %te, "failed to transition run to failed");
+                            } else if let Err(we) = run.write_state(&crate::ci::RunStateFile {
+                                status: crate::ci::RunState::Failed,
+                                started_at: None,
+                                finished_at: Some(jiff::Zoned::now().to_string()),
+                            }) {
+                                tracing::error!(run_id = %run.id(), %we, "failed to write state for failed run");
+                            }
+                        }
                     }
                 }
                 Err(e) => {

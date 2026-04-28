@@ -164,6 +164,26 @@ impl Repo {
             .unwrap_or(false)
     }
 
+    /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
+    pub fn ci_fnl_source(&self, sha: &str) -> crate::Result<String> {
+        let output = self
+            .git(&["show", &format!("{sha}:.quire/ci.fnl")])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|e| crate::Error::Git(format!("failed to read ci.fnl: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(crate::Error::Git(format!(
+                "failed to read ci.fnl at {sha}: {stderr}"
+            )));
+        }
+
+        String::from_utf8(output.stdout)
+            .map_err(|e| crate::Error::Git(format!("ci.fnl is not valid UTF-8: {e}")))
+    }
+
     /// Push `main` to the configured mirror, injecting the GitHub token via
     /// `http.extraHeader` so it never appears in the URL or git's error output.
     ///
