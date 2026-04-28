@@ -28,8 +28,8 @@ pub async fn new(quire: &Quire, name: &str) -> Result<()> {
 }
 
 pub async fn list(quire: &Quire) -> Result<()> {
-    for name in quire.repos()? {
-        println!("{name}");
+    for repo in quire.repos()? {
+        println!("{}", repo.name());
     }
     Ok(())
 }

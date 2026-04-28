@@ -13,6 +13,7 @@ base64 = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
 fs-err = "*"
+jiff = "*"
 miette = { version = "*", features = ["fancy"] }
 mlua = { version = "*", features = ["lua54", "serde", "vendored"] }
 regex = "*"
@@ -20,11 +21,14 @@ sentry = { version = "*", features = ["backtrace", "contexts", "debug-images", "
 sentry-tracing = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+serde_yaml_ng = "*"
 shell-words = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
+uuid = { version = "*", features = ["v7"] }
+walkdir = "*"
 
 [dev-dependencies]
 assert_cmd = "*"

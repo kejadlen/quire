@@ -5,6 +5,7 @@ use axum::Router;
 use axum::routing::get;
 use miette::{Context, IntoDiagnostic, Result};
 use quire::Quire;
+use quire::run;
 
 async fn health() -> &'static str {
     "ok"
@@ -35,6 +36,11 @@ pub async fn run(quire: &Quire) -> Result<()> {
     let listener = tokio::net::UnixListener::from_std(std_listener).into_diagnostic()?;
 
     tracing::info!(path = %socket_path.display(), "listening on event socket");
+
+    // Scan for orphaned runs from a previous server instance.
+    for repo in quire.repos().context("failed to list repos")? {
+        repo.runs().reconcile_orphans();
+    }
 
     let quire_handle = quire.clone();
     let event_handle = tokio::spawn(event_listener(listener, quire_handle));
@@ -118,6 +124,51 @@ async fn dispatch_push(quire: &Quire, event: &quire::event::PushEvent) {
         }
     };
 
+    // CI gating: check each updated ref for .quire/ci.fnl.
+    for push_ref in &event.refs {
+        // Skip deletions (all-zero new sha).
+        if push_ref.new_sha == "0000000000000000000000000000000000000000" {
+            continue;
+        }
+
+        if repo.has_ci_fnl(&push_ref.new_sha) {
+            let meta = run::RunMeta {
+                sha: push_ref.new_sha.clone(),
+                r#ref: push_ref.r#ref.clone(),
+                pushed_at: event.pushed_at.clone(),
+            };
+
+            let runs = repo.runs();
+            match runs.create(&meta) {
+                Ok(mut run) => {
+                    tracing::info!(
+                        run_id = %run.id(),
+                        sha = %push_ref.new_sha,
+                        r#ref = %push_ref.r#ref,
+                        "created CI run"
+                    );
+
+                    // No eval yet — immediately complete.
+                    if let Err(e) = run.transition(run::RunState::Complete) {
+                        tracing::error!(
+                            run_id = %run.id(),
+                            %e,
+                            "failed to transition run to complete"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        repo = %event.repo,
+                        %e,
+                        "failed to create CI run"
+                    );
+                }
+            }
+        }
+    }
+
+    // Mirror push — proceeds regardless of CI.
     let config = match repo.config() {
         Ok(c) => c,
         Err(e) => {

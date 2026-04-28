@@ -63,7 +63,8 @@ where
 ///
 /// Created by `Quire::repo` after validating the name.
 pub struct Repo {
-    path: PathBuf,
+    base_dir: PathBuf,
+    name: String,
 }
 
 impl Repo {
@@ -75,7 +76,8 @@ impl Repo {
     pub fn new(base: &Path, name: &str) -> Result<Self> {
         Self::validate_name(name)?;
         Ok(Self {
-            path: base.join(name),
+            base_dir: base.to_path_buf(),
+            name: name.to_string(),
         })
     }
 
@@ -91,7 +93,8 @@ impl Repo {
         let name = relative.to_string_lossy();
         Self::validate_name(&name)?;
         Ok(Self {
-            path: path.to_path_buf(),
+            base_dir: base.to_path_buf(),
+            name: name.to_string(),
         })
     }
 
@@ -121,12 +124,17 @@ impl Repo {
         Ok(())
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn path(&self) -> PathBuf {
+        self.base_dir.join(&self.name)
+    }
+
+    /// The repo name relative to the repos directory (e.g. `foo.git`).
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn exists(&self) -> bool {
-        self.path.is_dir()
+        self.path().is_dir()
     }
 
     /// Start a git command rooted in this bare repo.
@@ -135,8 +143,25 @@ impl Repo {
     /// `.status()`, `.output()`, or anything else.
     pub fn git(&self, args: &[&str]) -> std::process::Command {
         let mut cmd = std::process::Command::new("git");
-        cmd.args(args).current_dir(&self.path);
+        cmd.args(args).current_dir(self.path());
         cmd
+    }
+
+    /// Access CI runs for this repo.
+    pub fn runs(&self) -> crate::run::Runs {
+        crate::run::Runs::new(self.base_dir.join("runs").join(&self.name))
+    }
+
+    /// Check whether this bare repo has `.quire/ci.fnl` at a given commit SHA.
+    ///
+    /// Returns true if the file exists (git show exit code 0), false otherwise.
+    pub fn has_ci_fnl(&self, sha: &str) -> bool {
+        self.git(&["show", &format!("{sha}:.quire/ci.fnl")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     /// Push `main` to the configured mirror, injecting the GitHub token via
@@ -244,13 +269,16 @@ pub struct Quire {
 
 impl Default for Quire {
     fn default() -> Self {
-        Self {
-            base_dir: PathBuf::from("/var/quire"),
-        }
+        Self::new(PathBuf::from("/var/quire"))
     }
 }
 
 impl Quire {
+    /// Create a `Quire` rooted at the given base directory.
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self { base_dir }
+    }
+
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
@@ -296,47 +324,31 @@ impl Quire {
         Repo::from_path(&self.repos_dir(), path)
     }
 
-    /// List all repository names under the repos directory.
-    pub fn repos(&self) -> Result<impl Iterator<Item = String> + '_> {
+    /// List all repositories under the repos directory.
+    ///
+    /// Walks at most two levels deep, collecting directories ending in `.git`.
+    /// This enforces the "at most one level of grouping" rule structurally.
+    pub fn repos(&self) -> Result<impl Iterator<Item = Repo>> {
         let repos_dir = self.repos_dir();
-        let entries = fs_err::read_dir(&repos_dir).into_diagnostic()?;
 
-        let mut repos: Vec<String> = Vec::new();
-        for entry in entries {
-            let entry = entry.into_diagnostic()?;
-            let path = entry.path();
-
-            if !path.is_dir() {
-                continue;
-            }
-
-            let Ok(relative) = path.strip_prefix(&repos_dir) else {
-                continue;
-            };
-            let name = relative.to_string_lossy();
-
-            // Top-level .git directory.
-            if name.ends_with(".git") {
-                repos.push(name.to_string());
-                continue;
-            }
-
-            // Group directory — collect .git children.
-            let Ok(children) = fs_err::read_dir(&path) else {
-                continue;
-            };
-            for child in children {
-                let child = child.into_diagnostic()?;
-                let child_name = child.file_name();
-                let child_name = child_name.to_string_lossy();
-                if child_name.ends_with(".git") && child.path().is_dir() {
-                    let full = format!("{}/{}", name, child_name);
-                    repos.push(full);
+        let mut repos: Vec<Repo> = walkdir::WalkDir::new(&repos_dir)
+            .max_depth(2)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_dir())
+            .filter_map(|entry| {
+                let name = entry.path().strip_prefix(&repos_dir).ok()?;
+                let name = name.to_string_lossy();
+                if name.ends_with(".git") {
+                    Some(name.to_string())
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .map(|name| Repo::new(&repos_dir, &name))
+            .collect::<Result<Vec<_>>>()?;
 
-        repos.sort();
+        repos.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(repos.into_iter())
     }
 }
@@ -425,7 +437,10 @@ mod tests {
 
         git(&["init", "--bare", "-b", "main"]);
 
-        let repo = Repo { path: bare };
+        let repo = Repo {
+            name: "test.git".to_string(),
+            base_dir: bare.parent().unwrap().to_path_buf(),
+        };
 
         (dir, repo)
     }
@@ -472,7 +487,10 @@ mod tests {
             &work,
         );
 
-        let repo = Repo { path: bare };
+        let repo = Repo {
+            name: "test.git".to_string(),
+            base_dir: bare.parent().unwrap().to_path_buf(),
+        };
         (dir, repo)
     }
 
@@ -577,7 +595,10 @@ mod tests {
     fn repo_config_loads_mirror_url() {
         let dir = bare_repo_with_config(r#"{:mirror {:url "https://github.com/owner/repo.git"}}"#);
         let bare = dir.path().join("repos").join("test.git");
-        let repo = Repo { path: bare };
+        let repo = Repo {
+            name: "test.git".to_string(),
+            base_dir: bare.parent().unwrap().to_path_buf(),
+        };
 
         let config = repo.config().expect("config should load");
         assert_eq!(
@@ -606,7 +627,10 @@ mod tests {
     fn repo_config_returns_no_mirror_when_key_absent() {
         let dir = bare_repo_with_config("{}");
         let bare = dir.path().join("repos").join("test.git");
-        let repo = Repo { path: bare };
+        let repo = Repo {
+            name: "test.git".to_string(),
+            base_dir: bare.parent().unwrap().to_path_buf(),
+        };
 
         let config = repo.config().expect("should return default config");
         assert_eq!(config.mirror, None);
@@ -616,7 +640,10 @@ mod tests {
     fn repo_config_errors_on_malformed_fennel() {
         let dir = bare_repo_with_config("{:bad {:}");
         let bare = dir.path().join("repos").join("test.git");
-        let repo = Repo { path: bare };
+        let repo = Repo {
+            name: "test.git".to_string(),
+            base_dir: bare.parent().unwrap().to_path_buf(),
+        };
 
         let err = repo.config().unwrap_err();
         // The error message should reference the config path.
@@ -766,7 +793,8 @@ mod tests {
         git_in(&target, &["init", "--bare", "-b", "main"]);
 
         let repo = Repo {
-            path: source.clone(),
+            base_dir: source.parent().unwrap().to_path_buf(),
+            name: "source.git".to_string(),
         };
         let mirror = MirrorConfig {
             url: format!("file://{}", target.display()),
@@ -785,7 +813,10 @@ mod tests {
 
         make_bare_with_main(&work, &source);
 
-        let repo = Repo { path: source };
+        let repo = Repo {
+            base_dir: source.parent().unwrap().to_path_buf(),
+            name: "source.git".to_string(),
+        };
         let mirror = MirrorConfig {
             url: "file:///nonexistent/quire-test/target.git".to_string(),
         };
@@ -802,7 +833,10 @@ mod tests {
             r#"{:mirror {:url "https://x:token@github.com/owner/repo.git"}}"#,
         );
         let bare = dir.path().join("repos").join("test.git");
-        let repo = Repo { path: bare };
+        let repo = Repo {
+            name: "test.git".to_string(),
+            base_dir: bare.parent().unwrap().to_path_buf(),
+        };
 
         let err = repo.config().unwrap_err();
         let msg = err.to_string();
