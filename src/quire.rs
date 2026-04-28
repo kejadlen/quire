@@ -235,6 +235,7 @@ fn github_auth_header(token: &str) -> String {
 ///
 /// Carries configuration and provides resolved paths to repositories.
 /// Commands receive a `&Quire` instead of threading config around.
+#[derive(Clone)]
 pub struct Quire {
     base_dir: PathBuf,
 }
@@ -258,6 +259,10 @@ impl Quire {
 
     pub fn config_path(&self) -> PathBuf {
         self.base_dir.join("config.fnl")
+    }
+
+    pub fn socket_path(&self) -> PathBuf {
+        self.base_dir.join("server.sock")
     }
 
     /// Load and parse the global Fennel config file.

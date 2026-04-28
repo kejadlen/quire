@@ -1,4 +1,5 @@
 mod error;
+pub mod event;
 pub mod fennel;
 pub mod quire;
 pub mod secret;

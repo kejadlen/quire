@@ -13,6 +13,7 @@ base64 = "*"
 mlua = { version = "*", features = ["lua54", "serde", "vendored"] }
 regex = "*"
 serde = { version = "*", features = ["derive"] }
+serde_json = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
 miette = { version = "*", features = ["fancy"] }

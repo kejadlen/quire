@@ -19,6 +19,10 @@ pub enum Error {
 
     #[error("git error: {0}")]
     Git(String),
+
+    #[allow(dead_code)]
+    #[error("event socket error: {0}")]
+    EventSocket(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

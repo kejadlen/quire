@@ -3,6 +3,8 @@ use std::io::{self, IsTerminal};
 use miette::{Context, IntoDiagnostic, Result, bail, ensure, miette};
 use quire::Quire;
 
+const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
+
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum HookName {
     PostReceive,
@@ -52,43 +54,61 @@ fn post_receive(quire: &Quire) -> Result<()> {
         git_dir.display()
     );
 
-    let repo_config = repo.config()?;
-    let Some(mirror) = repo_config.mirror else {
-        return Ok(());
-    };
-
-    let global_config = quire.global_config()?;
-    let token = global_config
-        .github
-        .token
-        .reveal()
-        .context("failed to resolve GitHub token")?;
-
     // Parse pushed refs from stdin. Each line is:
     //   <old-sha> <new-sha> <refname>
-    // Only push refs that were actually updated (new sha is not all zeros).
     let stdin = io::stdin();
-    let mut refs: Vec<String> = Vec::new();
+    let mut refs: Vec<quire::event::PushRef> = Vec::new();
     for line in stdin.lines() {
         let line = line.map_err(|e| miette!("failed to read hook stdin: {e}"))?;
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 3 {
             continue;
         }
-        let new_sha = parts[1];
-        if new_sha == "0000000000000000000000000000000000000000" {
-            continue;
-        }
-        refs.push(parts[2].to_string());
+        refs.push(quire::event::PushRef {
+            old_sha: parts[0].to_string(),
+            new_sha: parts[1].to_string(),
+            r#ref: parts[2].to_string(),
+        });
     }
 
-    if refs.is_empty() {
+    // Only send an event when at least one ref was actually updated
+    // (new sha is not all zeros). Deletions are included in the event
+    // payload but don't count as updates on their own.
+    let has_updates = refs.iter().any(|r| r.new_sha != ZERO_SHA);
+    if !has_updates {
         return Ok(());
     }
 
-    let ref_slices: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
-    tracing::info!(url = %mirror.url, refs = ?ref_slices, "pushing to mirror");
-    repo.push_to_mirror(&mirror, token, &ref_slices)?;
-    tracing::info!(url = %mirror.url, "mirror push complete");
+    // Resolve repo name relative to repos dir for the event payload.
+    let repo_name = repo
+        .path()
+        .strip_prefix(quire.repos_dir())
+        .map_err(|_| miette!("repo path not under repos dir"))?
+        .to_string_lossy()
+        .to_string();
+
+    let event = quire::event::build_push_event(repo_name, refs);
+    let mut line = serde_json::to_string(&event)
+        .into_diagnostic()
+        .context("failed to serialize push event")?;
+    line.push('\n');
+
+    let socket_path = quire.socket_path();
+    if !socket_path.exists() {
+        eprintln!(
+            "quire: server not running ({}), skipping event",
+            socket_path.display()
+        );
+        return Ok(());
+    }
+
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket_path)
+        .into_diagnostic()
+        .context("failed to connect to event socket")?;
+    io::Write::write_all(&mut stream, line.as_bytes())
+        .into_diagnostic()
+        .context("failed to write event to socket")?;
+
+    tracing::info!(repo = %event.repo, "push event sent to server");
     Ok(())
 }
