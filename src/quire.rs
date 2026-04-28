@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use miette::{IntoDiagnostic, Result, ensure, miette};
+use miette::{Context, IntoDiagnostic, Result, ensure};
 
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
@@ -84,9 +84,10 @@ impl Repo {
     /// Verifies the path falls under `base` and passes name validation.
     /// Used by hooks that receive `GIT_DIR` from git.
     pub fn from_path(base: &Path, path: &Path) -> Result<Self> {
-        let relative = path
-            .strip_prefix(base)
-            .map_err(|_| miette!("path is not under repos directory: {}", path.display()))?;
+        let relative = path.strip_prefix(base).into_diagnostic().context(format!(
+            "path is not under repos directory: {}",
+            path.display()
+        ))?;
         let name = relative.to_string_lossy();
         Self::validate_name(&name)?;
         Ok(Self {

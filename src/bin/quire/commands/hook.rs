@@ -1,6 +1,6 @@
 use std::io::{self, IsTerminal};
 
-use miette::{Context, IntoDiagnostic, Result, bail, ensure, miette};
+use miette::{Context, IntoDiagnostic, Result, bail, ensure};
 use quire::Quire;
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
@@ -37,13 +37,14 @@ fn post_receive(quire: &Quire) -> Result<()> {
     // are invoked via hook.<name>.command, GIT_DIR may be relative (e.g.
     // "."), so canonicalize before resolving.
     let git_dir = std::env::var("GIT_DIR")
-        .map_err(|e| miette!("GIT_DIR not set — hook must run inside a bare repo: {e}"))
+        .into_diagnostic()
+        .context("GIT_DIR not set — hook must run inside a bare repo")
         .and_then(|git_dir| {
             std::path::Path::new(&git_dir)
                 .canonicalize()
                 .into_diagnostic()
-        })
-        .map_err(|e| miette!("failed to resolve GIT_DIR: {e}"))?;
+                .context("failed to resolve GIT_DIR")
+        })?;
 
     let repo = quire
         .repo_from_path(&git_dir)
@@ -59,7 +60,9 @@ fn post_receive(quire: &Quire) -> Result<()> {
     let stdin = io::stdin();
     let mut refs: Vec<quire::event::PushRef> = Vec::new();
     for line in stdin.lines() {
-        let line = line.map_err(|e| miette!("failed to read hook stdin: {e}"))?;
+        let line = line
+            .into_diagnostic()
+            .context("failed to read hook stdin")?;
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 3 {
             continue;
@@ -83,7 +86,8 @@ fn post_receive(quire: &Quire) -> Result<()> {
     let repo_name = repo
         .path()
         .strip_prefix(quire.repos_dir())
-        .map_err(|_| miette!("repo path not under repos dir"))?
+        .into_diagnostic()
+        .context("repo path not under repos dir")?
         .to_string_lossy()
         .to_string();
 
