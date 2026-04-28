@@ -37,7 +37,7 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
         }
 
         if repo.has_ci_fnl(&push_ref.new_sha) {
-            let meta = crate::run::RunMeta {
+            let meta = crate::ci::RunMeta {
                 sha: push_ref.new_sha.clone(),
                 r#ref: push_ref.r#ref.clone(),
                 pushed_at: event.pushed_at.clone(),
@@ -54,7 +54,7 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
                     );
 
                     // No eval yet — immediately complete.
-                    if let Err(e) = run.transition(crate::run::RunState::Complete) {
+                    if let Err(e) = run.transition(crate::ci::RunState::Complete) {
                         tracing::error!(
                             run_id = %run.id(),
                             %e,

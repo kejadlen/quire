@@ -2,7 +2,7 @@ mod error;
 pub mod event;
 pub mod fennel;
 pub mod quire;
-pub mod run;
+pub mod ci;
 pub mod secret;
 pub mod server;
 

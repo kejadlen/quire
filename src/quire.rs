@@ -148,8 +148,8 @@ impl Repo {
     }
 
     /// Access CI runs for this repo.
-    pub fn runs(&self) -> crate::run::Runs {
-        crate::run::Runs::new(self.base_dir.join("runs").join(&self.name))
+    pub fn runs(&self) -> crate::ci::Runs {
+        crate::ci::Runs::new(self.base_dir.join("runs").join(&self.name))
     }
 
     /// Check whether this bare repo has `.quire/ci.fnl` at a given commit SHA.
