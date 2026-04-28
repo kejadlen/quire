@@ -15,6 +15,122 @@ pub struct PushEvent {
     pub refs: Vec<PushRef>,
 }
 
+/// Dispatch a push event: CI gating and mirror push.
+pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
+    let repo = match quire.repo(&event.repo) {
+        Ok(r) if r.exists() => r,
+        Ok(_) => {
+            tracing::error!(repo = %event.repo, "repo not found on disk");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(repo = %event.repo, %e, "invalid repo name in event");
+            return;
+        }
+    };
+
+    // CI gating: check each updated ref for .quire/ci.fnl.
+    for push_ref in &event.refs {
+        // Skip deletions (all-zero new sha).
+        if push_ref.new_sha == "0000000000000000000000000000000000000000" {
+            continue;
+        }
+
+        if repo.has_ci_fnl(&push_ref.new_sha) {
+            let meta = crate::run::RunMeta {
+                sha: push_ref.new_sha.clone(),
+                r#ref: push_ref.r#ref.clone(),
+                pushed_at: event.pushed_at.clone(),
+            };
+
+            let runs = repo.runs();
+            match runs.create(&meta) {
+                Ok(mut run) => {
+                    tracing::info!(
+                        run_id = %run.id(),
+                        sha = %push_ref.new_sha,
+                        r#ref = %push_ref.r#ref,
+                        "created CI run"
+                    );
+
+                    // No eval yet — immediately complete.
+                    if let Err(e) = run.transition(crate::run::RunState::Complete) {
+                        tracing::error!(
+                            run_id = %run.id(),
+                            %e,
+                            "failed to transition run to complete"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        repo = %event.repo,
+                        %e,
+                        "failed to create CI run"
+                    );
+                }
+            }
+        }
+    }
+
+    // Mirror push — proceeds regardless of CI.
+    let config = match repo.config() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(repo = %event.repo, %e, "failed to load repo config");
+            return;
+        }
+    };
+
+    let Some(mirror) = config.mirror else {
+        tracing::debug!(repo = %event.repo, "no mirror configured, skipping");
+        return;
+    };
+
+    let global_config = match quire.global_config() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(%e, "failed to load global config for mirror push");
+            return;
+        }
+    };
+
+    let token = match global_config.github.token.reveal() {
+        Ok(t) => t.to_string(),
+        Err(e) => {
+            tracing::error!(%e, "failed to resolve GitHub token");
+            return;
+        }
+    };
+
+    // Only push refs that were actually updated (non-zero new sha).
+    let refs: Vec<String> = event
+        .refs
+        .iter()
+        .filter(|r| r.new_sha != "0000000000000000000000000000000000000000")
+        .map(|r| r.r#ref.clone())
+        .collect();
+
+    if refs.is_empty() {
+        return;
+    }
+
+    let mirror_url = mirror.url.clone();
+    tracing::info!(url = %mirror.url, refs = ?refs, "pushing to mirror");
+
+    let result = tokio::task::spawn_blocking(move || {
+        let ref_slices: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+        repo.push_to_mirror(&mirror, &token, &ref_slices)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => tracing::info!(url = %mirror_url, "mirror push complete"),
+        Ok(Err(e)) => tracing::error!(url = %mirror_url, %e, "mirror push failed"),
+        Err(e) => tracing::error!(url = %mirror_url, %e, "mirror push task panicked"),
+    }
+}
+
 /// Build a push event from parsed refs.
 ///
 /// `repo` is the repo name relative to the repos dir (e.g. "foo.git").
