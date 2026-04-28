@@ -33,10 +33,14 @@ file surfaces as a Fennel parse or eval error with source labels.
 ## Per-repo config
 
 Lives at `.quire/config.fnl` *checked into the repo* — quire reads it
-from `HEAD` of the bare repo via `git show HEAD:.quire/config.fnl`
-whenever a hook needs it. Repos without the file (or without a given
-key) get defaults; this is a no-op for the post-receive hook, not an
-error.
+from `HEAD` of the bare repo via `git show HEAD:.quire/config.fnl`.
+Repos without the file (or without a given key) get defaults; this is
+a no-op, not an error.
+
+The post-receive hook does not read this config directly. Instead it
+sends a JSON push event to `quire serve` over `/var/quire/server.sock`.
+The server reads the config to find mirror settings and dispatch the
+push. See `src/bin/quire/commands/serve.rs` for the full path.
 
 | Key            | Type     | Required | Purpose                                                                       |
 |----------------|----------|----------|-------------------------------------------------------------------------------|
