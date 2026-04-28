@@ -3,7 +3,7 @@ use std::os::unix::net::UnixListener as StdUnixListener;
 
 use axum::Router;
 use axum::routing::get;
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{Context, IntoDiagnostic, Result};
 use quire::Quire;
 
 async fn health() -> &'static str {
@@ -27,12 +27,10 @@ pub async fn run(quire: &Quire) -> Result<()> {
 
     let std_listener = StdUnixListener::bind(&socket_path)
         .into_diagnostic()
-        .map_err(|e| {
-            miette!(
-                "failed to bind event socket at {}: {e}",
-                socket_path.display()
-            )
-        })?;
+        .context(format!(
+            "failed to bind event socket at {}",
+            socket_path.display()
+        ))?;
     std_listener.set_nonblocking(true).into_diagnostic()?;
     let listener = tokio::net::UnixListener::from_std(std_listener).into_diagnostic()?;
 
