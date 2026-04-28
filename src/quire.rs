@@ -161,6 +161,7 @@ impl Repo {
             .env("GIT_CONFIG_KEY_0", "http.extraHeader")
             .env("GIT_CONFIG_VALUE_0", github_auth_header(token))
             .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
             .map_err(crate::Error::Io)?;
 
