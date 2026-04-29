@@ -38,19 +38,28 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
 /// Check each updated ref for .quire/ci.fnl, create runs, and eval + validate.
 fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
     for push_ref in event.updated_refs() {
-        dispatch_ci_ref(repo, &event.repo, &event.pushed_at, push_ref);
+        if let Err(e) = dispatch_ci_ref(repo, &event.pushed_at, push_ref) {
+            tracing::error!(
+                repo = %event.repo,
+                sha = %push_ref.new_sha,
+                %e,
+                "CI dispatch failed"
+            );
+        }
     }
 }
 
 /// Create and run CI for a single updated ref.
+///
+/// Returns `Ok(())` if CI ran (regardless of whether the run succeeded
+/// or failed), or `Err` if dispatch itself failed.
 fn dispatch_ci_ref(
     repo: &crate::quire::Repo,
-    repo_name: &str,
     pushed_at: &str,
     push_ref: &PushRef,
-) {
+) -> crate::Result<()> {
     if !repo.has_ci_fnl(&push_ref.new_sha) {
-        return;
+        return Ok(());
     }
 
     let meta = RunMeta {
@@ -59,14 +68,7 @@ fn dispatch_ci_ref(
         pushed_at: pushed_at.to_string(),
     };
 
-    let runs = repo.runs();
-    let mut run = match runs.create(&meta) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(repo = %repo_name, %e, "failed to create CI run");
-            return;
-        }
-    };
+    let mut run = repo.runs().create(&meta)?;
 
     tracing::info!(
         run_id = %run.id(),
@@ -75,30 +77,26 @@ fn dispatch_ci_ref(
         "created CI run"
     );
 
-    run.transition(RunState::Active).unwrap_or_else(|e| {
-        tracing::error!(run_id = %run.id(), %e, "failed to transition run to active");
-    });
+    run.transition(RunState::Active)?;
 
     let result = eval_and_validate(repo, &push_ref.new_sha);
     match result {
         Ok(()) => {
-            if let Err(e) = run.transition(RunState::Complete) {
-                tracing::error!(run_id = %run.id(), %e, "failed to transition run to complete");
-            }
+            run.transition(RunState::Complete)?;
         }
         Err(e) => {
-            tracing::error!(run_id = %run.id(), %e, "CI evaluation failed");
-            if let Err(te) = run.transition(RunState::Failed) {
-                tracing::error!(run_id = %run.id(), %te, "failed to transition run to failed");
-            } else if let Err(we) = run.write_state(&RunStateFile {
+            run.transition(RunState::Failed)?;
+            run.write_state(&RunStateFile {
                 status: RunState::Failed,
                 started_at: None,
                 finished_at: Some(jiff::Zoned::now().to_string()),
-            }) {
-                tracing::error!(run_id = %run.id(), %we, "failed to write state for failed run");
-            }
+            })?;
+            // Return the eval/validation error as the dispatch error.
+            Err(e)?;
         }
     }
+
+    Ok(())
 }
 
 /// Evaluate ci.fnl at a given SHA and validate the job graph.
