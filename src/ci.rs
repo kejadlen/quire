@@ -94,7 +94,7 @@ impl Runs {
     /// The caller decides how to reconcile them:
     /// - `pending/` entries should be re-enqueued.
     /// - `active/` entries with no live runner should be marked failed.
-    pub fn scan_orphans(&self) -> Result<Vec<OpenedRun>> {
+    pub fn scan_orphans(&self) -> Result<Vec<Run>> {
         let mut orphans = Vec::new();
 
         for &state in &[RunState::Pending, RunState::Active] {
@@ -118,7 +118,7 @@ impl Runs {
                 }
 
                 match Run::open(self.base.clone(), state, name) {
-                    Ok(opened) => orphans.push(opened),
+                    Ok(run) => orphans.push(run),
                     Err(e) => {
                         tracing::warn!(
                             state = ?state,
@@ -142,22 +142,22 @@ impl Runs {
         let orphans = self.scan_orphans()?;
         for orphan in &orphans {
             tracing::warn!(
-                run_id = %orphan.run.id(),
-                state = ?orphan.run.state(),
+                run_id = %orphan.id(),
+                state = ?orphan.state(),
                 "found orphaned run"
             );
         }
 
         for mut orphan in orphans {
-            match orphan.run.state() {
+            match orphan.state() {
                 RunState::Pending => {
                     tracing::warn!(
-                        run_id = %orphan.run.id(),
+                        run_id = %orphan.id(),
                         "completing orphaned pending run"
                     );
-                    if let Err(e) = orphan.run.transition(RunState::Complete) {
+                    if let Err(e) = orphan.transition(RunState::Complete) {
                         tracing::error!(
-                            run_id = %orphan.run.id(),
+                            run_id = %orphan.id(),
                             %e,
                             "failed to transition orphaned pending run"
                         );
@@ -165,12 +165,12 @@ impl Runs {
                 }
                 RunState::Active => {
                     tracing::warn!(
-                        run_id = %orphan.run.id(),
+                        run_id = %orphan.id(),
                         "marking orphaned active run as failed"
                     );
-                    if let Err(e) = orphan.run.transition(RunState::Failed) {
+                    if let Err(e) = orphan.transition(RunState::Failed) {
                         tracing::error!(
-                            run_id = %orphan.run.id(),
+                            run_id = %orphan.id(),
                             %e,
                             "failed to transition orphaned active run to failed"
                         );
@@ -211,16 +211,16 @@ impl Run {
         self.state
     }
 
-    /// Open an existing run from disk, reading its metadata and timestamps.
+    /// Open an existing run from disk.
     ///
     /// `state` is the directory the run is expected to be in (e.g.
-    /// `pending/`, `active/`). Returns an error if the run directory or
-    /// its files are missing or unreadable.
-    pub fn open(base: PathBuf, state: RunState, id: String) -> Result<OpenedRun> {
+    /// `pending/`, `active/`). Returns an error if `meta.yml` or
+    /// `times.yml` are missing or unreadable.
+    pub fn open(base: PathBuf, state: RunState, id: String) -> Result<Self> {
         let run = Self { base, state, id };
-        let meta = run.read_meta()?;
-        let times = run.read_times()?;
-        Ok(OpenedRun { run, meta, times })
+        run.read_meta()?;
+        run.read_times()?;
+        Ok(run)
     }
 
     /// Transition the run from its current state to a new state.
@@ -271,14 +271,6 @@ impl Run {
     pub fn write_times(&self, times: &RunTimes) -> Result<()> {
         write_yaml(&self.path().join("times.yml"), times)
     }
-}
-
-/// A run loaded from disk with its metadata and timestamps.
-#[derive(Debug)]
-pub struct OpenedRun {
-    pub run: Run,
-    pub meta: RunMeta,
-    pub times: RunTimes,
 }
 
 /// A registered job definition extracted from ci.fnl.
@@ -702,8 +694,8 @@ mod tests {
 
         let orphans = runs.scan_orphans().expect("scan");
         assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].run.id(), run.id());
-        assert_eq!(orphans[0].run.state(), RunState::Pending);
+        assert_eq!(orphans[0].id(), run.id());
+        assert_eq!(orphans[0].state(), RunState::Pending);
     }
 
     #[test]
@@ -715,7 +707,7 @@ mod tests {
 
         let orphans = runs.scan_orphans().expect("scan");
         assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].run.state(), RunState::Active);
+        assert_eq!(orphans[0].state(), RunState::Active);
     }
 
     #[test]
