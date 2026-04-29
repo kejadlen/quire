@@ -17,6 +17,7 @@ pub enum Error {
     ConfigNotFound(String),
 
     #[error(transparent)]
+    #[diagnostic(transparent)]
     Fennel(#[from] Box<FennelError>),
 
     #[error("CI validation failed")]

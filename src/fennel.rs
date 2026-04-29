@@ -153,14 +153,10 @@ impl FennelError {
     /// Construct an `Eval` error from an mlua error, extracting line
     /// information when available.
     pub(crate) fn from_lua(source: &str, name: &str, err: mlua::Error) -> Self {
-        // Strip the stack traceback from the message so it only appears
-        // once (via the source chain rendered by miette).
-        let err_display = format!("{err}");
-        let err_body = err_display
-            .split_once("\nstack traceback:")
-            .map(|(msg, _)| msg)
-            .unwrap_or(&err_display);
-        let message = format!("{name}: {err_body}");
+        // Use only the filename/location as the message. The source chain
+        // carries the full error details, so including them here would
+        // duplicate the output in miette's × and ╰─▶ sections.
+        let message = name.to_string();
 
         // Try to extract a line number from the Lua error for a label.
         let offset = extract_line_offset(&err)
@@ -184,7 +180,8 @@ impl FennelError {
 /// unambiguous — filenames don't end with `:digits:digits:`.
 fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
     let msg = err.to_string();
-    let re = regex::Regex::new(r":(\d+):\d+: ").ok()?;
+    // Match `:LINE:COLUMN: ` (parse error) or `:LINE: ` (runtime error).
+    let re = regex::Regex::new(r":(\d+)(?::\d+)?: ").ok()?;
     let caps = re.captures(&msg)?;
     caps.get(1)?
         .as_str()
