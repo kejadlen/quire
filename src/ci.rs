@@ -102,7 +102,7 @@ impl Runs {
     /// The caller decides how to reconcile them:
     /// - `pending/` entries should be re-enqueued.
     /// - `active/` entries with no live runner should be marked failed.
-    pub fn scan_orphans(&self) -> Vec<OrphanedRun> {
+    pub fn scan_orphans(&self) -> Vec<OpenedRun> {
         let mut orphans = Vec::new();
 
         for &state in &[RunState::Pending, RunState::Active] {
@@ -122,37 +122,16 @@ impl Runs {
                     continue;
                 }
 
-                let path = entry.path();
-
-                let meta = match read_yaml::<RunMeta>(&path.join("meta.yml")) {
-                    Ok(m) => m,
+                match Run::open(self.base.clone(), state, name) {
+                    Ok(opened) => orphans.push(opened),
                     Err(e) => {
                         tracing::warn!(
-                            path = %path.display(),
+                            state = ?state,
                             %e,
-                            "skipping orphaned run: cannot read meta"
+                            "skipping orphaned run"
                         );
-                        continue;
                     }
-                };
-
-                let state_file = match read_yaml::<RunStateFile>(&path.join("state.yml")) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            %e,
-                            "skipping orphaned run: cannot read state"
-                        );
-                        continue;
-                    }
-                };
-
-                orphans.push(OrphanedRun {
-                    run: Run::open(self.base.clone(), state, name),
-                    meta,
-                    state: state_file,
-                });
+                }
             }
         }
 
@@ -247,12 +226,20 @@ impl Run {
         self.state
     }
 
-    /// Open an existing run at a known state.
+    /// Open an existing run from disk, reading its metadata and state.
     ///
-    /// Does not verify the directory exists — used by the orphan scanner
-    /// which already read the directory listing.
-    fn open(base: PathBuf, state: RunState, id: String) -> Self {
-        Self { base, state, id }
+    /// `state` is the directory the run is expected to be in (e.g.
+    /// `pending/`, `active/`). Returns an error if the run directory or
+    /// its files are missing or unreadable.
+    pub fn open(base: PathBuf, state: RunState, id: String) -> Result<OpenedRun> {
+        let run = Self { base, state, id };
+        let meta = run.read_meta()?;
+        let run_state = run.read_state()?;
+        Ok(OpenedRun {
+            run,
+            meta,
+            state: run_state,
+        })
     }
 
     /// Transition the run from its current state to a new state.
@@ -293,9 +280,9 @@ impl Run {
     }
 }
 
-/// An orphaned run found during startup scan.
+/// A run loaded from disk with its metadata and state.
 #[derive(Debug)]
-pub struct OrphanedRun {
+pub struct OpenedRun {
     pub run: Run,
     pub meta: RunMeta,
     pub state: RunStateFile,
