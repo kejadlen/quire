@@ -52,14 +52,6 @@ pub struct Fennel {
 }
 
 impl Fennel {
-    /// Access the underlying Lua VM.
-    ///
-    /// Needed for extracting evaluation results that don't deserialize
-    /// directly into a Rust type (e.g. the CI job registry).
-    pub(crate) fn lua(&self) -> &Lua {
-        &self.lua
-    }
-
     /// Create a new Fennel instance.
     ///
     /// Loads the vendored `fennel.lua` into a fresh Lua VM and registers it

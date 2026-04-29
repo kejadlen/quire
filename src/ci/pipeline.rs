@@ -1,7 +1,12 @@
 //! CI job graph: evaluation of `ci.fnl` and validation rules.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mlua::UserData;
+
 use crate::Result;
-use crate::fennel::{Fennel, FennelError};
+use crate::fennel::Fennel;
 
 /// A registered job extracted from ci.fnl.
 pub struct Job {
@@ -36,50 +41,44 @@ impl Pipeline {
     }
 }
 
-/// Evaluate a ci.fnl source string, registering jobs via the `job` macro.
+/// The `quire.ci` module exposed to Fennel scripts via `require`.
 ///
-/// Injects a `job` global that accumulates into a registration table,
-/// evaluates the source, and extracts the registered jobs.
-pub(crate) fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<Pipeline> {
-    fennel.eval_raw(source, name, |lua| {
-        // Create a registration table. `job` will push into this.
-        let registry: mlua::Table = lua.create_table()?;
-        lua.globals().set("_quire_jobs", registry)?;
+/// Registered as `package.loaded["quire.ci"]` so scripts can write:
+///
+/// ```fennel
+/// (local ci (require :quire.ci))
+/// (ci:job :build [:quire/push] (fn [_] nil))
+/// ```
+struct CiModule {
+    jobs: Rc<RefCell<Vec<Job>>>,
+}
 
-        // Define the `job` global: (job id inputs run-fn)
-        let job_fn = lua.create_function(
-            |lua, (id, inputs, run_fn): (mlua::String, mlua::Table, mlua::Function)| {
-                let registry: mlua::Table = lua.globals().get("_quire_jobs")?;
-                let entry = lua.create_table()?;
-                entry.set("id", id)?;
-                entry.set("inputs", inputs)?;
-                entry.set("run", run_fn)?;
-                registry.push(entry)?;
+impl UserData for CiModule {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method(
+            "job",
+            |_, this, (id, inputs, run_fn): (String, Vec<String>, mlua::Function)| {
+                this.jobs.borrow_mut().push(Job { id, inputs, run_fn });
                 Ok(())
             },
-        )?;
-        lua.globals().set("job", job_fn)?;
+        );
+    }
+}
 
+/// Evaluate a ci.fnl source string, registering jobs via the `quire.ci` module.
+///
+/// Injects `quire.ci` into `package.loaded` so scripts can
+/// `(require :quire.ci)`, evaluates the source, and takes the accumulated jobs.
+pub(crate) fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<Pipeline> {
+    let jobs = Rc::new(RefCell::new(Vec::new()));
+
+    fennel.eval_raw(source, name, |lua| {
+        let loaded: mlua::Table = lua.globals().get::<mlua::Table>("package")?.get("loaded")?;
+        loaded.set("quire.ci", CiModule { jobs: jobs.clone() })?;
         Ok(())
     })?;
 
-    // Extract the registration table.
-    let lua_err = |e: mlua::Error| FennelError::from_lua(source, name, e);
-    let registry: mlua::Table = fennel.lua().globals().get("_quire_jobs").map_err(lua_err)?;
-    let mut jobs = Vec::new();
-    for entry in registry.sequence_values::<mlua::Table>() {
-        let entry = entry.map_err(lua_err)?;
-        let id: String = entry.get("id").map_err(lua_err)?;
-        let inputs_table: mlua::Table = entry.get("inputs").map_err(lua_err)?;
-        let run_fn: mlua::Function = entry.get("run").map_err(lua_err)?;
-        let mut inputs = Vec::new();
-        for input in inputs_table.sequence_values::<String>() {
-            inputs.push(input.map_err(lua_err)?);
-        }
-        jobs.push(Job { id, inputs, run_fn });
-    }
-
-    Ok(Pipeline { jobs })
+    Ok(Pipeline { jobs: jobs.take() })
 }
 
 /// A validation error found in the job graph.
@@ -206,7 +205,8 @@ mod tests {
     #[test]
     fn eval_ci_registers_a_job() {
         let f = fennel();
-        let source = r#"(job :test [:quire/push] (fn [_] nil))"#;
+        let source = r#"(local ci (require :quire.ci))
+(ci:job :test [:quire/push] (fn [_] nil))"#;
         let result = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         assert_eq!(result.jobs.len(), 1);
         assert_eq!(result.jobs[0].id, "test");
@@ -217,8 +217,9 @@ mod tests {
     fn eval_ci_registers_multiple_jobs() {
         let f = fennel();
         let source = r#"
-(job :build [:quire/push] (fn [_] nil))
-(job :test [:build] (fn [_] nil))
+(local ci (require :quire.ci))
+(ci:job :build [:quire/push] (fn [_] nil))
+(ci:job :test [:build] (fn [_] nil))
 "#;
         let result = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         assert_eq!(result.jobs.len(), 2);
@@ -239,8 +240,9 @@ mod tests {
     fn validate_accepts_valid_config() {
         let f = fennel();
         let source = r#"
-(job :build [:quire/push] (fn [_] nil))
-(job :test [:build :quire/push] (fn [_] nil))
+(local ci (require :quire.ci))
+(ci:job :build [:quire/push] (fn [_] nil))
+(ci:job :test [:build :quire/push] (fn [_] nil))
 "#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         assert!(pipeline.validate().is_ok());
@@ -250,8 +252,9 @@ mod tests {
     fn validate_rejects_cycle() {
         let f = fennel();
         let source = r#"
-(job :a [:b] (fn [_] nil))
-(job :b [:a] (fn [_] nil))
+(local ci (require :quire.ci))
+(ci:job :a [:b] (fn [_] nil))
+(ci:job :b [:a] (fn [_] nil))
 "#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
@@ -265,9 +268,10 @@ mod tests {
     fn validate_cycle_only_reports_cycle_members() {
         let f = fennel();
         let source = r#"
-(job :a [:b :quire/push] (fn [_] nil))
-(job :b [:a :quire/push] (fn [_] nil))
-(job :clean [:quire/push] (fn [_] nil))
+(local ci (require :quire.ci))
+(ci:job :a [:b :quire/push] (fn [_] nil))
+(ci:job :b [:a :quire/push] (fn [_] nil))
+(ci:job :clean [:quire/push] (fn [_] nil))
 "#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
@@ -290,10 +294,11 @@ mod tests {
     fn validate_reports_disjoint_cycles_separately() {
         let f = fennel();
         let source = r#"
-(job :a [:b :quire/push] (fn [_] nil))
-(job :b [:a :quire/push] (fn [_] nil))
-(job :c [:d :quire/push] (fn [_] nil))
-(job :d [:c :quire/push] (fn [_] nil))
+(local ci (require :quire.ci))
+(ci:job :a [:b :quire/push] (fn [_] nil))
+(ci:job :b [:a :quire/push] (fn [_] nil))
+(ci:job :c [:d :quire/push] (fn [_] nil))
+(ci:job :d [:c :quire/push] (fn [_] nil))
 "#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
@@ -307,7 +312,8 @@ mod tests {
     #[test]
     fn validate_rejects_empty_inputs() {
         let f = fennel();
-        let source = r#"(job :setup [] (fn [_] nil))"#;
+        let source = r#"(local ci (require :quire.ci))
+(ci:job :setup [] (fn [_] nil))"#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
@@ -320,7 +326,8 @@ mod tests {
     #[test]
     fn validate_rejects_unreachable_jobs() {
         let f = fennel();
-        let source = r#"(job :orphan [:orphan] (fn [_] nil))"#;
+        let source = r#"(local ci (require :quire.ci))
+(ci:job :orphan [:orphan] (fn [_] nil))"#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
@@ -334,7 +341,8 @@ mod tests {
     #[test]
     fn validate_rejects_slash_in_job_id() {
         let f = fennel();
-        let source = r#"(job :foo/bar [:quire/push] (fn [_] nil))"#;
+        let source = r#"(local ci (require :quire.ci))
+(ci:job :foo/bar [:quire/push] (fn [_] nil))"#;
         let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
