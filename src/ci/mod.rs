@@ -35,19 +35,27 @@ impl Ci {
     }
 
     /// Evaluate ci.fnl at a given SHA and return the registration table.
-    pub fn eval(&self, sha: &str) -> Result<EvalResult> {
-        let source = self.ci_fnl_source(sha)?;
+    ///
+    /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
+    pub fn eval(&self, sha: &str) -> Result<Option<EvalResult>> {
+        let Some(source) = self.ci_fnl_source(sha)? else {
+            return Ok(None);
+        };
         let fennel = crate::fennel::Fennel::new()?;
         let name = format!("{sha}:{CI_FNL}");
         let result = eval_ci(&fennel, &source, &name)?;
-        Ok(result)
+        Ok(Some(result))
     }
 
     /// Evaluate ci.fnl at a given SHA and validate the job graph.
-    pub fn validate_at(&self, sha: &str) -> Result<EvalResult> {
-        let result = self.eval(sha)?;
+    ///
+    /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
+    pub fn validate_at(&self, sha: &str) -> Result<Option<EvalResult>> {
+        let Some(result) = self.eval(sha)? else {
+            return Ok(None);
+        };
         validate(&result.jobs)?;
-        Ok(result)
+        Ok(Some(result))
     }
 
     /// Evaluate a ci.fnl file from disk and validate the job graph.
@@ -60,18 +68,11 @@ impl Ci {
         Ok(result)
     }
 
-    /// Check whether this bare repo has `.quire/ci.fnl` at a given commit SHA.
-    fn has_ci_fnl(&self, sha: &str) -> bool {
-        self.git(&["show", &format!("{sha}:{CI_FNL}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
-    fn ci_fnl_source(&self, sha: &str) -> Result<String> {
+    ///
+    /// Returns `Ok(None)` if the file does not exist at that commit,
+    /// `Ok(Some(contents))` if it does, or `Err` for unexpected failures.
+    fn ci_fnl_source(&self, sha: &str) -> Result<Option<String>> {
         let output = self
             .git(&["show", &format!("{sha}:{CI_FNL}")])
             .stdout(std::process::Stdio::piped())
@@ -79,13 +80,19 @@ impl Ci {
             .output()?;
 
         if !output.status.success() {
+            // Distinguish "file not found" from real errors. git show
+            // exits 128 for missing paths but the stderr contains
+            // "does not exist" — check for that pattern.
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("does not exist") || stderr.contains("not found") {
+                return Ok(None);
+            }
             return Err(crate::Error::Git(format!(
                 "failed to read {CI_FNL} at {sha}: {stderr}"
             )));
         }
 
-        Ok(String::from_utf8(output.stdout)?)
+        Ok(Some(String::from_utf8(output.stdout)?))
     }
 
     /// Start a git command rooted in this repo.
@@ -127,9 +134,9 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> Result<()> {
     let ci = repo.ci();
 
-    if !ci.has_ci_fnl(&push_ref.new_sha) {
+    let Some(source) = ci.ci_fnl_source(&push_ref.new_sha)? else {
         return Ok(());
-    }
+    };
 
     let meta = RunMeta {
         sha: push_ref.new_sha.clone(),
@@ -148,9 +155,19 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
 
     run.transition(RunState::Active)?;
 
-    let result = ci.validate_at(&push_ref.new_sha);
-    match result {
-        Ok(_) => {
+    // Evaluate and validate the source we already read.
+    let fennel = crate::fennel::Fennel::new()?;
+    let name = format!("{}:{CI_FNL}", push_ref.new_sha);
+    let result = match eval_ci(&fennel, &source, &name) {
+        Ok(r) => r,
+        Err(e) => {
+            run.transition(RunState::Failed)?;
+            return Err(e);
+        }
+    };
+
+    match validate(&result.jobs) {
+        Ok(()) => {
             run.transition(RunState::Complete)?;
         }
         Err(e) => {
