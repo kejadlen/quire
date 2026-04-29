@@ -92,12 +92,6 @@ impl Fennel {
         name: &str,
         setup: impl Fn(&Lua) -> mlua::Result<()>,
     ) -> Result<mlua::Value, FennelError> {
-        if source.trim().is_empty() {
-            return Err(FennelError::Empty {
-                name: name.to_string(),
-            });
-        }
-
         setup(&self.lua).map_err(|e| FennelError::from_lua(source, name, e))?;
 
         let fennel: mlua::Table = self.lua.globals().get("fennel")?;
@@ -124,6 +118,12 @@ impl Fennel {
     where
         T: serde::de::DeserializeOwned,
     {
+        if source.trim().is_empty() {
+            return Err(FennelError::Empty {
+                name: name.to_string(),
+            });
+        }
+
         let result = self.eval_raw(source, name, |_| Ok(()))?;
 
         // Reject nil results — a config file that evaluates to nothing is
