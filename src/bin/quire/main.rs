@@ -81,6 +81,7 @@ enum CiCommands {
     /// Validate a ci.fnl file without running any jobs.
     Validate {
         /// Path to the ci.fnl file to validate.
+        #[arg(default_value = ".quire/ci.fnl")]
         path: std::path::PathBuf,
     },
 }
