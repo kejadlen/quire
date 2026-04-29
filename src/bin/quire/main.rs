@@ -127,7 +127,12 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(sentry_tracing::layer())
         .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
+        .with(
+            EnvFilter::builder()
+                .with_env_var("QUIRE_LOG")
+                .from_env()
+                .into_diagnostic()?,
+        )
         .init();
 
     let cli = Cli::parse();
