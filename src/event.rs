@@ -38,54 +38,64 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
 /// Check each updated ref for .quire/ci.fnl, create runs, and eval + validate.
 fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
     for push_ref in event.updated_refs() {
-        if !repo.has_ci_fnl(&push_ref.new_sha) {
-            continue;
+        dispatch_ci_ref(repo, &event.repo, &event.pushed_at, push_ref);
+    }
+}
+
+/// Create and run CI for a single updated ref.
+fn dispatch_ci_ref(
+    repo: &crate::quire::Repo,
+    repo_name: &str,
+    pushed_at: &str,
+    push_ref: &PushRef,
+) {
+    if !repo.has_ci_fnl(&push_ref.new_sha) {
+        return;
+    }
+
+    let meta = RunMeta {
+        sha: push_ref.new_sha.clone(),
+        r#ref: push_ref.r#ref.clone(),
+        pushed_at: pushed_at.to_string(),
+    };
+
+    let runs = repo.runs();
+    let mut run = match runs.create(&meta) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(repo = %repo_name, %e, "failed to create CI run");
+            return;
         }
+    };
 
-        let meta = RunMeta {
-            sha: push_ref.new_sha.clone(),
-            r#ref: push_ref.r#ref.clone(),
-            pushed_at: event.pushed_at.clone(),
-        };
+    tracing::info!(
+        run_id = %run.id(),
+        sha = %push_ref.new_sha,
+        r#ref = %push_ref.r#ref,
+        "created CI run"
+    );
 
-        let runs = repo.runs();
-        let mut run = match runs.create(&meta) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(repo = %event.repo, %e, "failed to create CI run");
-                continue;
+    run.transition(RunState::Active).unwrap_or_else(|e| {
+        tracing::error!(run_id = %run.id(), %e, "failed to transition run to active");
+    });
+
+    let result = eval_and_validate(repo, &push_ref.new_sha);
+    match result {
+        Ok(()) => {
+            if let Err(e) = run.transition(RunState::Complete) {
+                tracing::error!(run_id = %run.id(), %e, "failed to transition run to complete");
             }
-        };
-
-        tracing::info!(
-            run_id = %run.id(),
-            sha = %push_ref.new_sha,
-            r#ref = %push_ref.r#ref,
-            "created CI run"
-        );
-
-        run.transition(RunState::Active).unwrap_or_else(|e| {
-            tracing::error!(run_id = %run.id(), %e, "failed to transition run to active");
-        });
-
-        let result = eval_and_validate(repo, &push_ref.new_sha);
-        match result {
-            Ok(()) => {
-                if let Err(e) = run.transition(RunState::Complete) {
-                    tracing::error!(run_id = %run.id(), %e, "failed to transition run to complete");
-                }
-            }
-            Err(e) => {
-                tracing::error!(run_id = %run.id(), %e, "CI evaluation failed");
-                if let Err(te) = run.transition(RunState::Failed) {
-                    tracing::error!(run_id = %run.id(), %te, "failed to transition run to failed");
-                } else if let Err(we) = run.write_state(&RunStateFile {
-                    status: RunState::Failed,
-                    started_at: None,
-                    finished_at: Some(jiff::Zoned::now().to_string()),
-                }) {
-                    tracing::error!(run_id = %run.id(), %we, "failed to write state for failed run");
-                }
+        }
+        Err(e) => {
+            tracing::error!(run_id = %run.id(), %e, "CI evaluation failed");
+            if let Err(te) = run.transition(RunState::Failed) {
+                tracing::error!(run_id = %run.id(), %te, "failed to transition run to failed");
+            } else if let Err(we) = run.write_state(&RunStateFile {
+                status: RunState::Failed,
+                started_at: None,
+                finished_at: Some(jiff::Zoned::now().to_string()),
+            }) {
+                tracing::error!(run_id = %run.id(), %we, "failed to write state for failed run");
             }
         }
     }
