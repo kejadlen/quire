@@ -42,6 +42,14 @@ pub struct Fennel {
 }
 
 impl Fennel {
+    /// Access the underlying Lua VM.
+    ///
+    /// Needed for extracting evaluation results that don't deserialize
+    /// directly into a Rust type (e.g. the CI job registry).
+    pub(crate) fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
     /// Create a new Fennel instance.
     ///
     /// Loads the vendored `fennel.lua` into a fresh Lua VM and registers it
@@ -76,20 +84,25 @@ impl Fennel {
         Ok(Self { lua })
     }
 
-    /// Compile and evaluate a Fennel source string, deserializing the result
-    /// into `T`.
+    /// Compile and evaluate a Fennel source string, returning the raw
+    /// Lua value.
     ///
-    /// `name` is used in error messages — typically a filename or a synthetic
-    /// label like `HEAD:.quire/config.fnl`.
-    pub fn load_string<T>(&self, source: &str, name: &str) -> Result<T, FennelError>
-    where
-        T: serde::de::DeserializeOwned,
-    {
+    /// `setup` is called before evaluation and can inject globals or
+    /// modify the VM. `name` is used in error messages — typically a
+    /// filename or a synthetic label like `HEAD:.quire/config.fnl`.
+    pub fn eval_raw(
+        &self,
+        source: &str,
+        name: &str,
+        setup: impl Fn(&Lua) -> mlua::Result<()>,
+    ) -> Result<mlua::Value, FennelError> {
         if source.trim().is_empty() {
             return Err(FennelError::Empty {
                 name: name.to_string(),
             });
         }
+
+        setup(&self.lua).map_err(|e| FennelError::from_lua(source, name, &e))?;
 
         let fennel: mlua::Table =
             self.lua
@@ -122,6 +135,20 @@ impl Fennel {
         let result = eval
             .call::<mlua::Value>((source, opts))
             .map_err(|e| FennelError::from_lua(source, name, &e))?;
+
+        Ok(result)
+    }
+
+    /// Compile and evaluate a Fennel source string, deserializing the result
+    /// into `T`.
+    ///
+    /// `name` is used in error messages — typically a filename or a synthetic
+    /// label like `HEAD:.quire/config.fnl`.
+    pub fn load_string<T>(&self, source: &str, name: &str) -> Result<T, FennelError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let result = self.eval_raw(source, name, |_| Ok(()))?;
 
         // Reject nil results — a config file that evaluates to nothing is
         // almost always a mistake.
