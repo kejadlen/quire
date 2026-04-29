@@ -258,10 +258,10 @@ impl Run {
             (Pending, Active) | (Pending, Complete) | (Active, Complete) | (Active, Failed)
         );
         if !allowed {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("invalid run transition: {:?} -> {:?}", self.state, to),
-            )));
+            return Err(Error::InvalidTransition {
+                from: self.state,
+                to,
+            });
         }
 
         let src = self.path();

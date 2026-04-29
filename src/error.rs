@@ -1,6 +1,6 @@
 use miette::Diagnostic;
 
-use crate::ci::ValidationError;
+use crate::ci::{RunState, ValidationError};
 use crate::fennel::FennelError;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
@@ -25,6 +25,9 @@ pub enum Error {
     #[error("CI validation failed")]
     #[related]
     Validation(Vec<ValidationError>),
+
+    #[error("invalid run transition: {from:?} -> {to:?}")]
+    InvalidTransition { from: RunState, to: RunState },
 
     #[error("git error: {0}")]
     Git(String),
