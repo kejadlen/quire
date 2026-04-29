@@ -8,6 +8,7 @@ use miette::{Context, IntoDiagnostic, Result};
 use crate::Quire;
 use crate::ci;
 use crate::event::PushEvent;
+use crate::mirror;
 
 async fn health() -> &'static str {
     "ok"
@@ -110,5 +111,6 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         return;
     }
 
-    ci::dispatch_push(&quire, &event).await;
+    ci::trigger(&quire, &event);
+    mirror::push(&quire, &event).await;
 }
