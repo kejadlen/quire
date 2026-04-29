@@ -151,7 +151,7 @@ impl Fennel {
     }
 }
 
-fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelError {
+pub(crate) fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelError {
     let message = format!("{name}: {err}");
 
     // Try to extract a line number from the Lua error for a label.
@@ -172,7 +172,7 @@ fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelError {
 /// The name may contain colons (e.g. `HEAD:.quire/config.fnl`), so splitting
 /// from the left breaks. Match the first `:LINE:COLUMN: ` run, which is
 /// unambiguous — filenames don't end with `:digits:digits:`.
-fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
+pub(crate) fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
     let msg = err.to_string();
     let re = regex::Regex::new(r":(\d+):\d+: ").ok()?;
     let caps = re.captures(&msg)?;
@@ -184,7 +184,7 @@ fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
 }
 
 /// Convert a 1-based line number to a byte offset in the source.
-fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
+pub(crate) fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
     if line == 0 {
         return None;
     }

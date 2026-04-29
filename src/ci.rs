@@ -314,7 +314,19 @@ pub fn eval_ci(
     source: &str,
     name: &str,
 ) -> crate::Result<EvalResult> {
-    eval_ci_inner(source, name).map_err(|e| crate::Error::Lua(e.to_string()))
+    eval_ci_inner(source, name).map_err(|e| {
+        // Convert mlua errors into rich FennelError with source snippets.
+        match e {
+            mlua::Error::RuntimeError(_) | mlua::Error::SyntaxError { .. } => {
+                crate::fennel::eval_error(source, name, &e).into()
+            }
+            _ => crate::Error::Fennel(crate::fennel::FennelError::Eval {
+                message: format!("{name}: {e}"),
+                source_code: source.to_string(),
+                label: miette::SourceOffset::from(0),
+            }),
+        }
+    })
 }
 
 fn eval_ci_inner(source: &str, name: &str) -> mlua::Result<EvalResult> {
@@ -368,9 +380,20 @@ fn eval_ci_inner(source: &str, name: &str) -> mlua::Result<EvalResult> {
 
 /// A validation error found in the job graph.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("{message}")]
-pub struct ValidationError {
-    pub message: String,
+pub enum ValidationError {
+    #[error("Cycle detected among jobs: {}", cycle_jobs.join(", "))]
+    Cycle { cycle_jobs: Vec<String> },
+
+    #[error(
+        "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it."
+    )]
+    EmptyInputs { job_id: String },
+
+    #[error("Job '{job_id}' is not reachable from any source ref (e.g. :quire/push).")]
+    Unreachable { job_id: String },
+
+    #[error("Job id '{job_id}' contains '/', which is reserved for the 'quire/' source namespace.")]
+    ReservedSlash { job_id: String },
 }
 
 /// Validate the structural rules of a job graph.
@@ -385,11 +408,8 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
     // Rule 4: no '/' in user job ids.
     for job in jobs {
         if job.id.contains('/') {
-            errors.push(ValidationError {
-                message: format!(
-                    "Job id '{}' contains '/', which is reserved for the 'quire/' source namespace.",
-                    job.id
-                ),
+            errors.push(ValidationError::ReservedSlash {
+                job_id: job.id.clone(),
             });
         }
     }
@@ -397,11 +417,8 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
     // Rule 2: non-empty inputs.
     for job in jobs {
         if job.inputs.is_empty() {
-            errors.push(ValidationError {
-                message: format!(
-                    "Job '{}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it.",
-                    job.id
-                ),
+            errors.push(ValidationError::EmptyInputs {
+                job_id: job.id.clone(),
             });
         }
     }
@@ -446,14 +463,13 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
     }
 
     if sorted.len() != jobs.len() {
-        let cycle_jobs: Vec<&str> = jobs
+        let cycle_jobs: Vec<String> = jobs
             .iter()
             .map(|j| j.id.as_str())
             .filter(|id| !sorted.contains(id))
+            .map(|s| s.to_string())
             .collect();
-        errors.push(ValidationError {
-            message: format!("Cycle detected among jobs: {}", cycle_jobs.join(", ")),
-        });
+        errors.push(ValidationError::Cycle { cycle_jobs });
     }
 
     // Rule 3: reachability — every job's transitive inputs must include a source ref.
@@ -480,11 +496,8 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
         }
 
         if !found_source {
-            errors.push(ValidationError {
-                message: format!(
-                    "Job '{}' is not reachable from any source ref (e.g. :quire/push).",
-                    job.id
-                ),
+            errors.push(ValidationError::Unreachable {
+                job_id: job.id.clone(),
             });
         }
     }
@@ -896,9 +909,8 @@ mod tests {
         ];
         let errs = validate(&jobs).unwrap_err();
         assert!(
-            errs.iter()
-                .any(|e| e.message.to_lowercase().contains("cycle")),
-            "should report a cycle: {errs:?}"
+            errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
+            "should report a cycle involving a and b: {errs:?}"
         );
     }
 
@@ -911,7 +923,7 @@ mod tests {
         let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("setup") && e.message.contains("empty inputs")),
+                .any(|e| matches!(e, ValidationError::EmptyInputs { job_id } if job_id == "setup")),
             "should report empty inputs for 'setup': {errs:?}"
         );
     }
@@ -924,8 +936,9 @@ mod tests {
         }];
         let errs = validate(&jobs).unwrap_err();
         assert!(
-            errs.iter()
-                .any(|e| e.message.contains("orphan") && e.message.contains("source")),
+            errs.iter().any(
+                |e| matches!(e, ValidationError::Unreachable { job_id } if job_id == "orphan")
+            ),
             "should report unreachable job 'orphan': {errs:?}"
         );
     }
@@ -938,8 +951,9 @@ mod tests {
         }];
         let errs = validate(&jobs).unwrap_err();
         assert!(
-            errs.iter()
-                .any(|e| e.message.contains("foo/bar") && e.message.contains("'/'")),
+            errs.iter().any(
+                |e| matches!(e, ValidationError::ReservedSlash { job_id } if job_id == "foo/bar")
+            ),
             "should report slash in job id: {errs:?}"
         );
     }

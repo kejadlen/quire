@@ -25,9 +25,6 @@ pub enum Error {
     #[related]
     Validation(Vec<ValidationError>),
 
-    #[error("lua error: {0}")]
-    Lua(String),
-
     #[error("git error: {0}")]
     Git(String),
 
