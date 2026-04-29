@@ -17,7 +17,8 @@ pub enum Error {
     #[error(transparent)]
     Fennel(#[from] crate::fennel::FennelError),
 
-    #[error("CI validation failed: {}", .0.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))]
+    #[error("CI validation failed")]
+    #[related]
     Validation(Vec<crate::ci::ValidationError>),
 
     #[error("lua error: {0}")]

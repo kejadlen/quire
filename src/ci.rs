@@ -385,7 +385,8 @@ pub fn eval_ci(
 }
 
 /// A validation error found in the job graph.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{message}")]
 pub struct ValidationError {
     pub message: String,
 }
