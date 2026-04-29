@@ -334,23 +334,16 @@ pub fn eval_ci(
     })?;
 
     // Extract the registration table.
-    let registry: mlua::Table = fennel
-        .lua()
-        .globals()
-        .get("_quire_jobs")
-        .map_err(|e| crate::fennel::FennelError::from_lua(source, name, &e))?;
+    let lua_err = |e: mlua::Error| crate::fennel::FennelError::from_lua(source, name, &e);
+    let registry: mlua::Table = fennel.lua().globals().get("_quire_jobs").map_err(lua_err)?;
     let mut jobs = Vec::new();
     for entry in registry.sequence_values::<mlua::Table>() {
-        let entry = entry.map_err(|e| crate::fennel::FennelError::from_lua(source, name, &e))?;
-        let id: String = entry
-            .get("id")
-            .map_err(|e| crate::fennel::FennelError::from_lua(source, name, &e))?;
-        let inputs_table: mlua::Table = entry
-            .get("inputs")
-            .map_err(|e| crate::fennel::FennelError::from_lua(source, name, &e))?;
+        let entry = entry.map_err(lua_err)?;
+        let id: String = entry.get("id").map_err(lua_err)?;
+        let inputs_table: mlua::Table = entry.get("inputs").map_err(lua_err)?;
         let mut inputs = Vec::new();
         for input in inputs_table.sequence_values::<String>() {
-            inputs.push(input.map_err(|e| crate::fennel::FennelError::from_lua(source, name, &e))?);
+            inputs.push(input.map_err(lua_err)?);
         }
         jobs.push(JobDef { id, inputs });
     }
