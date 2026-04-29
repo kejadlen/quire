@@ -373,9 +373,6 @@ pub enum ValidationError {
 pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
-    // Build a set of known job ids.
-    let job_ids: std::collections::HashSet<&str> = jobs.iter().map(|j| j.id.as_str()).collect();
-
     // Rule 4: no '/' in user job ids.
     for job in jobs {
         if job.id.contains('/') {
@@ -394,46 +391,34 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
         }
     }
 
-    // Rule 1: acyclic (Kahn's algorithm).
-    let mut in_degree: std::collections::HashMap<&str, usize> =
-        jobs.iter().map(|j| (j.id.as_str(), 0)).collect();
-    let mut adjacency: std::collections::HashMap<&str, Vec<&str>> =
-        jobs.iter().map(|j| (j.id.as_str(), Vec::new())).collect();
+    // Rule 1: acyclic.
+    //
+    // Build a directed graph where edges point from dependency to
+    // dependent. Source refs (e.g. "quire/push") are not nodes.
+    let mut graph: petgraph::Graph<&str, ()> = petgraph::Graph::new();
+    let mut node_map: std::collections::HashMap<&str, petgraph::graph::NodeIndex> =
+        std::collections::HashMap::new();
 
     for job in jobs {
+        let idx = graph.add_node(job.id.as_str());
+        node_map.insert(job.id.as_str(), idx);
+    }
+
+    for job in jobs {
+        let dependent = node_map[job.id.as_str()];
         for input in &job.inputs {
-            if job_ids.contains(input.as_str()) {
-                *in_degree.entry(job.id.as_str()).or_insert(0) += 1;
-                adjacency
-                    .entry(input.as_str())
-                    .or_default()
-                    .push(job.id.as_str());
+            if let Some(&dependency) = node_map.get(input.as_str()) {
+                graph.add_edge(dependency, dependent, ());
             }
         }
     }
 
-    let mut queue: Vec<&str> = in_degree
-        .iter()
-        .filter(|&(_, &deg)| deg == 0)
-        .map(|(&id, _)| id)
-        .collect();
-    let mut sorted = Vec::new();
-
-    while let Some(id) = queue.pop() {
-        sorted.push(id);
-        if let Some(dependents) = adjacency.get(id) {
-            for &dep in dependents {
-                if let Some(deg) = in_degree.get_mut(dep) {
-                    *deg -= 1;
-                    if *deg == 0 {
-                        queue.push(dep);
-                    }
-                }
-            }
-        }
-    }
-
-    if sorted.len() != jobs.len() {
+    if petgraph::algo::is_cyclic_directed(&graph) {
+        let sorted: std::collections::HashSet<_> = petgraph::algo::toposort(&graph, None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|idx| graph[idx])
+            .collect();
         let cycle_jobs: Vec<String> = jobs
             .iter()
             .map(|j| j.id.as_str())
