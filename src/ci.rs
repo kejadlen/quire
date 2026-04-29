@@ -41,7 +41,7 @@ pub struct RunMeta {
 /// Timestamps recorded across the run lifecycle. The directory name is the
 /// authoritative state; this file records when transitions happened.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RunStateFile {
+pub struct RunTimes {
     /// ISO 8601 timestamp of when the run was picked up (moved to active).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
@@ -66,7 +66,7 @@ impl Runs {
 
     /// Create a new run record in the `pending` state.
     ///
-    /// Writes `meta.yml` and `state.yml` atomically (temp dir + rename).
+    /// Writes `meta.yml` and `times.yml` atomically (temp dir + rename).
     pub fn create(&self, meta: &RunMeta) -> Result<Run> {
         let pending_dir = self.base.join(RunState::Pending.dir_name());
         let id = uuid::Uuid::now_v7().to_string();
@@ -77,7 +77,7 @@ impl Runs {
         fs_err::create_dir_all(&tmp_dir)?;
 
         write_yaml(&tmp_dir.join("meta.yml"), meta)?;
-        write_yaml(&tmp_dir.join("state.yml"), &RunStateFile::default())?;
+        write_yaml(&tmp_dir.join("times.yml"), &RunTimes::default())?;
 
         let final_dir = pending_dir.join(&id);
         fs_err::rename(&tmp_dir, &final_dir)?;
@@ -211,7 +211,7 @@ impl Run {
         self.state
     }
 
-    /// Open an existing run from disk, reading its metadata and state.
+    /// Open an existing run from disk, reading its metadata and timestamps.
     ///
     /// `state` is the directory the run is expected to be in (e.g.
     /// `pending/`, `active/`). Returns an error if the run directory or
@@ -219,19 +219,15 @@ impl Run {
     pub fn open(base: PathBuf, state: RunState, id: String) -> Result<OpenedRun> {
         let run = Self { base, state, id };
         let meta = run.read_meta()?;
-        let run_state = run.read_state()?;
-        Ok(OpenedRun {
-            run,
-            meta,
-            state: run_state,
-        })
+        let times = run.read_times()?;
+        Ok(OpenedRun { run, meta, times })
     }
 
     /// Transition the run from its current state to a new state.
     ///
     /// Moves the run directory between state parent directories and stamps
     /// `started_at` (entering Active) or `finished_at` (entering Complete or
-    /// Failed) on the state file. Each timestamp is set at most once.
+    /// Failed) on `times.yml`. Each timestamp is set at most once.
     pub fn transition(&mut self, to: RunState) -> Result<()> {
         let src = self.path();
         let dst_parent = self.base.join(to.dir_name());
@@ -248,7 +244,7 @@ impl Run {
         fs_err::rename(&src, &dst)?;
         self.state = to;
 
-        let mut times = self.read_state()?;
+        let mut times = self.read_times()?;
         let now = || jiff::Zoned::now().to_string();
         match to {
             RunState::Active if times.started_at.is_none() => times.started_at = Some(now()),
@@ -257,13 +253,13 @@ impl Run {
             }
             _ => {}
         }
-        self.write_state(&times)?;
+        self.write_times(&times)?;
         Ok(())
     }
 
-    /// Read the mutable state file for this run.
-    pub fn read_state(&self) -> Result<RunStateFile> {
-        read_yaml(&self.path().join("state.yml"))
+    /// Read the timestamps recorded for this run.
+    pub fn read_times(&self) -> Result<RunTimes> {
+        read_yaml(&self.path().join("times.yml"))
     }
 
     /// Read the immutable metadata for this run.
@@ -271,18 +267,18 @@ impl Run {
         read_yaml(&self.path().join("meta.yml"))
     }
 
-    /// Update the state file for this run (atomic write).
-    pub fn write_state(&self, state: &RunStateFile) -> Result<()> {
-        write_yaml(&self.path().join("state.yml"), state)
+    /// Update the timestamps for this run (atomic write).
+    pub fn write_times(&self, times: &RunTimes) -> Result<()> {
+        write_yaml(&self.path().join("times.yml"), times)
     }
 }
 
-/// A run loaded from disk with its metadata and state.
+/// A run loaded from disk with its metadata and timestamps.
 #[derive(Debug)]
 pub struct OpenedRun {
     pub run: Run,
     pub meta: RunMeta,
-    pub state: RunStateFile,
+    pub times: RunTimes,
 }
 
 /// A registered job definition extracted from ci.fnl.
@@ -591,13 +587,13 @@ mod tests {
         let path = run.path();
         assert!(path.exists(), "run directory should exist");
         assert!(path.join("meta.yml").exists());
-        assert!(path.join("state.yml").exists());
+        assert!(path.join("times.yml").exists());
         assert_eq!(run.state(), RunState::Pending);
 
         let meta = run.read_meta().expect("read meta");
         assert_eq!(meta.sha, "abc123");
 
-        let state = run.read_state().expect("read state");
+        let state = run.read_times().expect("read state");
         assert!(state.started_at.is_none());
         assert!(state.finished_at.is_none());
     }
@@ -631,7 +627,7 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
 
         run.transition(RunState::Active).expect("to active");
-        let times = run.read_state().expect("read state");
+        let times = run.read_times().expect("read state");
         assert!(times.started_at.is_some(), "started_at should be stamped");
         assert!(times.finished_at.is_none());
     }
@@ -644,13 +640,13 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
         run.transition(RunState::Active).expect("to active");
         run.transition(RunState::Complete).expect("to complete");
-        let times = run.read_state().expect("read state");
+        let times = run.read_times().expect("read state");
         assert!(times.started_at.is_some());
         assert!(times.finished_at.is_some());
 
         let mut failed = runs.create(&test_meta()).expect("create");
         failed.transition(RunState::Failed).expect("to failed");
-        let failed_times = failed.read_state().expect("read state");
+        let failed_times = failed.read_times().expect("read state");
         assert!(
             failed_times.started_at.is_none(),
             "no started_at when skipping active"
@@ -665,11 +661,11 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
 
         run.transition(RunState::Active).expect("to active");
-        let active_times = run.read_state().expect("read state");
+        let active_times = run.read_times().expect("read state");
         let started = active_times.started_at.clone();
 
         run.transition(RunState::Complete).expect("to complete");
-        let complete_times = run.read_state().expect("read state");
+        let complete_times = run.read_times().expect("read state");
         assert_eq!(complete_times.started_at, started, "started_at preserved");
     }
 
@@ -741,18 +737,18 @@ mod tests {
     }
 
     #[test]
-    fn write_state_updates_in_place() {
+    fn write_times_updates_in_place() {
         let (_dir, quire) = tmp_quire();
         let runs = Runs::new(quire.base_dir().join("runs").join("test.git"));
         let run = runs.create(&test_meta()).expect("create");
 
-        run.write_state(&RunStateFile {
+        run.write_times(&RunTimes {
             started_at: Some("2026-04-28T12:00:01Z".to_string()),
             finished_at: None,
         })
         .expect("write state");
 
-        let loaded = run.read_state().expect("read state");
+        let loaded = run.read_times().expect("read state");
         assert_eq!(loaded.started_at.as_deref(), Some("2026-04-28T12:00:01Z"));
 
         // Meta is unchanged.
