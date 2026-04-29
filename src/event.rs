@@ -29,88 +29,84 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
-    // CI gating: check each updated ref for .quire/ci.fnl.
+    dispatch_ci(&repo, event);
+    dispatch_mirror(quire, repo, event).await;
+}
+
+/// Check each updated ref for .quire/ci.fnl, create runs, and eval + validate.
+fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
+    use crate::ci::{RunMeta, RunState, RunStateFile};
+
     for push_ref in &event.refs {
         // Skip deletions (all-zero new sha).
         if push_ref.new_sha == "0000000000000000000000000000000000000000" {
             continue;
         }
 
-        if repo.has_ci_fnl(&push_ref.new_sha) {
-            let meta = crate::ci::RunMeta {
-                sha: push_ref.new_sha.clone(),
-                r#ref: push_ref.r#ref.clone(),
-                pushed_at: event.pushed_at.clone(),
-            };
+        if !repo.has_ci_fnl(&push_ref.new_sha) {
+            continue;
+        }
 
-            let runs = repo.runs();
-            match runs.create(&meta) {
-                Ok(mut run) => {
-                    tracing::info!(
-                        run_id = %run.id(),
-                        sha = %push_ref.new_sha,
-                        r#ref = %push_ref.r#ref,
-                        "created CI run"
-                    );
+        let meta = RunMeta {
+            sha: push_ref.new_sha.clone(),
+            r#ref: push_ref.r#ref.clone(),
+            pushed_at: event.pushed_at.clone(),
+        };
 
-                    // Transition to active, eval ci.fnl, validate.
-                    run.transition(crate::ci::RunState::Active)
-                        .unwrap_or_else(|e| {
-                            tracing::error!(run_id = %run.id(), %e, "failed to transition run to active");
-                        });
+        let runs = repo.runs();
+        let mut run = match runs.create(&meta) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(repo = %event.repo, %e, "failed to create CI run");
+                continue;
+            }
+        };
 
-                    let result = (|| -> crate::Result<()> {
-                        let source = repo.ci_fnl_source(&push_ref.new_sha)?;
-                        let fennel = crate::fennel::Fennel::new()?;
-                        let eval_result = crate::ci::eval_ci(
-                            &fennel,
-                            &source,
-                            &format!("{}:.quire/ci.fnl", &push_ref.new_sha),
-                        )?;
-                        crate::ci::validate(&eval_result.jobs)?;
-                        Ok(())
-                    })();
+        tracing::info!(
+            run_id = %run.id(),
+            sha = %push_ref.new_sha,
+            r#ref = %push_ref.r#ref,
+            "created CI run"
+        );
 
-                    match result {
-                        Ok(()) => {
-                            if let Err(e) = run.transition(crate::ci::RunState::Complete) {
-                                tracing::error!(
-                                    run_id = %run.id(),
-                                    %e,
-                                    "failed to transition run to complete"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                run_id = %run.id(),
-                                %e,
-                                "CI evaluation failed"
-                            );
-                            if let Err(te) = run.transition(crate::ci::RunState::Failed) {
-                                tracing::error!(run_id = %run.id(), %te, "failed to transition run to failed");
-                            } else if let Err(we) = run.write_state(&crate::ci::RunStateFile {
-                                status: crate::ci::RunState::Failed,
-                                started_at: None,
-                                finished_at: Some(jiff::Zoned::now().to_string()),
-                            }) {
-                                tracing::error!(run_id = %run.id(), %we, "failed to write state for failed run");
-                            }
-                        }
-                    }
+        run.transition(RunState::Active).unwrap_or_else(|e| {
+            tracing::error!(run_id = %run.id(), %e, "failed to transition run to active");
+        });
+
+        let result = eval_and_validate(repo, &push_ref.new_sha);
+        match result {
+            Ok(()) => {
+                if let Err(e) = run.transition(RunState::Complete) {
+                    tracing::error!(run_id = %run.id(), %e, "failed to transition run to complete");
                 }
-                Err(e) => {
-                    tracing::error!(
-                        repo = %event.repo,
-                        %e,
-                        "failed to create CI run"
-                    );
+            }
+            Err(e) => {
+                tracing::error!(run_id = %run.id(), %e, "CI evaluation failed");
+                if let Err(te) = run.transition(RunState::Failed) {
+                    tracing::error!(run_id = %run.id(), %te, "failed to transition run to failed");
+                } else if let Err(we) = run.write_state(&RunStateFile {
+                    status: RunState::Failed,
+                    started_at: None,
+                    finished_at: Some(jiff::Zoned::now().to_string()),
+                }) {
+                    tracing::error!(run_id = %run.id(), %we, "failed to write state for failed run");
                 }
             }
         }
     }
+}
 
-    // Mirror push — proceeds regardless of CI.
+/// Evaluate ci.fnl at a given SHA and validate the job graph.
+fn eval_and_validate(repo: &crate::quire::Repo, sha: &str) -> crate::Result<()> {
+    let source = repo.ci_fnl_source(sha)?;
+    let fennel = crate::fennel::Fennel::new()?;
+    let eval_result = crate::ci::eval_ci(&fennel, &source, &format!("{sha}:.quire/ci.fnl"))?;
+    crate::ci::validate(&eval_result.jobs)?;
+    Ok(())
+}
+
+/// Push updated refs to the configured mirror.
+async fn dispatch_mirror(quire: &crate::Quire, repo: crate::quire::Repo, event: &PushEvent) {
     let config = match repo.config() {
         Ok(c) => c,
         Err(e) => {
