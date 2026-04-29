@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use mlua::Lua;
 
 use crate::Result;
+use crate::event::PushEvent;
 
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -500,6 +501,155 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+/// Dispatch a push event: CI gating and mirror push.
+pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
+    let repo = match quire.repo(&event.repo) {
+        Ok(r) if r.exists() => r,
+        Ok(_) => {
+            tracing::error!(repo = %event.repo, "repo not found on disk");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(repo = %event.repo, %e, "invalid repo name in event");
+            return;
+        }
+    };
+
+    dispatch_ci(&repo, event);
+    dispatch_mirror(quire, repo, event).await;
+}
+
+/// Check each updated ref for .quire/ci.fnl, create runs, and eval + validate.
+fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
+    for push_ref in event.updated_refs() {
+        if let Err(e) = dispatch_ci_ref(repo, &event.pushed_at, push_ref) {
+            tracing::error!(
+                repo = %event.repo,
+                sha = %push_ref.new_sha,
+                %e,
+                "CI dispatch failed"
+            );
+        }
+    }
+}
+
+/// Create and run CI for a single updated ref.
+///
+/// Returns `Ok(())` if CI ran (regardless of whether the run succeeded
+/// or failed), or `Err` if dispatch itself failed.
+fn dispatch_ci_ref(
+    repo: &crate::quire::Repo,
+    pushed_at: &str,
+    push_ref: &crate::event::PushRef,
+) -> crate::Result<()> {
+    if !repo.has_ci_fnl(&push_ref.new_sha) {
+        return Ok(());
+    }
+
+    let meta = RunMeta {
+        sha: push_ref.new_sha.clone(),
+        r#ref: push_ref.r#ref.clone(),
+        pushed_at: pushed_at.to_string(),
+    };
+
+    let mut run = repo.runs().create(&meta)?;
+
+    tracing::info!(
+        run_id = %run.id(),
+        sha = %push_ref.new_sha,
+        r#ref = %push_ref.r#ref,
+        "created CI run"
+    );
+
+    run.transition(RunState::Active)?;
+
+    let result = eval_and_validate(repo, &push_ref.new_sha);
+    match result {
+        Ok(()) => {
+            run.transition(RunState::Complete)?;
+        }
+        Err(e) => {
+            run.transition(RunState::Failed)?;
+            run.write_state(&RunStateFile {
+                status: RunState::Failed,
+                started_at: None,
+                finished_at: Some(jiff::Zoned::now().to_string()),
+            })?;
+            // Return the eval/validation error as the dispatch error.
+            Err(e)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Evaluate ci.fnl at a given SHA and validate the job graph.
+fn eval_and_validate(repo: &crate::quire::Repo, sha: &str) -> crate::Result<()> {
+    let source = repo.ci_fnl_source(sha)?;
+    let fennel = crate::fennel::Fennel::new()?;
+    let eval_result = eval_ci(&fennel, &source, &format!("{sha}:.quire/ci.fnl"))?;
+    validate(&eval_result.jobs)?;
+    Ok(())
+}
+
+/// Push updated refs to the configured mirror.
+async fn dispatch_mirror(quire: &crate::Quire, repo: crate::quire::Repo, event: &PushEvent) {
+    let config = match repo.config() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(repo = %event.repo, %e, "failed to load repo config");
+            return;
+        }
+    };
+
+    let Some(mirror) = config.mirror else {
+        tracing::debug!(repo = %event.repo, "no mirror configured, skipping");
+        return;
+    };
+
+    let global_config = match quire.global_config() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(%e, "failed to load global config for mirror push");
+            return;
+        }
+    };
+
+    let token = match global_config.github.token.reveal() {
+        Ok(t) => t.to_string(),
+        Err(e) => {
+            tracing::error!(%e, "failed to resolve GitHub token");
+            return;
+        }
+    };
+
+    // Only push refs that were actually updated (non-zero new sha).
+    let refs: Vec<String> = event
+        .updated_refs()
+        .iter()
+        .map(|r| r.r#ref.clone())
+        .collect();
+
+    if refs.is_empty() {
+        return;
+    }
+
+    let mirror_url = mirror.url.clone();
+    tracing::info!(url = %mirror.url, refs = ?refs, "pushing to mirror");
+
+    let result = tokio::task::spawn_blocking(move || {
+        let ref_slices: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+        repo.push_to_mirror(&mirror, &token, &ref_slices)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => tracing::info!(url = %mirror_url, "mirror push complete"),
+        Ok(Err(e)) => tracing::error!(url = %mirror_url, %e, "mirror push failed"),
+        Err(e) => tracing::error!(url = %mirror_url, %e, "mirror push task panicked"),
     }
 }
 

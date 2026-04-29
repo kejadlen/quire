@@ -108,5 +108,5 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         return;
     }
 
-    crate::event::dispatch_push(&quire, &event).await;
+    crate::ci::dispatch_push(&quire, &event).await;
 }
