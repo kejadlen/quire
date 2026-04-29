@@ -413,18 +413,15 @@ pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>
         }
     }
 
-    if petgraph::algo::is_cyclic_directed(&graph) {
-        let sorted: std::collections::HashSet<_> = petgraph::algo::toposort(&graph, None)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|idx| graph[idx])
-            .collect();
-        let cycle_jobs: Vec<String> = jobs
-            .iter()
-            .map(|j| j.id.as_str())
-            .filter(|id| !sorted.contains(id))
-            .map(|s| s.to_string())
-            .collect();
+    // Each non-trivial strongly connected component is a distinct cycle.
+    // A single-node SCC is only a cycle if it has a self-edge.
+    for scc in petgraph::algo::tarjan_scc(&graph) {
+        let is_cycle = scc.len() > 1 || (scc.len() == 1 && graph.contains_edge(scc[0], scc[0]));
+        if !is_cycle {
+            continue;
+        }
+        let mut cycle_jobs: Vec<String> = scc.iter().map(|&idx| graph[idx].to_string()).collect();
+        cycle_jobs.sort();
         errors.push(ValidationError::Cycle { cycle_jobs });
     }
 
@@ -864,6 +861,69 @@ mod tests {
             errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
         );
+    }
+
+    #[test]
+    fn validate_cycle_only_reports_cycle_members() {
+        // `clean` is acyclic; `a` and `b` form a cycle. Only a/b should be
+        // flagged, and `clean` must not appear in any Cycle error.
+        let jobs = vec![
+            JobDef {
+                id: "a".into(),
+                inputs: vec!["b".into(), "quire/push".into()],
+            },
+            JobDef {
+                id: "b".into(),
+                inputs: vec!["a".into(), "quire/push".into()],
+            },
+            JobDef {
+                id: "clean".into(),
+                inputs: vec!["quire/push".into()],
+            },
+        ];
+        let errs = validate(&jobs).unwrap_err();
+        let cycle_errs: Vec<&Vec<String>> = errs
+            .iter()
+            .filter_map(|e| match e {
+                ValidationError::Cycle { cycle_jobs } => Some(cycle_jobs),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            cycle_errs.len(),
+            1,
+            "expected exactly one cycle error: {errs:?}"
+        );
+        assert_eq!(cycle_errs[0], &vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn validate_reports_disjoint_cycles_separately() {
+        // Two independent cycles: (a <-> b) and (c <-> d).
+        let jobs = vec![
+            JobDef {
+                id: "a".into(),
+                inputs: vec!["b".into(), "quire/push".into()],
+            },
+            JobDef {
+                id: "b".into(),
+                inputs: vec!["a".into(), "quire/push".into()],
+            },
+            JobDef {
+                id: "c".into(),
+                inputs: vec!["d".into(), "quire/push".into()],
+            },
+            JobDef {
+                id: "d".into(),
+                inputs: vec!["c".into(), "quire/push".into()],
+            },
+        ];
+        let errs = validate(&jobs).unwrap_err();
+        let cycle_count = errs
+            .iter()
+            .filter(|e| matches!(e, ValidationError::Cycle { .. }))
+            .count();
+        assert_eq!(cycle_count, 2, "expected two cycle errors: {errs:?}");
     }
 
     #[test]
