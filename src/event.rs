@@ -37,12 +37,7 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
 fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
     use crate::ci::{RunMeta, RunState, RunStateFile};
 
-    for push_ref in &event.refs {
-        // Skip deletions (all-zero new sha).
-        if push_ref.new_sha == "0000000000000000000000000000000000000000" {
-            continue;
-        }
-
+    for push_ref in event.updated_refs() {
         if !repo.has_ci_fnl(&push_ref.new_sha) {
             continue;
         }
@@ -138,9 +133,8 @@ async fn dispatch_mirror(quire: &crate::Quire, repo: crate::quire::Repo, event: 
 
     // Only push refs that were actually updated (non-zero new sha).
     let refs: Vec<String> = event
-        .refs
+        .updated_refs()
         .iter()
-        .filter(|r| r.new_sha != "0000000000000000000000000000000000000000")
         .map(|r| r.r#ref.clone())
         .collect();
 
@@ -180,6 +174,14 @@ impl PushEvent {
             pushed_at,
             refs,
         }
+    }
+
+    /// Refs that are not deletions (non-zero new sha).
+    pub fn updated_refs(&self) -> Vec<&PushRef> {
+        self.refs
+            .iter()
+            .filter(|r| r.new_sha != "0000000000000000000000000000000000000000")
+            .collect()
     }
 }
 
