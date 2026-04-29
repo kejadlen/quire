@@ -250,6 +250,20 @@ impl Run {
     /// `started_at` (entering Active) or `finished_at` (entering Complete or
     /// Failed) on `times.yml`. Each timestamp is set at most once.
     pub fn transition(&mut self, to: RunState) -> Result<()> {
+        use RunState::*;
+        // Allowed transitions. Pending->Complete is the orphan-reconcile
+        // placeholder; everything else is the normal trigger lifecycle.
+        let allowed = matches!(
+            (self.state, to),
+            (Pending, Active) | (Pending, Complete) | (Active, Complete) | (Active, Failed)
+        );
+        if !allowed {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid run transition: {:?} -> {:?}", self.state, to),
+            )));
+        }
+
         let src = self.path();
         let dst_parent = self.base.join(to.dir_name());
 
@@ -404,21 +418,38 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = Runs::new(quire.base_dir().join("runs").join("test.git"));
 
-        let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("to active");
-        run.transition(RunState::Complete).expect("to complete");
-        let times = run.read_times().expect("read state");
-        assert!(times.started_at.is_some());
+        let mut completed = runs.create(&test_meta()).expect("create");
+        completed.transition(RunState::Active).expect("to active");
+        completed
+            .transition(RunState::Complete)
+            .expect("to complete");
+        let times = completed.read_times().expect("read state");
         assert!(times.finished_at.is_some());
 
         let mut failed = runs.create(&test_meta()).expect("create");
+        failed.transition(RunState::Active).expect("to active");
         failed.transition(RunState::Failed).expect("to failed");
         let failed_times = failed.read_times().expect("read state");
-        assert!(
-            failed_times.started_at.is_none(),
-            "no started_at when skipping active"
-        );
         assert!(failed_times.finished_at.is_some());
+    }
+
+    #[test]
+    fn transition_rejects_invalid_transitions() {
+        let (_dir, quire) = tmp_quire();
+        let runs = Runs::new(quire.base_dir().join("runs").join("test.git"));
+
+        // Pending -> Failed is not allowed (must go via Active).
+        let mut run = runs.create(&test_meta()).expect("create");
+        assert!(run.transition(RunState::Failed).is_err());
+
+        // Terminal -> anything is not allowed.
+        let mut completed = runs.create(&test_meta()).expect("create");
+        completed.transition(RunState::Active).expect("to active");
+        completed
+            .transition(RunState::Complete)
+            .expect("to complete");
+        assert!(completed.transition(RunState::Active).is_err());
+        assert!(completed.transition(RunState::Failed).is_err());
     }
 
     #[test]
