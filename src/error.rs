@@ -1,6 +1,7 @@
 use miette::Diagnostic;
 
 use crate::ci::ValidationError;
+use crate::fennel::FennelError;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
@@ -19,7 +20,7 @@ pub enum Error {
     ConfigNotFound(String),
 
     #[error(transparent)]
-    Fennel(#[from] Box<crate::fennel::FennelError>),
+    Fennel(#[from] Box<FennelError>),
 
     #[error("CI validation failed")]
     #[related]
@@ -41,8 +42,8 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl From<crate::fennel::FennelError> for Error {
-    fn from(err: crate::fennel::FennelError) -> Self {
+impl From<FennelError> for Error {
+    fn from(err: FennelError) -> Self {
         Error::Fennel(Box::new(err))
     }
 }

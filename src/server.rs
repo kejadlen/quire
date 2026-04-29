@@ -6,6 +6,8 @@ use axum::routing::get;
 use miette::{Context, IntoDiagnostic, Result};
 
 use crate::Quire;
+use crate::ci;
+use crate::event::PushEvent;
 
 async fn health() -> &'static str {
     "ok"
@@ -93,7 +95,7 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         }
     }
 
-    let event: crate::event::PushEvent = match serde_json::from_str(&line) {
+    let event: PushEvent = match serde_json::from_str(&line) {
         Ok(e) => e,
         Err(e) => {
             tracing::error!(%e, "failed to parse push event");
@@ -108,5 +110,5 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         return;
     }
 
-    crate::ci::dispatch_push(&quire, &event).await;
+    ci::dispatch_push(&quire, &event).await;
 }

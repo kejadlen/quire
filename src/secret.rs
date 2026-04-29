@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use crate::{Error, Result};
+
+#[cfg(test)]
+use crate::fennel::Fennel;
+
 /// A string value that deserializes from either a plain literal or a file path.
 ///
 /// Fennel config can provide a secret as:
@@ -47,7 +52,7 @@ impl SecretString {
     /// the closure output to be `Sized` + ownable. Once `once_cell_try`
     /// stabilizes (allowing `OnceLock::get_or_try_init` with a separate error
     /// type), we can store a structured error instead of a string.
-    pub fn reveal(&self) -> crate::Result<&str> {
+    pub fn reveal(&self) -> Result<&str> {
         match &self.0 {
             SecretSource::Plain(s) => Ok(s.as_str()),
             SecretSource::File { path, resolved } => resolved
@@ -58,7 +63,7 @@ impl SecretString {
                 })
                 .as_ref()
                 .map(|s| s.as_str())
-                .map_err(|msg| crate::Error::SecretResolve(msg.clone())),
+                .map_err(|msg| Error::SecretResolve(msg.clone())),
         }
     }
 }
@@ -87,7 +92,7 @@ impl SecretString {
 }
 
 impl<'de> serde::Deserialize<'de> for SecretString {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -173,7 +178,7 @@ mod tests {
         let secret = SecretString::from_file(PathBuf::from("/no/such/file/ever").as_path());
         let err = secret.reveal().unwrap_err();
         assert!(
-            matches!(err, crate::Error::SecretResolve(_)),
+            matches!(err, Error::SecretResolve(_)),
             "expected SecretResolve error, got {err:?}"
         );
     }
@@ -246,7 +251,7 @@ mod tests {
             token: SecretString,
         }
 
-        let fennel = crate::fennel::Fennel::new().expect("fennel");
+        let fennel = Fennel::new().expect("fennel");
         let config: Config = fennel
             .load_string(r#"{:token "hunter2"}"#, "test.fnl")
             .expect("deserialize from fennel");
@@ -264,7 +269,7 @@ mod tests {
         let path = dir.path().join("pw");
         fs_err::write(&path, "secret_from_file\n").expect("write");
 
-        let fennel = crate::fennel::Fennel::new().expect("fennel");
+        let fennel = Fennel::new().expect("fennel");
         // Fennel table syntax: {:token {:file "/path"}}
         let source = format!("{{:token {{:file \"{}\"}}}}", path.display(),);
         let config: Config = fennel

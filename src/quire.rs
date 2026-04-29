@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 
 use miette::{Context, IntoDiagnostic, Result, ensure};
 
+use crate::ci::Runs;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
+use crate::{Error, Result as AppResult};
 
 /// Parsed global configuration (`/var/quire/config.fnl`).
 ///
@@ -148,8 +150,8 @@ impl Repo {
     }
 
     /// Access CI runs for this repo.
-    pub fn runs(&self) -> crate::ci::Runs {
-        crate::ci::Runs::new(self.base_dir.join("runs").join(&self.name))
+    pub fn runs(&self) -> Runs {
+        Runs::new(self.base_dir.join("runs").join(&self.name))
     }
 
     /// Check whether this bare repo has `.quire/ci.fnl` at a given commit SHA.
@@ -165,7 +167,7 @@ impl Repo {
     }
 
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
-    pub fn ci_fnl_source(&self, sha: &str) -> crate::Result<String> {
+    pub fn ci_fnl_source(&self, sha: &str) -> AppResult<String> {
         let output = self
             .git(&["show", &format!("{sha}:.quire/ci.fnl")])
             .stdout(std::process::Stdio::piped())
@@ -174,7 +176,7 @@ impl Repo {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(crate::Error::Git(format!(
+            return Err(Error::Git(format!(
                 "failed to read ci.fnl at {sha}: {stderr}"
             )));
         }
@@ -195,7 +197,7 @@ impl Repo {
         mirror: &MirrorConfig,
         token: &str,
         refs: &[&str],
-    ) -> crate::Result<()> {
+    ) -> AppResult<()> {
         let mut args = vec!["push", "--porcelain", &mirror.url];
         args.extend(refs);
 
@@ -209,7 +211,7 @@ impl Repo {
             .status()?;
 
         if !status.success() {
-            return Err(crate::Error::Git(format!("push to {} failed", mirror.url)));
+            return Err(Error::Git(format!("push to {} failed", mirror.url)));
         }
         Ok(())
     }
@@ -223,7 +225,7 @@ impl Repo {
     ///
     /// Returns an error when the config file exists but contains
     /// malformed Fennel — source labels point at the right line.
-    pub fn config(&self) -> crate::Result<RepoConfig> {
+    pub fn config(&self) -> AppResult<RepoConfig> {
         // Check whether HEAD exists first — exit code distinguishes this
         // reliably without parsing stderr text.
         let has_head = self
@@ -307,12 +309,10 @@ impl Quire {
     ///
     /// Re-reads on every call. Cheap at current call volume; revisit if
     /// `quire serve` ends up loading per-request.
-    pub fn global_config(&self) -> crate::Result<GlobalConfig> {
+    pub fn global_config(&self) -> AppResult<GlobalConfig> {
         let config_path = self.config_path();
         if !config_path.exists() {
-            return Err(crate::Error::ConfigNotFound(
-                config_path.display().to_string(),
-            ));
+            return Err(Error::ConfigNotFound(config_path.display().to_string()));
         }
         let fennel = Fennel::new()?;
         Ok(fennel.load_file(&config_path)?)
@@ -684,7 +684,7 @@ mod tests {
         };
         let err = q.global_config().unwrap_err();
         assert!(
-            matches!(err, crate::Error::ConfigNotFound(_)),
+            matches!(err, Error::ConfigNotFound(_)),
             "expected ConfigNotFound, got {err:?}"
         );
     }
@@ -830,7 +830,7 @@ mod tests {
         };
         let err = repo.push_to_mirror(&mirror, "x", &["main"]).unwrap_err();
         assert!(
-            matches!(err, crate::Error::Git(_)),
+            matches!(err, Error::Git(_)),
             "expected Git error, got {err:?}"
         );
     }

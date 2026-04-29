@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::Result;
-use crate::event::PushEvent;
+use crate::event::{PushEvent, PushRef};
+use crate::fennel::{Fennel, FennelError};
+use crate::quire::Repo;
+use crate::{Error, Result};
 
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -254,7 +256,7 @@ impl Run {
         let dst_parent = self.base.join(to.dir_name());
 
         if !src.exists() {
-            return Err(crate::Error::Io(std::io::Error::new(
+            return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("run directory not found: {}", src.display()),
             )));
@@ -306,11 +308,7 @@ pub struct EvalResult {
 ///
 /// Injects a `job` global that accumulates into a registration table,
 /// evaluates the source, and extracts the registered jobs.
-pub fn eval_ci(
-    fennel: &crate::fennel::Fennel,
-    source: &str,
-    name: &str,
-) -> crate::Result<EvalResult> {
+pub fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<EvalResult> {
     fennel.eval_raw(source, name, |lua| {
         // Create a registration table. `job` will push into this.
         let registry: mlua::Table = lua.create_table()?;
@@ -334,7 +332,7 @@ pub fn eval_ci(
     })?;
 
     // Extract the registration table.
-    let lua_err = |e: mlua::Error| crate::fennel::FennelError::from_lua(source, name, e);
+    let lua_err = |e: mlua::Error| FennelError::from_lua(source, name, e);
     let registry: mlua::Table = fennel.lua().globals().get("_quire_jobs").map_err(lua_err)?;
     let mut jobs = Vec::new();
     for entry in registry.sequence_values::<mlua::Table>() {
@@ -501,7 +499,7 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
 }
 
 /// Check each updated ref for .quire/ci.fnl, create runs, and eval + validate.
-fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
+fn dispatch_ci(repo: &Repo, event: &PushEvent) {
     for push_ref in event.updated_refs() {
         if let Err(e) = dispatch_ci_ref(repo, &event.pushed_at, push_ref) {
             tracing::error!(
@@ -518,11 +516,7 @@ fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
 ///
 /// Returns `Ok(())` if CI ran (regardless of whether the run succeeded
 /// or failed), or `Err` if dispatch itself failed.
-fn dispatch_ci_ref(
-    repo: &crate::quire::Repo,
-    pushed_at: &str,
-    push_ref: &crate::event::PushRef,
-) -> crate::Result<()> {
+fn dispatch_ci_ref(repo: &Repo, pushed_at: &str, push_ref: &PushRef) -> Result<()> {
     if !repo.has_ci_fnl(&push_ref.new_sha) {
         return Ok(());
     }
@@ -565,16 +559,16 @@ fn dispatch_ci_ref(
 }
 
 /// Evaluate ci.fnl at a given SHA and validate the job graph.
-fn eval_and_validate(repo: &crate::quire::Repo, sha: &str) -> crate::Result<()> {
+fn eval_and_validate(repo: &Repo, sha: &str) -> Result<()> {
     let source = repo.ci_fnl_source(sha)?;
-    let fennel = crate::fennel::Fennel::new()?;
+    let fennel = Fennel::new()?;
     let eval_result = eval_ci(&fennel, &source, &format!("{sha}:.quire/ci.fnl"))?;
     validate(&eval_result.jobs)?;
     Ok(())
 }
 
 /// Push updated refs to the configured mirror.
-async fn dispatch_mirror(quire: &crate::Quire, repo: crate::quire::Repo, event: &PushEvent) {
+async fn dispatch_mirror(quire: &crate::Quire, repo: Repo, event: &PushEvent) {
     let config = match repo.config() {
         Ok(c) => c,
         Err(e) => {
@@ -815,8 +809,8 @@ mod tests {
 
     // --- eval_ci tests ---
 
-    fn fennel() -> crate::fennel::Fennel {
-        crate::fennel::Fennel::new().expect("Fennel::new() should succeed")
+    fn fennel() -> Fennel {
+        Fennel::new().expect("Fennel::new() should succeed")
     }
 
     #[test]
