@@ -5,28 +5,6 @@ use mlua::{Lua, LuaSerdeExt};
 
 const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
 
-/// Infrastructure failures that should never occur during normal operation.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-pub enum InternalError {
-    #[error("failed to load fennel compiler")]
-    CompilerLoad(#[source] mlua::Error),
-
-    #[error("failed to register fennel module")]
-    ModuleRegister(#[source] mlua::Error),
-
-    #[error("fennel module not found")]
-    ModuleNotFound(#[source] mlua::Error),
-
-    #[error("fennel.eval not found")]
-    EvalNotFound(#[source] mlua::Error),
-
-    #[error("failed to create options table")]
-    OptionsTable(#[source] mlua::Error),
-
-    #[error("failed to set filename option")]
-    FilenameOption(#[source] mlua::Error),
-}
-
 /// Error kinds from the Fennel loader.
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum FennelError {
@@ -37,9 +15,9 @@ pub enum FennelError {
     #[diagnostic(code(fennel::io))]
     Io(#[from] std::io::Error),
 
-    #[error(transparent)]
+    #[error("internal fennel error")]
     #[diagnostic(code(fennel::internal))]
-    Internal(#[from] Box<InternalError>),
+    Internal(#[from] mlua::Error),
 
     #[error("{message}")]
     #[diagnostic(code(fennel::eval))]
@@ -95,15 +73,9 @@ impl Fennel {
         let lua = unsafe { Lua::unsafe_new() };
 
         // Load fennel.lua. The file returns its module table directly.
-        let fennel_module: mlua::Table = lua
-            .load(FENNEL_LUA)
-            .set_name("fennel.lua")
-            .eval()
-            .map_err(|e| FennelError::Internal(Box::new(InternalError::CompilerLoad(e))))?;
+        let fennel_module: mlua::Table = lua.load(FENNEL_LUA).set_name("fennel.lua").eval()?;
 
-        lua.globals()
-            .set("fennel", fennel_module)
-            .map_err(|e| FennelError::Internal(Box::new(InternalError::ModuleRegister(e))))?;
+        lua.globals().set("fennel", fennel_module)?;
 
         Ok(Self { lua })
     }
@@ -128,23 +100,13 @@ impl Fennel {
 
         setup(&self.lua).map_err(|e| FennelError::from_lua(source, name, e))?;
 
-        let fennel: mlua::Table = self
-            .lua
-            .globals()
-            .get("fennel")
-            .map_err(|e| FennelError::Internal(Box::new(InternalError::ModuleNotFound(e))))?;
+        let fennel: mlua::Table = self.lua.globals().get("fennel")?;
 
-        let eval: mlua::Function = fennel
-            .get("eval")
-            .map_err(|e| FennelError::Internal(Box::new(InternalError::EvalNotFound(e))))?;
+        let eval: mlua::Function = fennel.get("eval")?;
 
-        let opts = self
-            .lua
-            .create_table()
-            .map_err(|e| FennelError::Internal(Box::new(InternalError::OptionsTable(e))))?;
+        let opts = self.lua.create_table()?;
 
-        opts.set("filename", name)
-            .map_err(|e| FennelError::Internal(Box::new(InternalError::FilenameOption(e))))?;
+        opts.set("filename", name)?;
 
         let result = eval
             .call::<mlua::Value>((source, opts))
