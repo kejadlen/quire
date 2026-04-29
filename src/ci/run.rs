@@ -12,8 +12,7 @@ use jiff::Timestamp;
 use crate::{Error, Result};
 
 /// The state of a CI run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
     Pending,
     Active,
