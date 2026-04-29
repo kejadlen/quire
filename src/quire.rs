@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use miette::{Context, IntoDiagnostic, Result, ensure};
 
-use crate::ci::Runs;
+use crate::ci::Ci;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
 use crate::{Error, Result as AppResult};
@@ -149,39 +149,9 @@ impl Repo {
         cmd
     }
 
-    /// Access CI runs for this repo.
-    pub fn runs(&self) -> Runs {
-        Runs::new(self.base_dir.join("runs").join(&self.name))
-    }
-
-    /// Check whether this bare repo has `.quire/ci.fnl` at a given commit SHA.
-    ///
-    /// Returns true if the file exists (git show exit code 0), false otherwise.
-    pub fn has_ci_fnl(&self, sha: &str) -> bool {
-        self.git(&["show", &format!("{sha}:.quire/ci.fnl")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
-    pub fn ci_fnl_source(&self, sha: &str) -> AppResult<String> {
-        let output = self
-            .git(&["show", &format!("{sha}:.quire/ci.fnl")])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Git(format!(
-                "failed to read ci.fnl at {sha}: {stderr}"
-            )));
-        }
-
-        Ok(String::from_utf8(output.stdout)?)
+    /// Access CI operations for this repo.
+    pub fn ci(&self) -> Ci {
+        Ci::new(self.path(), self.base_dir.join("runs").join(&self.name))
     }
 
     /// Push `main` to the configured mirror, injecting the GitHub token via

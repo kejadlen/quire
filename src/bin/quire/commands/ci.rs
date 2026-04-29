@@ -1,7 +1,6 @@
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 
-use quire::ci::{ValidationError, eval_ci};
-use quire::fennel::Fennel;
+use quire::ci::{Ci, ValidationError};
 
 /// Validate a ci.fnl file without executing any jobs.
 ///
@@ -9,11 +8,7 @@ use quire::fennel::Fennel;
 /// then runs the four structural validations. Prints each job found
 /// and any validation errors.
 pub async fn validate(path: &std::path::Path) -> Result<()> {
-    let source = fs_err::read_to_string(path).into_diagnostic()?;
-    let name = path.display().to_string();
-
-    let fennel = Fennel::new()?;
-    let result = eval_ci(&fennel, &source, &name)?;
+    let result = Ci::validate_file(path)?;
 
     if result.jobs.is_empty() {
         println!("No jobs registered.");

@@ -42,7 +42,7 @@ pub async fn run(quire: &Quire) -> Result<()> {
 
     // Scan for orphaned runs from a previous server instance.
     for repo in quire.repos().context("failed to list repos")? {
-        repo.runs().reconcile_orphans()?;
+        repo.ci().reconcile_orphans()?;
     }
 
     let quire_handle = quire.clone();
