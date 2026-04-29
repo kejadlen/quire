@@ -1,3 +1,5 @@
+use crate::ci::{RunMeta, RunState, RunStateFile};
+
 /// A single ref update from a push.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct PushRef {
@@ -35,8 +37,6 @@ pub async fn dispatch_push(quire: &crate::Quire, event: &PushEvent) {
 
 /// Check each updated ref for .quire/ci.fnl, create runs, and eval + validate.
 fn dispatch_ci(repo: &crate::quire::Repo, event: &PushEvent) {
-    use crate::ci::{RunMeta, RunState, RunStateFile};
-
     for push_ref in event.updated_refs() {
         if !repo.has_ci_fnl(&push_ref.new_sha) {
             continue;
