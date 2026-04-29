@@ -5,7 +5,14 @@ fn main() {
         let date = cmd("date", &["-u", "+%Y-%m-%d"]);
         let change = cmd(
             "jj",
-            &["log", "-r", "@", "--no-graph", "-T", "change_id.short()"],
+            &[
+                "log",
+                "--revisions",
+                "@",
+                "--no-graph",
+                "--template",
+                "change_id.short()",
+            ],
         );
         format!("{date}+{change}-dev")
     });

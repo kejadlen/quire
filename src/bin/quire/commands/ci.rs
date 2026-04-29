@@ -5,9 +5,9 @@ use quire::ci::{Ci, CommitRef};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
-/// Loads the Fennel source at the given SHA (or HEAD) to extract
-/// the job registration table, then runs the four structural validations.
-/// Prints each job found and any validation errors.
+/// `Ci::load` parses the Fennel source and validates the resulting
+/// job graph; this command surfaces the registered jobs and any
+/// validation errors via the standard miette diagnostic path.
 pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
     let commit = resolve_commit(maybe_sha)?;
@@ -30,33 +30,7 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
         println!("  {} ← [{}]", job.id, inputs);
     }
 
-    match pipeline.validate() {
-        Ok(()) => {
-            println!("\nAll validations passed.");
-        }
-        Err(errors) => {
-            println!("\nValidation errors:");
-            for err in &errors {
-                let label = match err {
-                    quire::ci::ValidationError::Cycle { cycle_jobs } => {
-                        format!("cycle: {}", cycle_jobs.join(" → "))
-                    }
-                    quire::ci::ValidationError::EmptyInputs { job_id } => {
-                        format!("{job_id}: empty inputs")
-                    }
-                    quire::ci::ValidationError::Unreachable { job_id } => {
-                        format!("{job_id}: unreachable from any source ref")
-                    }
-                    quire::ci::ValidationError::ReservedSlash { job_id } => {
-                        format!("{job_id}: '/' in job id")
-                    }
-                };
-                println!("  ✗ {label}");
-            }
-            std::process::exit(1);
-        }
-    }
-
+    println!("\nAll validations passed.");
     Ok(())
 }
 
@@ -92,7 +66,10 @@ fn discover_repo() -> Result<PathBuf> {
     Ok(PathBuf::from(path.trim()))
 }
 
-/// Get the git commit ID of the latest committed revision via jj.
+/// Get the git commit ID of the working copy revision via jj.
+///
+/// Resolves `@`, which jj snapshots into a real commit on every
+/// invocation, so the SHA reflects uncommitted edits.
 fn current_commit() -> Result<String> {
     let output = std::process::Command::new("jj")
         .args([
@@ -100,9 +77,9 @@ fn current_commit() -> Result<String> {
             "--limit",
             "1",
             "--no-graph",
-            "-r",
-            "@-",
-            "-T",
+            "--revisions",
+            "@",
+            "--template",
             "commit_id",
         ])
         .output()

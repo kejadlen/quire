@@ -21,8 +21,7 @@ pub enum Error {
     Fennel(#[from] Box<FennelError>),
 
     #[error("CI validation failed")]
-    #[related]
-    Validation(Vec<ValidationError>),
+    Validation(#[related] Vec<ValidationError>),
 
     #[error("invalid run transition: {from:?} -> {to:?}")]
     InvalidTransition { from: RunState, to: RunState },

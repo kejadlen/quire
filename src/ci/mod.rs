@@ -45,9 +45,11 @@ impl Ci {
         Runs::new(runs_base)
     }
 
-    /// Load ci.fnl at a given SHA and return the parsed pipeline.
+    /// Load ci.fnl at a given SHA and return the validated pipeline.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
+    /// Errors if the Fennel source fails to parse/evaluate or if the
+    /// resulting job graph violates any structural rule.
     pub fn load(&self, commit: &CommitRef) -> Result<Option<Pipeline>> {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
@@ -146,21 +148,12 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
     let fennel = crate::fennel::Fennel::new()?;
     let name = CI_FNL.to_string();
     let lua_name = format!("{}:{CI_FNL}", push_ref.new_sha);
-    let pipeline = match pipeline::load(&fennel, &source, &lua_name, &name) {
-        Ok(r) => r,
+
+    match pipeline::load(&fennel, &source, &lua_name, &name) {
+        Ok(_pipeline) => run.transition(RunState::Complete)?,
         Err(e) => {
             run.transition(RunState::Failed)?;
             return Err(e);
-        }
-    };
-
-    match pipeline.validate() {
-        Ok(()) => {
-            run.transition(RunState::Complete)?;
-        }
-        Err(e) => {
-            run.transition(RunState::Failed)?;
-            Err(e)?;
         }
     }
 

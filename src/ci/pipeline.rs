@@ -18,26 +18,19 @@ pub struct Job {
     pub(crate) run_fn: mlua::Function,
 }
 
-/// A loaded CI pipeline — the parsed job graph from ci.fnl.
+/// A validated CI pipeline — a job graph that has passed all
+/// structural rules.
 ///
-/// Returned by `Ci::load`. Holds the registered jobs and their
-/// run functions. Call `validate` to check structural rules before
-/// execution.
+/// Obtain via `pipeline::load`, which parses the Fennel source and
+/// validates the result. Holding a `Pipeline` is proof that the graph
+/// is sound.
 pub struct Pipeline {
-    pub(crate) jobs: Vec<Job>,
+    jobs: Vec<Job>,
 }
 
 impl Pipeline {
     pub fn jobs(&self) -> &[Job] {
         &self.jobs
-    }
-
-    /// Validate the structural rules of this pipeline.
-    ///
-    /// Returns `Ok(())` if all four rules pass, or `Err` with all
-    /// violations found.
-    pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
-        validate(&self.jobs)
     }
 }
 
@@ -65,16 +58,25 @@ impl UserData for CiModule {
     }
 }
 
-/// Load a ci.fnl source string, registering jobs via the `quire.ci` module.
+/// Parse and validate a ci.fnl source string into a `Pipeline`.
 ///
 /// Injects `quire.ci` into `package.loaded` so scripts can
-/// `(require :quire.ci)`, evaluates the source, and takes the accumulated jobs.
+/// `(require :quire.ci)`, evaluates the source to register jobs, and
+/// then runs the structural validations.
 pub(crate) fn load(
     fennel: &Fennel,
     source: &str,
     filename: &str,
     display: &str,
 ) -> Result<Pipeline> {
+    let jobs = parse(fennel, source, filename, display)?;
+    validate(&jobs)?;
+    Ok(Pipeline { jobs })
+}
+
+/// Evaluate `source` with the `quire.ci` module bound and collect the
+/// registered jobs without validating them.
+fn parse(fennel: &Fennel, source: &str, filename: &str, display: &str) -> Result<Vec<Job>> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
 
     fennel.eval_raw(source, filename, display, |lua| {
@@ -83,7 +85,7 @@ pub(crate) fn load(
         Ok(())
     })?;
 
-    Ok(Pipeline { jobs: jobs.take() })
+    Ok(jobs.take())
 }
 
 /// A validation error found in the job graph.
@@ -107,6 +109,7 @@ pub enum ValidationError {
 /// Validate the structural rules of a job graph.
 ///
 /// Returns `Ok(())` if all four rules pass, or `Err` with all violations found.
+/// Used by `pipeline::load`.
 fn validate(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
@@ -212,10 +215,11 @@ mod tests {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci:job :test [:quire/push] (fn [_] nil))"#;
-        let result = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        assert_eq!(result.jobs.len(), 1);
-        assert_eq!(result.jobs[0].id, "test");
-        assert_eq!(result.jobs[0].inputs, vec!["quire/push"]);
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
+        let jobs = pipeline.jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "test");
+        assert_eq!(jobs[0].inputs, vec!["quire/push"]);
     }
 
     #[test]
@@ -226,12 +230,13 @@ mod tests {
 (ci:job :build [:quire/push] (fn [_] nil))
 (ci:job :test [:build] (fn [_] nil))
 "#;
-        let result = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        assert_eq!(result.jobs.len(), 2);
-        assert_eq!(result.jobs[0].id, "build");
-        assert_eq!(result.jobs[0].inputs, vec!["quire/push"]);
-        assert_eq!(result.jobs[1].id, "test");
-        assert_eq!(result.jobs[1].inputs, vec!["build"]);
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
+        let jobs = pipeline.jobs();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].id, "build");
+        assert_eq!(jobs[0].inputs, vec!["quire/push"]);
+        assert_eq!(jobs[1].id, "test");
+        assert_eq!(jobs[1].inputs, vec!["build"]);
     }
 
     #[test]
@@ -241,28 +246,35 @@ mod tests {
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
+    /// Parse a Fennel source into raw jobs without validating, for tests
+    /// that exercise individual validation rules.
+    fn parse_jobs(source: &str) -> Vec<Job> {
+        let f = fennel();
+        parse(&f, source, "ci.fnl", "ci.fnl").expect("parse should succeed")
+    }
+
     #[test]
     fn validate_accepts_valid_config() {
-        let f = fennel();
-        let source = r#"
+        let jobs = parse_jobs(
+            r#"
 (local ci (require :quire.ci))
 (ci:job :build [:quire/push] (fn [_] nil))
 (ci:job :test [:build :quire/push] (fn [_] nil))
-"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        assert!(pipeline.validate().is_ok());
+"#,
+        );
+        assert!(validate(&jobs).is_ok());
     }
 
     #[test]
     fn validate_rejects_cycle() {
-        let f = fennel();
-        let source = r#"
+        let jobs = parse_jobs(
+            r#"
 (local ci (require :quire.ci))
 (ci:job :a [:b] (fn [_] nil))
 (ci:job :b [:a] (fn [_] nil))
-"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        let errs = pipeline.validate().unwrap_err();
+"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
@@ -271,15 +283,15 @@ mod tests {
 
     #[test]
     fn validate_cycle_only_reports_cycle_members() {
-        let f = fennel();
-        let source = r#"
+        let jobs = parse_jobs(
+            r#"
 (local ci (require :quire.ci))
 (ci:job :a [:b :quire/push] (fn [_] nil))
 (ci:job :b [:a :quire/push] (fn [_] nil))
 (ci:job :clean [:quire/push] (fn [_] nil))
-"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        let errs = pipeline.validate().unwrap_err();
+"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
             .filter_map(|e| match e {
@@ -297,16 +309,16 @@ mod tests {
 
     #[test]
     fn validate_reports_disjoint_cycles_separately() {
-        let f = fennel();
-        let source = r#"
+        let jobs = parse_jobs(
+            r#"
 (local ci (require :quire.ci))
 (ci:job :a [:b :quire/push] (fn [_] nil))
 (ci:job :b [:a :quire/push] (fn [_] nil))
 (ci:job :c [:d :quire/push] (fn [_] nil))
 (ci:job :d [:c :quire/push] (fn [_] nil))
-"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        let errs = pipeline.validate().unwrap_err();
+"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
         let cycle_count = errs
             .iter()
             .filter(|e| matches!(e, ValidationError::Cycle { .. }))
@@ -316,11 +328,11 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_inputs() {
-        let f = fennel();
-        let source = r#"(local ci (require :quire.ci))
-(ci:job :setup [] (fn [_] nil))"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        let errs = pipeline.validate().unwrap_err();
+        let jobs = parse_jobs(
+            r#"(local ci (require :quire.ci))
+(ci:job :setup [] (fn [_] nil))"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter()
                 .any(|e| matches!(e, ValidationError::EmptyInputs { job_id } if job_id == "setup")),
@@ -330,11 +342,11 @@ mod tests {
 
     #[test]
     fn validate_rejects_unreachable_jobs() {
-        let f = fennel();
-        let source = r#"(local ci (require :quire.ci))
-(ci:job :orphan [:orphan] (fn [_] nil))"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        let errs = pipeline.validate().unwrap_err();
+        let jobs = parse_jobs(
+            r#"(local ci (require :quire.ci))
+(ci:job :orphan [:orphan] (fn [_] nil))"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter().any(
                 |e| matches!(e, ValidationError::Unreachable { job_id } if job_id == "orphan")
@@ -345,11 +357,11 @@ mod tests {
 
     #[test]
     fn validate_rejects_slash_in_job_id() {
-        let f = fennel();
-        let source = r#"(local ci (require :quire.ci))
-(ci:job :foo/bar [:quire/push] (fn [_] nil))"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("eval should succeed");
-        let errs = pipeline.validate().unwrap_err();
+        let jobs = parse_jobs(
+            r#"(local ci (require :quire.ci))
+(ci:job :foo/bar [:quire/push] (fn [_] nil))"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter().any(
                 |e| matches!(e, ValidationError::ReservedSlash { job_id } if job_id == "foo/bar")
