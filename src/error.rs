@@ -1,5 +1,7 @@
 use miette::Diagnostic;
 
+use crate::ci::ValidationError;
+
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
     #[error("not found: {0}")]
@@ -19,7 +21,7 @@ pub enum Error {
 
     #[error("CI validation failed")]
     #[related]
-    Validation(Vec<crate::ci::ValidationError>),
+    Validation(Vec<ValidationError>),
 
     #[error("lua error: {0}")]
     Lua(String),
@@ -34,8 +36,8 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl From<Vec<crate::ci::ValidationError>> for Error {
-    fn from(errs: Vec<crate::ci::ValidationError>) -> Self {
+impl From<Vec<ValidationError>> for Error {
+    fn from(errs: Vec<ValidationError>) -> Self {
         Error::Validation(errs)
     }
 }
