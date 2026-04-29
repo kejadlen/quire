@@ -96,6 +96,9 @@ impl Fennel {
         let opts = self.lua.create_table()?;
 
         opts.set("filename", filename)?;
+        // Align Lua line numbers with Fennel source lines so debug
+        // info points back at the user's `.fnl`.
+        opts.set("correlate", true)?;
 
         let result = eval
             .call::<mlua::Value>((source, opts))

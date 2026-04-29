@@ -12,6 +12,9 @@ use crate::fennel::Fennel;
 pub struct Job {
     pub id: String,
     pub inputs: Vec<String>,
+    /// 1-indexed line in the source where `(ci:job …)` was called.
+    /// `0` means the line could not be determined.
+    pub line: u32,
     /// The job's run function from the Lua VM.
     /// Stored for future execution — not yet called.
     #[expect(dead_code)]
@@ -50,8 +53,18 @@ impl UserData for CiModule {
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method(
             "job",
-            |_, this, (id, inputs, run_fn): (String, Vec<String>, mlua::Function)| {
-                this.jobs.borrow_mut().push(Job { id, inputs, run_fn });
+            |lua, this, (id, inputs, run_fn): (String, Vec<String>, mlua::Function)| {
+                let line = lua
+                    .inspect_stack(1, |d| d.current_line())
+                    .flatten()
+                    .map(|l| l as u32)
+                    .unwrap_or(0);
+                this.jobs.borrow_mut().push(Job {
+                    id,
+                    inputs,
+                    line,
+                    run_fn,
+                });
                 Ok(())
             },
         );
@@ -237,6 +250,20 @@ mod tests {
         assert_eq!(jobs[0].inputs, vec!["quire/push"]);
         assert_eq!(jobs[1].id, "test");
         assert_eq!(jobs[1].inputs, vec!["build"]);
+    }
+
+    #[test]
+    fn load_captures_source_line() {
+        let f = fennel();
+        let source = "(local ci (require :quire.ci))
+(ci:job :first [:quire/push] (fn [_] nil))
+(ci:job :second [:quire/push] (fn [_] nil))
+
+
+(ci:job :sixth [:quire/push] (fn [_] nil))";
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
+        let lines: Vec<u32> = pipeline.jobs().iter().map(|j| j.line).collect();
+        assert_eq!(lines, vec![2, 3, 6]);
     }
 
     #[test]
