@@ -318,7 +318,7 @@ pub fn eval_ci(
         // Convert mlua errors into rich FennelError with source snippets.
         match e {
             mlua::Error::RuntimeError(_) | mlua::Error::SyntaxError { .. } => {
-                crate::fennel::eval_error(source, name, &e).into()
+                crate::fennel::FennelError::from_lua(source, name, &e).into()
             }
             _ => crate::Error::Fennel(crate::fennel::FennelError::Eval {
                 message: format!("{name}: {e}"),

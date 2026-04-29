@@ -121,7 +121,7 @@ impl Fennel {
 
         let result = eval
             .call::<mlua::Value>((source, opts))
-            .map_err(|e| eval_error(source, name, &e))?;
+            .map_err(|e| FennelError::from_lua(source, name, &e))?;
 
         // Reject nil results — a config file that evaluates to nothing is
         // almost always a mistake.
@@ -151,18 +151,22 @@ impl Fennel {
     }
 }
 
-pub(crate) fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelError {
-    let message = format!("{name}: {err}");
+impl FennelError {
+    /// Construct an `Eval` error from an mlua error, extracting line
+    /// information when available.
+    pub(crate) fn from_lua(source: &str, name: &str, err: &mlua::Error) -> Self {
+        let message = format!("{name}: {err}");
 
-    // Try to extract a line number from the Lua error for a label.
-    let offset = extract_line_offset(err)
-        .and_then(|line| line_offset(source, line))
-        .unwrap_or(SourceOffset::from(0));
+        // Try to extract a line number from the Lua error for a label.
+        let offset = extract_line_offset(err)
+            .and_then(|line| line_offset(source, line))
+            .unwrap_or(SourceOffset::from(0));
 
-    FennelError::Eval {
-        message,
-        source_code: source.to_string(),
-        label: offset,
+        FennelError::Eval {
+            message,
+            source_code: source.to_string(),
+            label: offset,
+        }
     }
 }
 
@@ -172,7 +176,7 @@ pub(crate) fn eval_error(source: &str, name: &str, err: &mlua::Error) -> FennelE
 /// The name may contain colons (e.g. `HEAD:.quire/config.fnl`), so splitting
 /// from the left breaks. Match the first `:LINE:COLUMN: ` run, which is
 /// unambiguous — filenames don't end with `:digits:digits:`.
-pub(crate) fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
+fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
     let msg = err.to_string();
     let re = regex::Regex::new(r":(\d+):\d+: ").ok()?;
     let caps = re.captures(&msg)?;
@@ -184,7 +188,7 @@ pub(crate) fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
 }
 
 /// Convert a 1-based line number to a byte offset in the source.
-pub(crate) fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
+fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
     if line == 0 {
         return None;
     }
