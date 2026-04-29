@@ -3,7 +3,7 @@
 pub mod pipeline;
 pub mod run;
 
-pub use pipeline::{Job, Pipeline, ValidationError};
+pub use pipeline::{Job, LoadError, Pipeline, ValidationError};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
 
 /// A resolved commit reference.

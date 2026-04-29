@@ -1,6 +1,6 @@
 use miette::Diagnostic;
 
-use crate::ci::{RunState, ValidationError};
+use crate::ci::{LoadError, RunState};
 use crate::fennel::FennelError;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
@@ -20,8 +20,9 @@ pub enum Error {
     #[diagnostic(transparent)]
     Fennel(#[from] Box<FennelError>),
 
-    #[error("CI validation failed")]
-    Validation(#[related] Vec<ValidationError>),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Validation(Box<LoadError>),
 
     #[error("invalid run transition: {from:?} -> {to:?}")]
     InvalidTransition { from: RunState, to: RunState },
@@ -44,8 +45,8 @@ impl From<FennelError> for Error {
     }
 }
 
-impl From<Vec<ValidationError>> for Error {
-    fn from(errs: Vec<ValidationError>) -> Self {
-        Error::Validation(errs)
+impl From<LoadError> for Error {
+    fn from(err: LoadError) -> Self {
+        Error::Validation(Box::new(err))
     }
 }

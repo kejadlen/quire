@@ -3,12 +3,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use miette::{NamedSource, SourceSpan};
 use mlua::UserData;
 
 use crate::Result;
 use crate::fennel::Fennel;
 
 /// A registered job extracted from ci.fnl.
+///
+/// Constructed via `Job::new`, which enforces the per-job validation
+/// rules (reserved-slash, empty-inputs). Holding a `Job` is proof that
+/// those rules are satisfied; the post-graph rules (cycles, reachability)
+/// are checked later by `validate_post_graph`.
+#[derive(Debug)]
 pub struct Job {
     pub id: String,
     pub inputs: Vec<String>,
@@ -19,6 +26,37 @@ pub struct Job {
     /// Stored for future execution — not yet called.
     #[expect(dead_code)]
     pub(crate) run_fn: mlua::Function,
+}
+
+impl Job {
+    /// Build a `Job` from the raw `(ci:job …)` arguments, applying the
+    /// per-job validation rules. `line` is the 1-indexed source line of
+    /// the call site; `source` is the full Fennel source string used to
+    /// compute the diagnostic span.
+    fn new(
+        id: String,
+        inputs: Vec<String>,
+        run_fn: mlua::Function,
+        line: u32,
+        source: &str,
+    ) -> std::result::Result<Self, ValidationError> {
+        let span = span_for_line(source, line);
+
+        if id.contains('/') {
+            return Err(ValidationError::ReservedSlash { job_id: id, span });
+        }
+
+        if inputs.is_empty() {
+            return Err(ValidationError::EmptyInputs { job_id: id, span });
+        }
+
+        Ok(Self {
+            id,
+            inputs,
+            line,
+            run_fn,
+        })
+    }
 }
 
 /// A validated CI pipeline — a job graph that has passed all
@@ -46,7 +84,8 @@ impl Pipeline {
 /// (ci:job :build [:quire/push] (fn [_] nil))
 /// ```
 struct CiModule {
-    jobs: Rc<RefCell<Vec<Job>>>,
+    jobs: Rc<RefCell<Vec<std::result::Result<Job, ValidationError>>>>,
+    source: Rc<String>,
 }
 
 impl UserData for CiModule {
@@ -59,12 +98,9 @@ impl UserData for CiModule {
                     .flatten()
                     .map(|l| l as u32)
                     .unwrap_or(0);
-                this.jobs.borrow_mut().push(Job {
-                    id,
-                    inputs,
-                    line,
-                    run_fn,
-                });
+                this.jobs
+                    .borrow_mut()
+                    .push(Job::new(id, inputs, run_fn, line, &this.source));
                 Ok(())
             },
         );
@@ -74,31 +110,92 @@ impl UserData for CiModule {
 /// Parse and validate a ci.fnl source string into a `Pipeline`.
 ///
 /// Injects `quire.ci` into `package.loaded` so scripts can
-/// `(require :quire.ci)`, evaluates the source to register jobs, and
-/// then runs the structural validations.
+/// `(require :quire.ci)`, evaluates the source to register jobs, runs
+/// the per-job pre-graph rules during registration, and then runs
+/// the post-graph rules over the surviving jobs. Any errors found are
+/// gathered into a single `LoadError` carrying the source for miette
+/// to render with inline labels.
 pub(crate) fn load(
     fennel: &Fennel,
     source: &str,
     filename: &str,
     display: &str,
 ) -> Result<Pipeline> {
-    let jobs = parse(fennel, source, filename, display)?;
-    validate(&jobs)?;
-    Ok(Pipeline { jobs })
+    let results = parse(fennel, source, filename, display)?;
+
+    let mut errors = Vec::new();
+    let mut jobs = Vec::new();
+    for r in results {
+        match r {
+            Ok(j) => jobs.push(j),
+            Err(e) => errors.push(e),
+        }
+    }
+
+    if let Err(post) = validate_post_graph(&jobs) {
+        errors.extend(post);
+    }
+
+    if errors.is_empty() {
+        Ok(Pipeline { jobs })
+    } else {
+        Err(LoadError {
+            src: NamedSource::new(display, source.to_string()),
+            errors,
+        }
+        .into())
+    }
 }
 
 /// Evaluate `source` with the `quire.ci` module bound and collect the
-/// registered jobs without validating them.
-fn parse(fennel: &Fennel, source: &str, filename: &str, display: &str) -> Result<Vec<Job>> {
+/// registration results — one `Result` per `(ci:job …)` call. Pre-graph
+/// rules run inside the callback, so a single bad job does not abort
+/// the rest of the script.
+fn parse(
+    fennel: &Fennel,
+    source: &str,
+    filename: &str,
+    display: &str,
+) -> Result<Vec<std::result::Result<Job, ValidationError>>> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
+    let src = Rc::new(source.to_string());
 
     fennel.eval_raw(source, filename, display, |lua| {
         let loaded: mlua::Table = lua.globals().get::<mlua::Table>("package")?.get("loaded")?;
-        loaded.set("quire.ci", CiModule { jobs: jobs.clone() })?;
+        loaded.set(
+            "quire.ci",
+            CiModule {
+                jobs: jobs.clone(),
+                source: src.clone(),
+            },
+        )?;
         Ok(())
     })?;
 
     Ok(jobs.take())
+}
+
+/// Compute a span covering the given 1-indexed line in `source`.
+/// Returns an empty span at offset 0 when the line is unknown.
+fn span_for_line(source: &str, line: u32) -> SourceSpan {
+    if line == 0 {
+        return SourceSpan::from((0, 0));
+    }
+    let target = line as usize;
+    let mut current = 1usize;
+    for (i, ch) in source.char_indices() {
+        if current == target {
+            let end = source[i..]
+                .find('\n')
+                .map(|n| i + n)
+                .unwrap_or(source.len());
+            return SourceSpan::from((i, end - i));
+        }
+        if ch == '\n' {
+            current += 1;
+        }
+    }
+    SourceSpan::from((source.len(), 0))
 }
 
 /// A validation error found in the job graph.
@@ -110,39 +207,45 @@ pub enum ValidationError {
     #[error(
         "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it."
     )]
-    EmptyInputs { job_id: String },
+    EmptyInputs {
+        job_id: String,
+        #[label("declared here")]
+        span: SourceSpan,
+    },
 
     #[error("Job '{job_id}' is not reachable from any source ref (e.g. :quire/push).")]
     Unreachable { job_id: String },
 
     #[error("Job id '{job_id}' contains '/', which is reserved for the 'quire/' source namespace.")]
-    ReservedSlash { job_id: String },
+    ReservedSlash {
+        job_id: String,
+        #[label("declared here")]
+        span: SourceSpan,
+    },
 }
 
-/// Validate the structural rules of a job graph.
+/// All validation errors produced while loading a ci.fnl, paired with
+/// the source so miette can render inline labels for each per-job
+/// error.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("CI validation failed")]
+pub struct LoadError {
+    // Named `src` rather than `source` so thiserror doesn't auto-treat
+    // it as the error chain.
+    #[source_code]
+    pub src: NamedSource<String>,
+
+    #[related]
+    pub errors: Vec<ValidationError>,
+}
+
+/// Run the post-graph validation rules — cycle detection and source
+/// reachability — over the surviving jobs from parsing.
 ///
-/// Returns `Ok(())` if all four rules pass, or `Err` with all violations found.
-/// Used by `pipeline::load`.
-fn validate(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
+/// Per-job pre-graph rules (slash-in-id, empty inputs) run inside the
+/// `(ci:job …)` callback during `parse`, so they are not re-checked here.
+fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
-
-    // Rule 4: no '/' in user job ids.
-    for job in jobs {
-        if job.id.contains('/') {
-            errors.push(ValidationError::ReservedSlash {
-                job_id: job.id.clone(),
-            });
-        }
-    }
-
-    // Rule 2: non-empty inputs.
-    for job in jobs {
-        if job.inputs.is_empty() {
-            errors.push(ValidationError::EmptyInputs {
-                job_id: job.id.clone(),
-            });
-        }
-    }
 
     // Rule 1: acyclic.
     //
@@ -273,35 +376,45 @@ mod tests {
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
-    /// Parse a Fennel source into raw jobs without validating, for tests
-    /// that exercise individual validation rules.
-    fn parse_jobs(source: &str) -> Vec<Job> {
+    /// Parse a Fennel source into per-job results. Pre-graph rules
+    /// run during parsing, so each entry is `Ok(Job)` or
+    /// `Err(ValidationError)`.
+    fn parse_results(source: &str) -> Vec<std::result::Result<Job, ValidationError>> {
         let f = fennel();
         parse(&f, source, "ci.fnl", "ci.fnl").expect("parse should succeed")
     }
 
+    /// Discard parse errors and return only the successfully registered
+    /// jobs — for tests that exercise post-graph rules.
+    fn parsed_jobs(source: &str) -> Vec<Job> {
+        parse_results(source)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
     #[test]
     fn validate_accepts_valid_config() {
-        let jobs = parse_jobs(
+        let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci:job :build [:quire/push] (fn [_] nil))
 (ci:job :test [:build :quire/push] (fn [_] nil))
 "#,
         );
-        assert!(validate(&jobs).is_ok());
+        assert!(validate_post_graph(&jobs).is_ok());
     }
 
     #[test]
     fn validate_rejects_cycle() {
-        let jobs = parse_jobs(
+        let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci:job :a [:b] (fn [_] nil))
 (ci:job :b [:a] (fn [_] nil))
 "#,
         );
-        let errs = validate(&jobs).unwrap_err();
+        let errs = validate_post_graph(&jobs).unwrap_err();
         assert!(
             errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
@@ -310,7 +423,7 @@ mod tests {
 
     #[test]
     fn validate_cycle_only_reports_cycle_members() {
-        let jobs = parse_jobs(
+        let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci:job :a [:b :quire/push] (fn [_] nil))
@@ -318,7 +431,7 @@ mod tests {
 (ci:job :clean [:quire/push] (fn [_] nil))
 "#,
         );
-        let errs = validate(&jobs).unwrap_err();
+        let errs = validate_post_graph(&jobs).unwrap_err();
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
             .filter_map(|e| match e {
@@ -336,7 +449,7 @@ mod tests {
 
     #[test]
     fn validate_reports_disjoint_cycles_separately() {
-        let jobs = parse_jobs(
+        let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci:job :a [:b :quire/push] (fn [_] nil))
@@ -345,7 +458,7 @@ mod tests {
 (ci:job :d [:c :quire/push] (fn [_] nil))
 "#,
         );
-        let errs = validate(&jobs).unwrap_err();
+        let errs = validate_post_graph(&jobs).unwrap_err();
         let cycle_count = errs
             .iter()
             .filter(|e| matches!(e, ValidationError::Cycle { .. }))
@@ -354,46 +467,47 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_empty_inputs() {
-        let jobs = parse_jobs(
+    fn parse_rejects_empty_inputs() {
+        let results = parse_results(
             r#"(local ci (require :quire.ci))
 (ci:job :setup [] (fn [_] nil))"#,
         );
-        let errs = validate(&jobs).unwrap_err();
         assert!(
-            errs.iter()
-                .any(|e| matches!(e, ValidationError::EmptyInputs { job_id } if job_id == "setup")),
-            "should report empty inputs for 'setup': {errs:?}"
+            results.iter().any(
+                |r| matches!(r, Err(ValidationError::EmptyInputs { job_id, .. }) if job_id == "setup")
+            ),
+            "should report empty inputs for 'setup': {results:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_slash_in_job_id() {
+        let results = parse_results(
+            r#"(local ci (require :quire.ci))
+(ci:job :foo/bar [:quire/push] (fn [_] nil))"#,
+        );
+        assert!(
+            results.iter().any(
+                |r| matches!(r, Err(ValidationError::ReservedSlash { job_id, .. }) if job_id == "foo/bar")
+            ),
+            "should report slash in job id: {results:?}"
         );
     }
 
     #[test]
     fn validate_rejects_unreachable_jobs() {
-        let jobs = parse_jobs(
+        // An orphan with non-empty self-input passes pre-graph rules
+        // and reaches the post-graph reachability check.
+        let jobs = parsed_jobs(
             r#"(local ci (require :quire.ci))
 (ci:job :orphan [:orphan] (fn [_] nil))"#,
         );
-        let errs = validate(&jobs).unwrap_err();
+        let errs = validate_post_graph(&jobs).unwrap_err();
         assert!(
             errs.iter().any(
                 |e| matches!(e, ValidationError::Unreachable { job_id } if job_id == "orphan")
             ),
             "should report unreachable job 'orphan': {errs:?}"
-        );
-    }
-
-    #[test]
-    fn validate_rejects_slash_in_job_id() {
-        let jobs = parse_jobs(
-            r#"(local ci (require :quire.ci))
-(ci:job :foo/bar [:quire/push] (fn [_] nil))"#,
-        );
-        let errs = validate(&jobs).unwrap_err();
-        assert!(
-            errs.iter().any(
-                |e| matches!(e, ValidationError::ReservedSlash { job_id } if job_id == "foo/bar")
-            ),
-            "should report slash in job id: {errs:?}"
         );
     }
 }
