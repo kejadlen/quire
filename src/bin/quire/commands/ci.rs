@@ -10,10 +10,13 @@ use quire::ci::Ci;
 /// Prints each job found and any validation errors.
 pub async fn validate(sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
-    let sha = sha.unwrap_or("HEAD");
+    let sha = match sha {
+        Some(s) => s.to_string(),
+        None => current_commit()?,
+    };
     let ci = Ci::new(repo_path);
 
-    let Some(pipeline) = ci.load(sha)? else {
+    let Some(pipeline) = ci.load(&sha)? else {
         println!("No ci.fnl found at {sha}.");
         return Ok(());
     };
@@ -60,18 +63,43 @@ pub async fn validate(sha: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Find the git repo root from the current working directory.
+/// Find the repo root from the current working directory using jj.
 fn discover_repo() -> Result<PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
+    let output = std::process::Command::new("jj")
+        .args(["root"])
         .output()
         .into_diagnostic()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        miette::bail!("not in a git repository: {stderr}");
+        miette::bail!("not in a jj repo: {stderr}");
     }
 
     let path = String::from_utf8(output.stdout).into_diagnostic()?;
     Ok(PathBuf::from(path.trim()))
+}
+
+/// Get the git commit ID of the latest committed revision via jj.
+fn current_commit() -> Result<String> {
+    let output = std::process::Command::new("jj")
+        .args([
+            "log",
+            "--limit",
+            "1",
+            "--no-graph",
+            "-r",
+            "@-",
+            "-T",
+            "commit_id",
+        ])
+        .output()
+        .into_diagnostic()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        miette::bail!("failed to get current commit: {stderr}");
+    }
+
+    let sha = String::from_utf8(output.stdout).into_diagnostic()?;
+    Ok(sha.trim().to_string())
 }
