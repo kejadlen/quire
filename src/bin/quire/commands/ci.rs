@@ -1,23 +1,20 @@
 use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
-use quire::ci::Ci;
+use quire::ci::{Ci, CommitRef};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
 /// Loads the Fennel source at the given SHA (or HEAD) to extract
 /// the job registration table, then runs the four structural validations.
 /// Prints each job found and any validation errors.
-pub async fn validate(sha: Option<&str>) -> Result<()> {
+pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
-    let sha = match sha {
-        Some(s) => s.to_string(),
-        None => current_commit()?,
-    };
+    let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path);
 
-    let Some(pipeline) = ci.load(&sha)? else {
-        println!("No ci.fnl found at {sha}.");
+    let Some(pipeline) = ci.load(&commit)? else {
+        println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };
 
@@ -64,6 +61,22 @@ pub async fn validate(sha: Option<&str>) -> Result<()> {
 }
 
 /// Find the repo root from the current working directory using jj.
+fn resolve_commit(maybe_sha: Option<&str>) -> Result<CommitRef> {
+    match maybe_sha {
+        Some(s) => Ok(CommitRef {
+            sha: s.to_string(),
+            display: s.to_string(),
+        }),
+        None => {
+            let sha = current_commit()?;
+            Ok(CommitRef {
+                sha,
+                display: "@".to_string(),
+            })
+        }
+    }
+}
+
 fn discover_repo() -> Result<PathBuf> {
     let output = std::process::Command::new("jj")
         .args(["root"])

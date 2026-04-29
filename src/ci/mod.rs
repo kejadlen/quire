@@ -6,6 +6,17 @@ pub mod run;
 pub use pipeline::{Job, Pipeline, ValidationError};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
 
+/// A resolved commit reference.
+///
+/// Carries both the full SHA (for git operations) and a short display
+/// form (for error messages and user-facing output).
+pub struct CommitRef {
+    /// Full commit SHA for git operations.
+    pub sha: String,
+    /// Short or human-readable form for display.
+    pub display: String,
+}
+
 use std::path::PathBuf;
 
 use crate::Result;
@@ -37,13 +48,14 @@ impl Ci {
     /// Load ci.fnl at a given SHA and return the parsed pipeline.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
-    pub fn load(&self, sha: &str) -> Result<Option<Pipeline>> {
-        let Some(source) = self.source(sha)? else {
+    pub fn load(&self, commit: &CommitRef) -> Result<Option<Pipeline>> {
+        let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
         let fennel = crate::fennel::Fennel::new()?;
-        let name = format!("{sha}:{CI_FNL}");
-        let pipeline = pipeline::load(&fennel, &source, &name)?;
+        let name = CI_FNL.to_string();
+        let lua_name = format!("{}:{CI_FNL}", commit.sha);
+        let pipeline = pipeline::load(&fennel, &source, &lua_name, &name)?;
         Ok(Some(pipeline))
     }
 
@@ -132,8 +144,9 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
     run.transition(RunState::Active)?;
 
     let fennel = crate::fennel::Fennel::new()?;
-    let name = format!("{}:{CI_FNL}", push_ref.new_sha);
-    let pipeline = match pipeline::load(&fennel, &source, &name) {
+    let name = CI_FNL.to_string();
+    let lua_name = format!("{}:{CI_FNL}", push_ref.new_sha);
+    let pipeline = match pipeline::load(&fennel, &source, &lua_name, &name) {
         Ok(r) => r,
         Err(e) => {
             run.transition(RunState::Failed)?;
