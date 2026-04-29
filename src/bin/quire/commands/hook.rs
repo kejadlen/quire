@@ -91,7 +91,7 @@ fn post_receive(quire: &Quire) -> Result<()> {
         .to_string_lossy()
         .to_string();
 
-    let event = quire::event::build_push_event(repo_name, refs);
+    let event = quire::event::PushEvent::new(repo_name, refs);
     let mut line = serde_json::to_string(&event)
         .into_diagnostic()
         .context("failed to serialize push event")?;

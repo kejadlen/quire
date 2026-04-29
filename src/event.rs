@@ -164,21 +164,22 @@ async fn dispatch_mirror(quire: &crate::Quire, repo: crate::quire::Repo, event: 
     }
 }
 
-/// Build a push event from parsed refs.
-///
-/// `repo` is the repo name relative to the repos dir (e.g. "foo.git").
-/// `pushed_at` is seconds since Unix epoch as a string.
-pub fn build_push_event(repo: String, refs: Vec<PushRef>) -> PushEvent {
-    let pushed_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string());
+impl PushEvent {
+    /// Build a push event from the repo name and updated refs.
+    ///
+    /// `repo` is the repo name relative to the repos dir (e.g. "foo.git").
+    pub fn new(repo: String, refs: Vec<PushRef>) -> Self {
+        let pushed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|_| "0".to_string());
 
-    PushEvent {
-        r#type: "push".to_string(),
-        repo,
-        pushed_at,
-        refs,
+        Self {
+            r#type: "push".to_string(),
+            repo,
+            pushed_at,
+            refs,
+        }
     }
 }
 
@@ -187,13 +188,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_push_event_populates_fields() {
+    fn push_event_new_populates_fields() {
         let refs = vec![PushRef {
             old_sha: "a".to_string(),
             new_sha: "b".to_string(),
             r#ref: "refs/heads/main".to_string(),
         }];
-        let event = build_push_event("foo.git".to_string(), refs.clone());
+        let event = PushEvent::new("foo.git".to_string(), refs.clone());
 
         assert_eq!(event.r#type, "push");
         assert_eq!(event.repo, "foo.git");
@@ -215,7 +216,7 @@ mod tests {
                 r#ref: "refs/heads/feature".to_string(),
             },
         ];
-        let event = build_push_event("work/foo.git".to_string(), refs);
+        let event = PushEvent::new("work/foo.git".to_string(), refs);
 
         let json = serde_json::to_string(&event).expect("serialize");
         let parsed: PushEvent = serde_json::from_str(&json).expect("deserialize");
