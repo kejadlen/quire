@@ -43,18 +43,7 @@ impl Ci {
         };
         let fennel = crate::fennel::Fennel::new()?;
         let name = format!("{sha}:{CI_FNL}");
-        let pipeline = pipeline::eval_ci(&fennel, &source, &name)?;
-        Ok(Some(pipeline))
-    }
-
-    /// Load ci.fnl at a given SHA and validate the pipeline.
-    ///
-    /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
-    pub fn validate_at(&self, sha: &str) -> Result<Option<Pipeline>> {
-        let Some(pipeline) = self.load(sha)? else {
-            return Ok(None);
-        };
-        pipeline.validate()?;
+        let pipeline = pipeline::load(&fennel, &source, &name)?;
         Ok(Some(pipeline))
     }
 
@@ -144,7 +133,7 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
 
     let fennel = crate::fennel::Fennel::new()?;
     let name = format!("{}:{CI_FNL}", push_ref.new_sha);
-    let pipeline = match pipeline::eval_ci(&fennel, &source, &name) {
+    let pipeline = match pipeline::load(&fennel, &source, &name) {
         Ok(r) => r,
         Err(e) => {
             run.transition(RunState::Failed)?;

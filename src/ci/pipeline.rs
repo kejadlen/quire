@@ -65,11 +65,11 @@ impl UserData for CiModule {
     }
 }
 
-/// Evaluate a ci.fnl source string, registering jobs via the `quire.ci` module.
+/// Load a ci.fnl source string, registering jobs via the `quire.ci` module.
 ///
 /// Injects `quire.ci` into `package.loaded` so scripts can
 /// `(require :quire.ci)`, evaluates the source, and takes the accumulated jobs.
-pub(crate) fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<Pipeline> {
+pub(crate) fn load(fennel: &Fennel, source: &str, name: &str) -> Result<Pipeline> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
 
     fennel.eval_raw(source, name, |lua| {
@@ -203,25 +203,25 @@ mod tests {
     }
 
     #[test]
-    fn eval_ci_registers_a_job() {
+    fn load_registers_a_job() {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci:job :test [:quire/push] (fn [_] nil))"#;
-        let result = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let result = load(&f, source, "ci.fnl").expect("eval should succeed");
         assert_eq!(result.jobs.len(), 1);
         assert_eq!(result.jobs[0].id, "test");
         assert_eq!(result.jobs[0].inputs, vec!["quire/push"]);
     }
 
     #[test]
-    fn eval_ci_registers_multiple_jobs() {
+    fn load_registers_multiple_jobs() {
         let f = fennel();
         let source = r#"
 (local ci (require :quire.ci))
 (ci:job :build [:quire/push] (fn [_] nil))
 (ci:job :test [:build] (fn [_] nil))
 "#;
-        let result = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let result = load(&f, source, "ci.fnl").expect("eval should succeed");
         assert_eq!(result.jobs.len(), 2);
         assert_eq!(result.jobs[0].id, "build");
         assert_eq!(result.jobs[0].inputs, vec!["quire/push"]);
@@ -230,9 +230,9 @@ mod tests {
     }
 
     #[test]
-    fn eval_ci_errors_on_bad_fennel() {
+    fn load_errors_on_bad_fennel() {
         let f = fennel();
-        let result = eval_ci(&f, "{:bad {:}", "ci.fnl");
+        let result = load(&f, "{:bad {:}", "ci.fnl");
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
@@ -244,7 +244,7 @@ mod tests {
 (ci:job :build [:quire/push] (fn [_] nil))
 (ci:job :test [:build :quire/push] (fn [_] nil))
 "#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         assert!(pipeline.validate().is_ok());
     }
 
@@ -256,7 +256,7 @@ mod tests {
 (ci:job :a [:b] (fn [_] nil))
 (ci:job :b [:a] (fn [_] nil))
 "#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
@@ -273,7 +273,7 @@ mod tests {
 (ci:job :b [:a :quire/push] (fn [_] nil))
 (ci:job :clean [:quire/push] (fn [_] nil))
 "#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
@@ -300,7 +300,7 @@ mod tests {
 (ci:job :c [:d :quire/push] (fn [_] nil))
 (ci:job :d [:c :quire/push] (fn [_] nil))
 "#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         let cycle_count = errs
             .iter()
@@ -314,7 +314,7 @@ mod tests {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci:job :setup [] (fn [_] nil))"#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter()
@@ -328,7 +328,7 @@ mod tests {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci:job :orphan [:orphan] (fn [_] nil))"#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter().any(
@@ -343,7 +343,7 @@ mod tests {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci:job :foo/bar [:quire/push] (fn [_] nil))"#;
-        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let pipeline = load(&f, source, "ci.fnl").expect("eval should succeed");
         let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter().any(
