@@ -50,6 +50,12 @@ enum Commands {
         #[command(subcommand)]
         command: RepoCommands,
     },
+
+    /// CI pipeline operations.
+    Ci {
+        #[command(subcommand)]
+        command: CiCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -67,6 +73,15 @@ enum RepoCommands {
     Rm {
         /// Repository name (e.g. foo.git or work/foo.git).
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CiCommands {
+    /// Validate a ci.fnl file without running any jobs.
+    Validate {
+        /// Path to the ci.fnl file to validate.
+        path: std::path::PathBuf,
     },
 }
 
@@ -134,6 +149,9 @@ async fn main() -> Result<()> {
             RepoCommands::New { name } => commands::repo::new(&quire, &name).await?,
             RepoCommands::List => commands::repo::list(&quire).await?,
             RepoCommands::Rm { name } => commands::repo::rm(&quire, &name).await?,
+        },
+        Commands::Ci { command } => match command {
+            CiCommands::Validate { path } => commands::ci::validate(&path).await?,
         },
     }
 
