@@ -321,62 +321,51 @@ pub fn eval_ci(
     source: &str,
     name: &str,
 ) -> crate::Result<EvalResult> {
-    fn lua_err(e: mlua::Error) -> crate::Error {
-        crate::Error::Lua(e.to_string())
-    }
+    eval_ci_inner(source, name).map_err(|e| crate::Error::Lua(e.to_string()))
+}
 
+fn eval_ci_inner(source: &str, name: &str) -> mlua::Result<EvalResult> {
     // Create a fresh VM with Fennel loaded.
     let lua = unsafe { Lua::unsafe_new() };
     let fennel_lua: &str = include_str!("../vendor/fennel.lua");
-    let fennel_module: mlua::Table = lua
-        .load(fennel_lua)
-        .set_name("fennel.lua")
-        .eval()
-        .map_err(lua_err)?;
-    lua.globals()
-        .set("fennel", fennel_module)
-        .map_err(lua_err)?;
+    let fennel_module: mlua::Table = lua.load(fennel_lua).set_name("fennel.lua").eval()?;
+    lua.globals().set("fennel", fennel_module)?;
 
     // Create a registration table. `job` will push into this.
-    let registry: mlua::Table = lua.create_table().map_err(lua_err)?;
-    lua.globals()
-        .set("_quire_jobs", registry)
-        .map_err(lua_err)?;
+    let registry: mlua::Table = lua.create_table()?;
+    lua.globals().set("_quire_jobs", registry)?;
 
     // Define the `job` global: (job id inputs run-fn)
-    let job_fn = lua
-        .create_function(
-            |lua, (id, inputs, run_fn): (mlua::String, mlua::Table, mlua::Function)| {
-                let registry: mlua::Table = lua.globals().get("_quire_jobs")?;
-                let entry = lua.create_table()?;
-                entry.set("id", id)?;
-                entry.set("inputs", inputs)?;
-                entry.set("run", run_fn)?;
-                registry.push(entry)?;
-                Ok(())
-            },
-        )
-        .map_err(lua_err)?;
-    lua.globals().set("job", job_fn).map_err(lua_err)?;
+    let job_fn = lua.create_function(
+        |lua, (id, inputs, run_fn): (mlua::String, mlua::Table, mlua::Function)| {
+            let registry: mlua::Table = lua.globals().get("_quire_jobs")?;
+            let entry = lua.create_table()?;
+            entry.set("id", id)?;
+            entry.set("inputs", inputs)?;
+            entry.set("run", run_fn)?;
+            registry.push(entry)?;
+            Ok(())
+        },
+    )?;
+    lua.globals().set("job", job_fn)?;
 
     // Eval the ci.fnl source via Fennel.
-    let fennel: mlua::Table = lua.globals().get("fennel").map_err(lua_err)?;
-    let eval: mlua::Function = fennel.get("eval").map_err(lua_err)?;
-    let opts = lua.create_table().map_err(lua_err)?;
-    opts.set("filename", name).map_err(lua_err)?;
-    eval.call::<mlua::MultiValue>((source, opts))
-        .map_err(lua_err)?;
+    let fennel: mlua::Table = lua.globals().get("fennel")?;
+    let eval: mlua::Function = fennel.get("eval")?;
+    let opts = lua.create_table()?;
+    opts.set("filename", name)?;
+    eval.call::<mlua::MultiValue>((source, opts))?;
 
     // Extract the registration table.
-    let registry: mlua::Table = lua.globals().get("_quire_jobs").map_err(lua_err)?;
+    let registry: mlua::Table = lua.globals().get("_quire_jobs")?;
     let mut jobs = Vec::new();
     for entry in registry.sequence_values::<mlua::Table>() {
-        let entry = entry.map_err(lua_err)?;
-        let id: String = entry.get("id").map_err(lua_err)?;
-        let inputs_table: mlua::Table = entry.get("inputs").map_err(lua_err)?;
+        let entry = entry?;
+        let id: String = entry.get("id")?;
+        let inputs_table: mlua::Table = entry.get("inputs")?;
         let mut inputs = Vec::new();
         for input in inputs_table.sequence_values::<String>() {
-            inputs.push(input.map_err(lua_err)?);
+            inputs.push(input?);
         }
         jobs.push(JobDef { id, inputs });
     }
