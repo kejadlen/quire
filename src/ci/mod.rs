@@ -37,8 +37,8 @@ impl Ci {
     /// Evaluate ci.fnl at a given SHA and return the registration table.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
-    pub fn eval(&self, sha: &str) -> Result<Option<EvalResult>> {
-        let Some(source) = self.ci_fnl_source(sha)? else {
+    pub fn load(&self, sha: &str) -> Result<Option<EvalResult>> {
+        let Some(source) = self.source(sha)? else {
             return Ok(None);
         };
         let fennel = crate::fennel::Fennel::new()?;
@@ -51,7 +51,7 @@ impl Ci {
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
     pub fn validate_at(&self, sha: &str) -> Result<Option<EvalResult>> {
-        let Some(result) = self.eval(sha)? else {
+        let Some(result) = self.load(sha)? else {
             return Ok(None);
         };
         validate(&result.jobs)?;
@@ -62,7 +62,7 @@ impl Ci {
     ///
     /// Returns `Ok(None)` if the file does not exist at that commit,
     /// `Ok(Some(contents))` if it does, or `Err` for unexpected failures.
-    fn ci_fnl_source(&self, sha: &str) -> Result<Option<String>> {
+    fn source(&self, sha: &str) -> Result<Option<String>> {
         let output = self
             .git(&["show", &format!("{sha}:{CI_FNL}")])
             .stdout(std::process::Stdio::piped())
@@ -124,7 +124,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> Result<()> {
     let ci = repo.ci();
 
-    let Some(source) = ci.ci_fnl_source(&push_ref.new_sha)? else {
+    let Some(source) = ci.source(&push_ref.new_sha)? else {
         return Ok(());
     };
 

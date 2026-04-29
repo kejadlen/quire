@@ -13,7 +13,7 @@ pub async fn validate(sha: Option<&str>) -> Result<()> {
     let sha = sha.unwrap_or("HEAD");
     let ci = Ci::new(repo_path);
 
-    let Some(result) = ci.eval(sha)? else {
+    let Some(result) = ci.load(sha)? else {
         println!("No ci.fnl found at {sha}.");
         return Ok(());
     };
