@@ -13,7 +13,7 @@ base64 = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
 fs-err = "*"
-jiff = "*"
+jiff = { version = "*", features = ["serde"] }
 miette = { version = "*", features = ["fancy"] }
 mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
 regex = "*"

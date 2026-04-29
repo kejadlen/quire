@@ -30,7 +30,7 @@ fn push_event_round_trips_through_socket() {
     let event = quire::event::PushEvent {
         r#type: "push".to_string(),
         repo: "test.git".to_string(),
-        pushed_at: "12345".to_string(),
+        pushed_at: jiff::Timestamp::from_second(12345).unwrap(),
         refs: vec![quire::event::PushRef {
             old_sha: "0000000000000000000000000000000000000000".to_string(),
             new_sha: "abc123".to_string(),
@@ -77,7 +77,7 @@ fn push_event_multiple_refs_round_trip() {
     let event = quire::event::PushEvent {
         r#type: "push".to_string(),
         repo: "work/project.git".to_string(),
-        pushed_at: "99999".to_string(),
+        pushed_at: jiff::Timestamp::from_second(99999).unwrap(),
         refs: vec![
             quire::event::PushRef {
                 old_sha: "aaa".to_string(),

@@ -34,20 +34,20 @@ pub struct RunMeta {
     pub sha: String,
     /// The full ref name (e.g. `refs/heads/main`).
     pub r#ref: String,
-    /// ISO 8601 timestamp of when the push occurred.
-    pub pushed_at: String,
+    /// When the push occurred.
+    pub pushed_at: jiff::Timestamp,
 }
 
 /// Timestamps recorded across the run lifecycle. The directory name is the
 /// authoritative state; this file records when transitions happened.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunTimes {
-    /// ISO 8601 timestamp of when the run was picked up (moved to active).
+    /// When the run was picked up (moved to active).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    /// ISO 8601 timestamp of when the run finished (moved to complete/failed).
+    pub started_at: Option<jiff::Timestamp>,
+    /// When the run finished (moved to complete/failed).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<String>,
+    pub finished_at: Option<jiff::Timestamp>,
 }
 
 /// Access to CI runs for a single repo.
@@ -245,11 +245,11 @@ impl Run {
         self.state = to;
 
         let mut times = self.read_times()?;
-        let now = || jiff::Zoned::now().to_string();
+        let now = jiff::Timestamp::now();
         match to {
-            RunState::Active if times.started_at.is_none() => times.started_at = Some(now()),
+            RunState::Active if times.started_at.is_none() => times.started_at = Some(now),
             RunState::Complete | RunState::Failed if times.finished_at.is_none() => {
-                times.finished_at = Some(now())
+                times.finished_at = Some(now)
             }
             _ => {}
         }
@@ -466,7 +466,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
     };
 
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(&repo, &event.pushed_at, push_ref) {
+        if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref) {
             tracing::error!(
                 repo = %event.repo,
                 sha = %push_ref.new_sha,
@@ -481,7 +481,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 ///
 /// Returns `Ok(())` if CI ran (regardless of whether the run succeeded
 /// or failed), or `Err` if the trigger itself failed.
-fn trigger_ref(repo: &Repo, pushed_at: &str, push_ref: &PushRef) -> Result<()> {
+fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> Result<()> {
     if !repo.has_ci_fnl(&push_ref.new_sha) {
         return Ok(());
     }
@@ -489,7 +489,7 @@ fn trigger_ref(repo: &Repo, pushed_at: &str, push_ref: &PushRef) -> Result<()> {
     let meta = RunMeta {
         sha: push_ref.new_sha.clone(),
         r#ref: push_ref.r#ref.clone(),
-        pushed_at: pushed_at.to_string(),
+        pushed_at,
     };
 
     let mut run = repo.runs().create(&meta)?;
@@ -557,7 +557,7 @@ mod tests {
         RunMeta {
             sha: "abc123".to_string(),
             r#ref: "refs/heads/main".to_string(),
-            pushed_at: "2026-04-28T12:00:00Z".to_string(),
+            pushed_at: "2026-04-28T12:00:00Z".parse().expect("parse timestamp"),
         }
     }
 
@@ -742,14 +742,15 @@ mod tests {
         let runs = Runs::new(quire.base_dir().join("runs").join("test.git"));
         let run = runs.create(&test_meta()).expect("create");
 
+        let started: jiff::Timestamp = "2026-04-28T12:00:01Z".parse().expect("parse");
         run.write_times(&RunTimes {
-            started_at: Some("2026-04-28T12:00:01Z".to_string()),
+            started_at: Some(started),
             finished_at: None,
         })
         .expect("write state");
 
         let loaded = run.read_times().expect("read state");
-        assert_eq!(loaded.started_at.as_deref(), Some("2026-04-28T12:00:01Z"));
+        assert_eq!(loaded.started_at, Some(started));
 
         // Meta is unchanged.
         let loaded_meta = run.read_meta().expect("read meta");

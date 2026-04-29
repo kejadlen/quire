@@ -11,7 +11,7 @@ pub struct PushRef {
 pub struct PushEvent {
     pub r#type: String,
     pub repo: String,
-    pub pushed_at: String,
+    pub pushed_at: jiff::Timestamp,
     pub refs: Vec<PushRef>,
 }
 
@@ -20,15 +20,10 @@ impl PushEvent {
     ///
     /// `repo` is the repo name relative to the repos dir (e.g. "foo.git").
     pub fn new(repo: String, refs: Vec<PushRef>) -> Self {
-        let pushed_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs().to_string())
-            .unwrap_or_else(|_| "0".to_string());
-
         Self {
             r#type: "push".to_string(),
             repo,
-            pushed_at,
+            pushed_at: jiff::Timestamp::now(),
             refs,
         }
     }
@@ -58,7 +53,7 @@ mod tests {
         assert_eq!(event.r#type, "push");
         assert_eq!(event.repo, "foo.git");
         assert_eq!(event.refs, refs);
-        assert_ne!(event.pushed_at, "0");
+        assert!(event.pushed_at > jiff::Timestamp::UNIX_EPOCH);
     }
 
     #[test]
