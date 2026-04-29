@@ -78,11 +78,11 @@ enum RepoCommands {
 
 #[derive(Subcommand)]
 enum CiCommands {
-    /// Validate a ci.fnl file without running any jobs.
+    /// Validate a repo's ci.fnl without running any jobs.
     Validate {
-        /// Path to the ci.fnl file to validate.
-        #[arg(default_value = ".quire/ci.fnl")]
-        path: std::path::PathBuf,
+        /// Commit SHA to validate. Defaults to HEAD.
+        #[arg(short, long)]
+        sha: Option<String>,
     },
 }
 
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
             RepoCommands::Rm { name } => commands::repo::rm(&quire, &name).await?,
         },
         Commands::Ci { command } => match command {
-            CiCommands::Validate { path } => commands::ci::validate(&path).await?,
+            CiCommands::Validate { sha } => commands::ci::validate(sha.as_deref()).await?,
         },
     }
 

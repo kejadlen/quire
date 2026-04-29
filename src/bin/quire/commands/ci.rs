@@ -1,14 +1,22 @@
-use miette::Result;
+use std::path::PathBuf;
 
-use quire::ci::{Ci, ValidationError};
+use miette::{IntoDiagnostic, Result};
+use quire::ci::Ci;
 
-/// Validate a ci.fnl file without executing any jobs.
+/// Validate a repo's ci.fnl without executing any jobs.
 ///
-/// Evaluates the Fennel source to extract the job registration table,
-/// then runs the four structural validations. Prints each job found
-/// and any validation errors.
-pub async fn validate(path: &std::path::Path) -> Result<()> {
-    let result = Ci::validate_file(path)?;
+/// Evaluates the Fennel source at the given SHA (or HEAD) to extract
+/// the job registration table, then runs the four structural validations.
+/// Prints each job found and any validation errors.
+pub async fn validate(sha: Option<&str>) -> Result<()> {
+    let repo_path = discover_repo()?;
+    let sha = sha.unwrap_or("HEAD");
+    let ci = Ci::new(repo_path);
+
+    let Some(result) = ci.eval(sha)? else {
+        println!("No ci.fnl found at {sha}.");
+        return Ok(());
+    };
 
     if result.jobs.is_empty() {
         println!("No jobs registered.");
@@ -29,16 +37,16 @@ pub async fn validate(path: &std::path::Path) -> Result<()> {
             println!("\nValidation errors:");
             for err in &errors {
                 let label = match err {
-                    ValidationError::Cycle { cycle_jobs } => {
+                    quire::ci::ValidationError::Cycle { cycle_jobs } => {
                         format!("cycle: {}", cycle_jobs.join(" → "))
                     }
-                    ValidationError::EmptyInputs { job_id } => {
+                    quire::ci::ValidationError::EmptyInputs { job_id } => {
                         format!("{job_id}: empty inputs")
                     }
-                    ValidationError::Unreachable { job_id } => {
+                    quire::ci::ValidationError::Unreachable { job_id } => {
                         format!("{job_id}: unreachable from any source ref")
                     }
-                    ValidationError::ReservedSlash { job_id } => {
+                    quire::ci::ValidationError::ReservedSlash { job_id } => {
                         format!("{job_id}: '/' in job id")
                     }
                 };
@@ -49,4 +57,20 @@ pub async fn validate(path: &std::path::Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find the git repo root from the current working directory.
+fn discover_repo() -> Result<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .into_diagnostic()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        miette::bail!("not in a git repository: {stderr}");
+    }
+
+    let path = String::from_utf8(output.stdout).into_diagnostic()?;
+    Ok(PathBuf::from(path.trim()))
 }

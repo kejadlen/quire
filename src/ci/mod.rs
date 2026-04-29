@@ -6,7 +6,7 @@ pub mod run;
 pub use graph::{EvalResult, JobDef, ValidationError, eval_ci, validate};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::Result;
 use crate::event::{PushEvent, PushRef};
@@ -25,7 +25,7 @@ pub struct Ci {
 }
 
 impl Ci {
-    pub(crate) fn new(repo_path: PathBuf) -> Self {
+    pub fn new(repo_path: PathBuf) -> Self {
         Self { repo_path }
     }
 
@@ -56,16 +56,6 @@ impl Ci {
         };
         validate(&result.jobs)?;
         Ok(Some(result))
-    }
-
-    /// Evaluate a ci.fnl file from disk and validate the job graph.
-    pub fn validate_file(path: &Path) -> Result<EvalResult> {
-        let source = fs_err::read_to_string(path)?;
-        let name = path.display().to_string();
-        let fennel = crate::fennel::Fennel::new()?;
-        let result = eval_ci(&fennel, &source, &name)?;
-        validate(&result.jobs)?;
-        Ok(result)
     }
 
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
