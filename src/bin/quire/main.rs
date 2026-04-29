@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::registry()
         .with(sentry_tracing::layer())
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(std::io::stderr))
         .with(
             EnvFilter::builder()
                 .with_env_var("QUIRE_LOG")
