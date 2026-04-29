@@ -1,9 +1,9 @@
 //! CI: trigger runs from push events, validate the job graph.
 
-pub mod graph;
+pub mod pipeline;
 pub mod run;
 
-pub use graph::{EvalResult, JobDef, ValidationError, eval_ci, validate};
+pub use pipeline::{Job, Pipeline, ValidationError};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
 
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ pub const CI_FNL: &str = ".quire/ci.fnl";
 
 /// Access to CI operations for a single repo.
 ///
-/// Provides eval and validation methods scoped to a bare repo.
+/// Provides load and validation methods scoped to a bare repo.
 /// Obtain one via `Repo::ci()`. Run lifecycle is on `Runs`, obtainable
 /// via `Repo::runs()`.
 pub struct Ci {
@@ -34,28 +34,28 @@ impl Ci {
         Runs::new(runs_base)
     }
 
-    /// Evaluate ci.fnl at a given SHA and return the registration table.
+    /// Load ci.fnl at a given SHA and return the parsed pipeline.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
-    pub fn load(&self, sha: &str) -> Result<Option<EvalResult>> {
+    pub fn load(&self, sha: &str) -> Result<Option<Pipeline>> {
         let Some(source) = self.source(sha)? else {
             return Ok(None);
         };
         let fennel = crate::fennel::Fennel::new()?;
         let name = format!("{sha}:{CI_FNL}");
-        let result = eval_ci(&fennel, &source, &name)?;
-        Ok(Some(result))
+        let pipeline = pipeline::eval_ci(&fennel, &source, &name)?;
+        Ok(Some(pipeline))
     }
 
-    /// Evaluate ci.fnl at a given SHA and validate the job graph.
+    /// Load ci.fnl at a given SHA and validate the pipeline.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
-    pub fn validate_at(&self, sha: &str) -> Result<Option<EvalResult>> {
-        let Some(result) = self.load(sha)? else {
+    pub fn validate_at(&self, sha: &str) -> Result<Option<Pipeline>> {
+        let Some(pipeline) = self.load(sha)? else {
             return Ok(None);
         };
-        validate(&result.jobs)?;
-        Ok(Some(result))
+        pipeline.validate()?;
+        Ok(Some(pipeline))
     }
 
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
@@ -70,9 +70,6 @@ impl Ci {
             .output()?;
 
         if !output.status.success() {
-            // Distinguish "file not found" from real errors. git show
-            // exits 128 for missing paths but the stderr contains
-            // "does not exist" — check for that pattern.
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("does not exist") || stderr.contains("not found") {
                 return Ok(None);
@@ -145,10 +142,9 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
 
     run.transition(RunState::Active)?;
 
-    // Evaluate and validate the source we already read.
     let fennel = crate::fennel::Fennel::new()?;
     let name = format!("{}:{CI_FNL}", push_ref.new_sha);
-    let result = match eval_ci(&fennel, &source, &name) {
+    let pipeline = match pipeline::eval_ci(&fennel, &source, &name) {
         Ok(r) => r,
         Err(e) => {
             run.transition(RunState::Failed)?;
@@ -156,7 +152,7 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
         }
     };
 
-    match validate(&result.jobs) {
+    match pipeline.validate() {
         Ok(()) => {
             run.transition(RunState::Complete)?;
         }

@@ -5,7 +5,7 @@ use quire::ci::Ci;
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
-/// Evaluates the Fennel source at the given SHA (or HEAD) to extract
+/// Loads the Fennel source at the given SHA (or HEAD) to extract
 /// the job registration table, then runs the four structural validations.
 /// Prints each job found and any validation errors.
 pub async fn validate(sha: Option<&str>) -> Result<()> {
@@ -13,23 +13,24 @@ pub async fn validate(sha: Option<&str>) -> Result<()> {
     let sha = sha.unwrap_or("HEAD");
     let ci = Ci::new(repo_path);
 
-    let Some(result) = ci.load(sha)? else {
+    let Some(pipeline) = ci.load(sha)? else {
         println!("No ci.fnl found at {sha}.");
         return Ok(());
     };
 
-    if result.jobs.is_empty() {
+    let jobs = pipeline.jobs();
+    if jobs.is_empty() {
         println!("No jobs registered.");
         return Ok(());
     }
 
     println!("Jobs:");
-    for job in &result.jobs {
+    for job in jobs {
         let inputs = job.inputs.join(", ");
         println!("  {} ← [{}]", job.id, inputs);
     }
 
-    match quire::ci::validate(&result.jobs) {
+    match pipeline.validate() {
         Ok(()) => {
             println!("\nAll validations passed.");
         }

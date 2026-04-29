@@ -3,22 +3,44 @@
 use crate::Result;
 use crate::fennel::{Fennel, FennelError};
 
-/// A registered job definition extracted from ci.fnl.
-pub struct JobDef {
+/// A registered job extracted from ci.fnl.
+pub struct Job {
     pub id: String,
     pub inputs: Vec<String>,
+    /// The job's run function from the Lua VM.
+    /// Stored for future execution — not yet called.
+    #[expect(dead_code)]
+    pub(crate) run_fn: mlua::Function,
 }
 
-/// The result of evaluating a ci.fnl file.
-pub struct EvalResult {
-    pub jobs: Vec<JobDef>,
+/// A loaded CI pipeline — the parsed job graph from ci.fnl.
+///
+/// Returned by `Ci::load`. Holds the registered jobs and their
+/// run functions. Call `validate` to check structural rules before
+/// execution.
+pub struct Pipeline {
+    pub(crate) jobs: Vec<Job>,
+}
+
+impl Pipeline {
+    pub fn jobs(&self) -> &[Job] {
+        &self.jobs
+    }
+
+    /// Validate the structural rules of this pipeline.
+    ///
+    /// Returns `Ok(())` if all four rules pass, or `Err` with all
+    /// violations found.
+    pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
+        validate(&self.jobs)
+    }
 }
 
 /// Evaluate a ci.fnl source string, registering jobs via the `job` macro.
 ///
 /// Injects a `job` global that accumulates into a registration table,
 /// evaluates the source, and extracts the registered jobs.
-pub fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<EvalResult> {
+pub(crate) fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<Pipeline> {
     fennel.eval_raw(source, name, |lua| {
         // Create a registration table. `job` will push into this.
         let registry: mlua::Table = lua.create_table()?;
@@ -49,14 +71,15 @@ pub fn eval_ci(fennel: &Fennel, source: &str, name: &str) -> Result<EvalResult> 
         let entry = entry.map_err(lua_err)?;
         let id: String = entry.get("id").map_err(lua_err)?;
         let inputs_table: mlua::Table = entry.get("inputs").map_err(lua_err)?;
+        let run_fn: mlua::Function = entry.get("run").map_err(lua_err)?;
         let mut inputs = Vec::new();
         for input in inputs_table.sequence_values::<String>() {
             inputs.push(input.map_err(lua_err)?);
         }
-        jobs.push(JobDef { id, inputs });
+        jobs.push(Job { id, inputs, run_fn });
     }
 
-    Ok(EvalResult { jobs })
+    Ok(Pipeline { jobs })
 }
 
 /// A validation error found in the job graph.
@@ -80,7 +103,7 @@ pub enum ValidationError {
 /// Validate the structural rules of a job graph.
 ///
 /// Returns `Ok(())` if all four rules pass, or `Err` with all violations found.
-pub fn validate(jobs: &[JobDef]) -> std::result::Result<(), Vec<ValidationError>> {
+fn validate(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
     // Rule 4: no '/' in user job ids.
@@ -214,32 +237,24 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_config() {
-        let jobs = vec![
-            JobDef {
-                id: "build".into(),
-                inputs: vec!["quire/push".into()],
-            },
-            JobDef {
-                id: "test".into(),
-                inputs: vec!["build".into(), "quire/push".into()],
-            },
-        ];
-        assert!(validate(&jobs).is_ok());
+        let f = fennel();
+        let source = r#"
+(job :build [:quire/push] (fn [_] nil))
+(job :test [:build :quire/push] (fn [_] nil))
+"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        assert!(pipeline.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_cycle() {
-        let jobs = vec![
-            JobDef {
-                id: "a".into(),
-                inputs: vec!["b".into()],
-            },
-            JobDef {
-                id: "b".into(),
-                inputs: vec!["a".into()],
-            },
-        ];
-        let errs = validate(&jobs).unwrap_err();
+        let f = fennel();
+        let source = r#"
+(job :a [:b] (fn [_] nil))
+(job :b [:a] (fn [_] nil))
+"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
@@ -248,23 +263,14 @@ mod tests {
 
     #[test]
     fn validate_cycle_only_reports_cycle_members() {
-        // `clean` is acyclic; `a` and `b` form a cycle. Only a/b should be
-        // flagged, and `clean` must not appear in any Cycle error.
-        let jobs = vec![
-            JobDef {
-                id: "a".into(),
-                inputs: vec!["b".into(), "quire/push".into()],
-            },
-            JobDef {
-                id: "b".into(),
-                inputs: vec!["a".into(), "quire/push".into()],
-            },
-            JobDef {
-                id: "clean".into(),
-                inputs: vec!["quire/push".into()],
-            },
-        ];
-        let errs = validate(&jobs).unwrap_err();
+        let f = fennel();
+        let source = r#"
+(job :a [:b :quire/push] (fn [_] nil))
+(job :b [:a :quire/push] (fn [_] nil))
+(job :clean [:quire/push] (fn [_] nil))
+"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let errs = pipeline.validate().unwrap_err();
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
             .filter_map(|e| match e {
@@ -282,26 +288,15 @@ mod tests {
 
     #[test]
     fn validate_reports_disjoint_cycles_separately() {
-        // Two independent cycles: (a <-> b) and (c <-> d).
-        let jobs = vec![
-            JobDef {
-                id: "a".into(),
-                inputs: vec!["b".into(), "quire/push".into()],
-            },
-            JobDef {
-                id: "b".into(),
-                inputs: vec!["a".into(), "quire/push".into()],
-            },
-            JobDef {
-                id: "c".into(),
-                inputs: vec!["d".into(), "quire/push".into()],
-            },
-            JobDef {
-                id: "d".into(),
-                inputs: vec!["c".into(), "quire/push".into()],
-            },
-        ];
-        let errs = validate(&jobs).unwrap_err();
+        let f = fennel();
+        let source = r#"
+(job :a [:b :quire/push] (fn [_] nil))
+(job :b [:a :quire/push] (fn [_] nil))
+(job :c [:d :quire/push] (fn [_] nil))
+(job :d [:c :quire/push] (fn [_] nil))
+"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let errs = pipeline.validate().unwrap_err();
         let cycle_count = errs
             .iter()
             .filter(|e| matches!(e, ValidationError::Cycle { .. }))
@@ -311,11 +306,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_inputs() {
-        let jobs = vec![JobDef {
-            id: "setup".into(),
-            inputs: vec![],
-        }];
-        let errs = validate(&jobs).unwrap_err();
+        let f = fennel();
+        let source = r#"(job :setup [] (fn [_] nil))"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter()
                 .any(|e| matches!(e, ValidationError::EmptyInputs { job_id } if job_id == "setup")),
@@ -325,11 +319,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_unreachable_jobs() {
-        let jobs = vec![JobDef {
-            id: "orphan".into(),
-            inputs: vec!["orphan".into()],
-        }];
-        let errs = validate(&jobs).unwrap_err();
+        let f = fennel();
+        let source = r#"(job :orphan [:orphan] (fn [_] nil))"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter().any(
                 |e| matches!(e, ValidationError::Unreachable { job_id } if job_id == "orphan")
@@ -340,11 +333,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_slash_in_job_id() {
-        let jobs = vec![JobDef {
-            id: "foo/bar".into(),
-            inputs: vec!["quire/push".into()],
-        }];
-        let errs = validate(&jobs).unwrap_err();
+        let f = fennel();
+        let source = r#"(job :foo/bar [:quire/push] (fn [_] nil))"#;
+        let pipeline = eval_ci(&f, source, "ci.fnl").expect("eval should succeed");
+        let errs = pipeline.validate().unwrap_err();
         assert!(
             errs.iter().any(
                 |e| matches!(e, ValidationError::ReservedSlash { job_id } if job_id == "foo/bar")
