@@ -653,20 +653,19 @@ async fn dispatch_mirror(quire: &crate::Quire, repo: crate::quire::Repo, event: 
     }
 }
 
+/// Write a serializable value to a YAML file atomically (temp file + rename).
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp_path = path.with_extension("yml.tmp");
     let f = fs_err::File::create(&tmp_path)?;
-    serde_yaml_ng::to_writer(std::io::BufWriter::new(f), value)
-        .map_err(|e| crate::Error::Io(std::io::Error::other(format!("yaml write error: {e}"))))?;
+    serde_yaml_ng::to_writer(std::io::BufWriter::new(f), value)?;
     fs_err::rename(&tmp_path, path)?;
     Ok(())
 }
 
-/// Read a value from a YAML file.
+/// Read a deserializable value from a YAML file.
 fn read_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let f = fs_err::File::open(path)?;
-    serde_yaml_ng::from_reader(std::io::BufReader::new(f))
-        .map_err(|e| crate::Error::Io(std::io::Error::other(format!("yaml read error: {e}"))))
+    Ok(serde_yaml_ng::from_reader(std::io::BufReader::new(f))?)
 }
 
 #[cfg(test)]

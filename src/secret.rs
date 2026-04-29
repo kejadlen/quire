@@ -40,8 +40,13 @@ impl SecretString {
     /// The resolved secret value.
     ///
     /// For the file variant, reads from disk on first call and caches the
-    /// result. Returns a typed error if the file is missing or unreadable.
-    /// Errors are also cached — subsequent calls return the same error.
+    /// result. Errors are also cached — subsequent calls return the same error.
+    ///
+    /// The error is stored as a formatted string inside `OnceLock` because
+    /// `std::io::Error` is not `Clone`, and `OnceLock::get_or_init` requires
+    /// the closure output to be `Sized` + ownable. Once `once_cell_try`
+    /// stabilizes (allowing `OnceLock::get_or_try_init` with a separate error
+    /// type), we can store a structured error instead of a string.
     pub fn reveal(&self) -> crate::Result<&str> {
         match &self.0 {
             SecretSource::Plain(s) => Ok(s.as_str()),

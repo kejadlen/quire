@@ -170,8 +170,7 @@ impl Repo {
             .git(&["show", &format!("{sha}:.quire/ci.fnl")])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| crate::Error::Git(format!("failed to read ci.fnl: {e}")))?;
+            .output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -180,8 +179,7 @@ impl Repo {
             )));
         }
 
-        String::from_utf8(output.stdout)
-            .map_err(|e| crate::Error::Git(format!("ci.fnl is not valid UTF-8: {e}")))
+        Ok(String::from_utf8(output.stdout)?)
     }
 
     /// Push `main` to the configured mirror, injecting the GitHub token via
@@ -208,8 +206,7 @@ impl Repo {
             .env("GIT_CONFIG_VALUE_0", github_auth_header(token))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(crate::Error::Io)?;
+            .status()?;
 
         if !status.success() {
             return Err(crate::Error::Git(format!("push to {} failed", mirror.url)));
@@ -233,30 +230,21 @@ impl Repo {
             .git(&["rev-parse", "--verify", "HEAD"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(crate::Error::Io)?
+            .status()?
             .success();
 
         if !has_head {
             return Ok(RepoConfig::default());
         }
 
-        let output = self
-            .git(&["show", "HEAD:.quire/config.fnl"])
-            .output()
-            .map_err(crate::Error::Io)?;
+        let output = self.git(&["show", "HEAD:.quire/config.fnl"]).output()?;
 
         if !output.status.success() {
             // HEAD exists but the file doesn't — not an error.
             return Ok(RepoConfig::default());
         }
 
-        let source = String::from_utf8(output.stdout).map_err(|e| {
-            crate::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("config is not valid UTF-8: {e}"),
-            ))
-        })?;
+        let source = String::from_utf8(output.stdout)?;
 
         let fennel = Fennel::new()?;
         Ok(fennel.load_string(&source, "HEAD:.quire/config.fnl")?)

@@ -10,6 +10,8 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    // Stored as a string because `OnceLock` in `SecretString::reveal` caches
+    // the error and `std::io::Error` is not `Clone`. See `secret.rs` for details.
     #[error("secret resolution failed: {0}")]
     SecretResolve(String),
 
@@ -28,6 +30,12 @@ pub enum Error {
 
     #[error("git error: {0}")]
     Git(String),
+
+    #[error(transparent)]
+    Yaml(#[from] serde_yaml_ng::Error),
+
+    #[error(transparent)]
+    Utf8(#[from] std::string::FromUtf8Error),
 
     #[allow(dead_code)]
     #[error("event socket error: {0}")]
