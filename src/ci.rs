@@ -102,16 +102,19 @@ impl Runs {
     /// The caller decides how to reconcile them:
     /// - `pending/` entries should be re-enqueued.
     /// - `active/` entries with no live runner should be marked failed.
-    pub fn scan_orphans(&self) -> Vec<OpenedRun> {
+    pub fn scan_orphans(&self) -> Result<Vec<OpenedRun>> {
         let mut orphans = Vec::new();
 
         for &state in &[RunState::Pending, RunState::Active] {
             let state_path = self.base.join(state.dir_name());
-            let Ok(entries) = fs_err::read_dir(&state_path) else {
-                continue;
+            let entries = match fs_err::read_dir(&state_path) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
             };
 
-            for entry in entries.flatten() {
+            for entry in entries {
+                let entry = entry?;
                 let name = match entry.file_name().to_str() {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -135,7 +138,7 @@ impl Runs {
             }
         }
 
-        orphans
+        Ok(orphans)
     }
 
     /// Reconcile orphaned runs from a previous server instance.
@@ -143,8 +146,8 @@ impl Runs {
     /// - `pending/` orphans are moved to `complete/` (will be re-enqueued when
     ///   the runner exists; for now, immediately completed).
     /// - `active/` orphans are moved to `failed/` (no live runner).
-    pub fn reconcile_orphans(&self) {
-        let orphans = self.scan_orphans();
+    pub fn reconcile_orphans(&self) -> Result<()> {
+        let orphans = self.scan_orphans()?;
         for orphan in &orphans {
             tracing::warn!(
                 run_id = %orphan.run.id(),
@@ -196,6 +199,8 @@ impl Runs {
                 _ => unreachable!("scan_orphans only returns pending/active"),
             }
         }
+
+        Ok(())
     }
 }
 
@@ -764,7 +769,7 @@ mod tests {
         let runs = Runs::new(quire.base_dir().join("runs").join("test.git"));
         let run = runs.create(&test_meta()).expect("create");
 
-        let orphans = runs.scan_orphans();
+        let orphans = runs.scan_orphans().expect("scan");
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].run.id(), run.id());
         assert_eq!(orphans[0].run.state(), RunState::Pending);
@@ -777,7 +782,7 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
         run.transition(RunState::Active).expect("transition");
 
-        let orphans = runs.scan_orphans();
+        let orphans = runs.scan_orphans().expect("scan");
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].run.state(), RunState::Active);
     }
@@ -789,7 +794,7 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
         run.transition(RunState::Complete).expect("transition");
 
-        let orphans = runs.scan_orphans();
+        let orphans = runs.scan_orphans().expect("scan");
         assert!(orphans.is_empty(), "complete runs are not orphans");
     }
 
@@ -797,7 +802,7 @@ mod tests {
     fn scan_orphans_empty_when_no_runs_dir() {
         let (_dir, quire) = tmp_quire();
         let runs = Runs::new(quire.base_dir().join("runs").join("test.git"));
-        assert!(runs.scan_orphans().is_empty());
+        assert!(runs.scan_orphans().expect("scan").is_empty());
     }
 
     #[test]
