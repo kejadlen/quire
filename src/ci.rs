@@ -334,7 +334,7 @@ pub fn eval_ci(
     })?;
 
     // Extract the registration table.
-    let lua_err = |e: mlua::Error| crate::fennel::FennelError::from_lua(source, name, &e);
+    let lua_err = |e: mlua::Error| crate::fennel::FennelError::from_lua(source, name, e);
     let registry: mlua::Table = fennel.lua().globals().get("_quire_jobs").map_err(lua_err)?;
     let mut jobs = Vec::new();
     for entry in registry.sequence_values::<mlua::Table>() {

@@ -19,7 +19,7 @@ pub enum Error {
     ConfigNotFound(String),
 
     #[error(transparent)]
-    Fennel(#[from] crate::fennel::FennelError),
+    Fennel(#[from] Box<crate::fennel::FennelError>),
 
     #[error("CI validation failed")]
     #[related]
@@ -40,6 +40,12 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<crate::fennel::FennelError> for Error {
+    fn from(err: crate::fennel::FennelError) -> Self {
+        Error::Fennel(Box::new(err))
+    }
+}
 
 impl From<Vec<ValidationError>> for Error {
     fn from(errs: Vec<ValidationError>) -> Self {
