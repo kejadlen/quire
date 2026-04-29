@@ -153,7 +153,14 @@ impl FennelError {
     /// Construct an `Eval` error from an mlua error, extracting line
     /// information when available.
     pub(crate) fn from_lua(source: &str, name: &str, err: mlua::Error) -> Self {
-        let message = format!("{name}: {err}");
+        // Strip the stack traceback from the message so it only appears
+        // once (via the source chain rendered by miette).
+        let err_display = format!("{err}");
+        let err_body = err_display
+            .split_once("\nstack traceback:")
+            .map(|(msg, _)| msg)
+            .unwrap_or(&err_display);
+        let message = format!("{name}: {err_body}");
 
         // Try to extract a line number from the Lua error for a label.
         let offset = extract_line_offset(&err)
