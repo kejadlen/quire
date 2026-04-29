@@ -16,6 +16,10 @@ pub enum FennelError {
     Io(#[from] std::io::Error),
 
     #[error("{message}")]
+    #[diagnostic(code(fennel::internal))]
+    Internal { message: String },
+
+    #[error("{message}")]
     #[diagnostic(code(fennel::eval))]
     Eval {
         message: String,
@@ -67,18 +71,14 @@ impl Fennel {
             .load(FENNEL_LUA)
             .set_name("fennel.lua")
             .eval()
-            .map_err(|e| FennelError::Eval {
+            .map_err(|e| FennelError::Internal {
                 message: format!("failed to load fennel compiler: {e}"),
-                source_code: String::new(),
-                label: SourceOffset::from(0),
             })?;
 
         lua.globals()
             .set("fennel", fennel_module)
-            .map_err(|e| FennelError::Eval {
+            .map_err(|e| FennelError::Internal {
                 message: format!("failed to register fennel module: {e}"),
-                source_code: String::new(),
-                label: SourceOffset::from(0),
             })?;
 
         Ok(Self { lua })
@@ -108,29 +108,22 @@ impl Fennel {
             self.lua
                 .globals()
                 .get("fennel")
-                .map_err(|e| FennelError::Eval {
+                .map_err(|e| FennelError::Internal {
                     message: format!("fennel module not found: {e}"),
-                    source_code: source.to_string(),
-                    label: SourceOffset::from(0),
                 })?;
 
-        let eval: mlua::Function = fennel.get("eval").map_err(|e| FennelError::Eval {
+        let eval: mlua::Function = fennel.get("eval").map_err(|e| FennelError::Internal {
             message: format!("fennel.eval not found: {e}"),
-            source_code: source.to_string(),
-            label: SourceOffset::from(0),
         })?;
 
-        let opts = self.lua.create_table().map_err(|e| FennelError::Eval {
+        let opts = self.lua.create_table().map_err(|e| FennelError::Internal {
             message: format!("failed to create options table: {e}"),
-            source_code: source.to_string(),
-            label: SourceOffset::from(0),
         })?;
 
-        opts.set("filename", name).map_err(|e| FennelError::Eval {
-            message: format!("failed to set filename option: {e}"),
-            source_code: source.to_string(),
-            label: SourceOffset::from(0),
-        })?;
+        opts.set("filename", name)
+            .map_err(|e| FennelError::Internal {
+                message: format!("failed to set filename option: {e}"),
+            })?;
 
         let result = eval
             .call::<mlua::Value>((source, opts))
