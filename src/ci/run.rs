@@ -197,7 +197,9 @@ impl Runs {
                         );
                     }
                 }
-                _ => unreachable!("scan_orphans only returns pending/active"),
+                RunState::Complete | RunState::Failed => {
+                    unreachable!("scan_orphans only returns pending/active")
+                }
             }
         }
 
