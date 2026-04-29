@@ -5,9 +5,6 @@ use crate::fennel::FennelError;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
-    #[error("not found: {0}")]
-    NotFound(String),
-
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -37,10 +34,6 @@ pub enum Error {
 
     #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
-
-    #[allow(dead_code)]
-    #[error("event socket error: {0}")]
-    EventSocket(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
