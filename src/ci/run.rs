@@ -97,7 +97,11 @@ impl Runs {
 
     /// Scan for orphaned runs in `pending/` and `active/` directories.
     ///
-    /// The caller decides how to reconcile them:
+    /// Entries that cannot be opened (missing/unreadable `meta.yml` or
+    /// `times.yml`) are quarantined to `failed/` so they don't stay
+    /// stuck in pending/active forever.
+    ///
+    /// The caller decides how to reconcile the returned runs:
     /// - `pending/` entries should be re-enqueued.
     /// - `active/` entries with no live runner should be marked failed.
     pub fn scan_orphans(&self) -> Result<Vec<Run>> {
@@ -123,20 +127,32 @@ impl Runs {
                     continue;
                 }
 
-                match Run::open(self.base.clone(), state, name) {
+                match Run::open(self.base.clone(), state, name.clone()) {
                     Ok(run) => orphans.push(run),
                     Err(e) => {
                         tracing::warn!(
                             state = ?state,
+                            run_id = %name,
                             %e,
-                            "skipping orphaned run"
+                            "quarantining unreadable run to failed/"
                         );
+                        self.quarantine(&state_path.join(&name), &name)?;
                     }
                 }
             }
         }
 
         Ok(orphans)
+    }
+
+    /// Move a broken run directory into `failed/` so it stops blocking
+    /// pending/active. The contents may be unreadable; we only care
+    /// about getting it out of the active state buckets.
+    fn quarantine(&self, src: &Path, id: &str) -> Result<()> {
+        let failed_dir = self.base.join(RunState::Failed.dir_name());
+        fs_err::create_dir_all(&failed_dir)?;
+        fs_err::rename(src, failed_dir.join(id))?;
+        Ok(())
     }
 
     /// Reconcile orphaned runs from a previous server instance.
@@ -479,6 +495,27 @@ mod tests {
 
         let orphans = runs.scan_orphans().expect("scan");
         assert!(orphans.is_empty(), "complete runs are not orphans");
+    }
+
+    #[test]
+    fn scan_orphans_quarantines_unreadable_runs() {
+        let (_dir, quire) = tmp_quire();
+        let base = quire.base_dir().join("runs").join("test.git");
+        let runs = Runs::new(base.clone());
+
+        // Create a run, then break it by removing meta.yml.
+        let run = runs.create(&test_meta()).expect("create");
+        let id = run.id().to_string();
+        fs_err::remove_file(run.path().join("meta.yml")).expect("remove meta");
+
+        let orphans = runs.scan_orphans().expect("scan");
+        assert!(orphans.is_empty(), "broken run should not be returned");
+
+        let pending = base.join(RunState::Pending.dir_name()).join(&id);
+        assert!(!pending.exists(), "broken run should leave pending/");
+
+        let failed = base.join(RunState::Failed.dir_name()).join(&id);
+        assert!(failed.exists(), "broken run should land in failed/");
     }
 
     #[test]
