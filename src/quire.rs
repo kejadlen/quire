@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use miette::{Context, IntoDiagnostic, Result, ensure};
 
-use crate::ci::Ci;
+use crate::ci::{Ci, Runs};
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
 use crate::{Error, Result as AppResult};
@@ -151,7 +151,17 @@ impl Repo {
 
     /// Access CI operations for this repo.
     pub fn ci(&self) -> Ci {
-        Ci::new(self.path(), self.base_dir.join("runs").join(&self.name))
+        Ci::new(self.path())
+    }
+
+    /// The base directory for CI runs (`runs/<repo>/`).
+    pub fn runs_base(&self) -> PathBuf {
+        self.base_dir.join("runs").join(&self.name)
+    }
+
+    /// Access CI runs for this repo.
+    pub fn runs(&self) -> Runs {
+        Runs::new(self.runs_base())
     }
 
     /// Push `main` to the configured mirror, injecting the GitHub token via
