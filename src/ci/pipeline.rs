@@ -19,9 +19,9 @@ use crate::fennel::Fennel;
 pub struct Job {
     pub id: String,
     pub inputs: Vec<String>,
-    /// 1-indexed line in the source where `(ci:job …)` was called.
-    /// `0` means the line could not be determined.
-    pub line: u32,
+    /// Span covering the `(ci:job …)` call site. Used as the label
+    /// location for both per-job and post-graph diagnostics.
+    pub(crate) span: SourceSpan,
     /// The job's run function from the Lua VM.
     /// Stored for future execution — not yet called.
     #[expect(dead_code)]
@@ -53,7 +53,7 @@ impl Job {
         Ok(Self {
             id,
             inputs,
-            line,
+            span,
             run_fn,
         })
     }
@@ -202,7 +202,11 @@ fn span_for_line(source: &str, line: u32) -> SourceSpan {
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum ValidationError {
     #[error("Cycle detected among jobs: {}", cycle_jobs.join(", "))]
-    Cycle { cycle_jobs: Vec<String> },
+    Cycle {
+        cycle_jobs: Vec<String>,
+        #[label(collection, "in cycle")]
+        spans: Vec<SourceSpan>,
+    },
 
     #[error(
         "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it."
@@ -214,7 +218,11 @@ pub enum ValidationError {
     },
 
     #[error("Job '{job_id}' is not reachable from any source ref (e.g. :quire/push).")]
-    Unreachable { job_id: String },
+    Unreachable {
+        job_id: String,
+        #[label("declared here")]
+        span: SourceSpan,
+    },
 
     #[error("Job id '{job_id}' contains '/', which is reserved for the 'quire/' source namespace.")]
     ReservedSlash {
@@ -276,9 +284,14 @@ fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationEr
         if !is_cycle {
             continue;
         }
-        let mut cycle_jobs: Vec<String> = scc.iter().map(|&idx| graph[idx].to_string()).collect();
-        cycle_jobs.sort();
-        errors.push(ValidationError::Cycle { cycle_jobs });
+        let mut members: Vec<&Job> = scc
+            .iter()
+            .filter_map(|&idx| jobs.iter().find(|j| j.id == graph[idx]))
+            .collect();
+        members.sort_by(|a, b| a.id.cmp(&b.id));
+        let cycle_jobs = members.iter().map(|j| j.id.clone()).collect();
+        let spans = members.iter().map(|j| j.span).collect();
+        errors.push(ValidationError::Cycle { cycle_jobs, spans });
     }
 
     // Rule 3: reachability — every job's transitive inputs must include a source ref.
@@ -307,6 +320,7 @@ fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationEr
         if !found_source {
             errors.push(ValidationError::Unreachable {
                 job_id: job.id.clone(),
+                span: job.span,
             });
         }
     }
@@ -365,7 +379,11 @@ mod tests {
 
 (ci:job :sixth [:quire/push] (fn [_] nil))";
         let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
-        let lines: Vec<u32> = pipeline.jobs().iter().map(|j| j.line).collect();
+        let lines: Vec<usize> = pipeline
+            .jobs()
+            .iter()
+            .map(|j| 1 + source[..j.span.offset()].matches('\n').count())
+            .collect();
         assert_eq!(lines, vec![2, 3, 6]);
     }
 
@@ -416,7 +434,7 @@ mod tests {
         );
         let errs = validate_post_graph(&jobs).unwrap_err();
         assert!(
-            errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
+            errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs, .. } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
         );
     }
@@ -435,7 +453,7 @@ mod tests {
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
             .filter_map(|e| match e {
-                ValidationError::Cycle { cycle_jobs } => Some(cycle_jobs),
+                ValidationError::Cycle { cycle_jobs, .. } => Some(cycle_jobs),
                 _ => None,
             })
             .collect();
@@ -505,7 +523,7 @@ mod tests {
         let errs = validate_post_graph(&jobs).unwrap_err();
         assert!(
             errs.iter().any(
-                |e| matches!(e, ValidationError::Unreachable { job_id } if job_id == "orphan")
+                |e| matches!(e, ValidationError::Unreachable { job_id, .. } if job_id == "orphan")
             ),
             "should report unreachable job 'orphan': {errs:?}"
         );
