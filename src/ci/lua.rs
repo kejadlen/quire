@@ -146,6 +146,10 @@ impl Cmd {
     /// Spawn this command with the given options, blocking until exit,
     /// and capture the result. Inherits the runner's env with
     /// `opts.env` merged on top.
+    //
+    // TODO: stream stdout/stderr live instead of buffering. `output()`
+    // captures the full child output in memory and only returns at exit,
+    // so long-running or chatty jobs show nothing until they finish.
     fn run(self, opts: ShOpts) -> std::io::Result<Output> {
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
@@ -155,6 +159,8 @@ impl Cmd {
             command.current_dir(cwd);
         }
         let output = command.output()?;
+        // Signal-killed processes have no exit code; collapse them to -1
+        // for now. Surfacing the signal as a separate field is future work.
         Ok(Output {
             exit: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -171,10 +177,16 @@ impl mlua::FromLua for Cmd {
         match &value {
             mlua::Value::String(_) => lua.from_value(value),
             mlua::Value::Table(t) if t.raw_len() == 0 => {
+                // `raw_len() == 0` covers both an empty sequence (`[]`)
+                // and a string-keyed table (`{:env {...}}`) passed in
+                // place of an argv list. One message handles both.
                 Err(mlua::Error::FromLuaConversionError {
                     from: "table",
                     to: "Cmd".into(),
-                    message: Some("ci.sh: argv list is empty".into()),
+                    message: Some(
+                        "ci.sh: cmd must be a non-empty sequence of strings or a shell string"
+                            .into(),
+                    ),
                 })
             }
             mlua::Value::Table(_) => lua.from_value(value),
@@ -368,6 +380,29 @@ mod tests {
         assert!(
             msg.contains("unknown field") && msg.contains("cwdir"),
             "expected unknown-field error mentioning the typo, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn ci_sh_rejects_non_sequence_table_as_cmd() {
+        let f = fennel();
+        let pipeline = load(
+            &f,
+            r#"(local ci (require :quire.ci))
+(ci.job :go [:quire/push] (fn [_] (ci.sh {:env {:FOO "bar"}})))"#,
+            "ci.fnl",
+            "ci.fnl",
+            HashMap::new(),
+        )
+        .expect("load should succeed");
+        let err = pipeline.jobs()[0]
+            .run_fn
+            .call::<mlua::Value>(())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sequence"),
+            "expected sequence-shape error, got: {msg}"
         );
     }
 

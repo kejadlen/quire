@@ -1,8 +1,8 @@
 //! CI: trigger runs from push events, validate the job graph.
 
 mod lua;
-pub mod pipeline;
-pub mod run;
+mod pipeline;
+mod run;
 
 pub use pipeline::{Job, LoadError, Pipeline, ValidationError};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};

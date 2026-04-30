@@ -201,6 +201,7 @@ pub struct LoadError {
 /// here.
 fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
+    let mut cycle_members: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     // Rule 1: acyclic.
     //
@@ -236,15 +237,27 @@ fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationEr
             .filter_map(|&idx| jobs.iter().find(|j| j.id == graph[idx]))
             .collect();
         members.sort_by(|a, b| a.id.cmp(&b.id));
+        for j in &members {
+            cycle_members.insert(j.id.as_str());
+        }
         let cycle_jobs = members.iter().map(|j| j.id.clone()).collect();
         let spans = members.iter().map(|j| j.span).collect();
         errors.push(ValidationError::Cycle { cycle_jobs, spans });
     }
 
     // Rule 3: reachability — every job's transitive inputs must include a source ref.
+    //
+    // TODO: replace the `quire/` prefix check with a whitelist of real
+    // source refs (`quire/push`, etc.) once those are implemented, so
+    // typos like `:quire/posh` don't silently make a job "reachable."
     let is_source = |name: &str| name.starts_with("quire/");
 
     for job in jobs {
+        // Cycle members are already reported via Cycle; skip them here so
+        // a single bad cycle doesn't generate N+1 errors.
+        if cycle_members.contains(job.id.as_str()) {
+            continue;
+        }
         let mut visited = std::collections::HashSet::new();
         let mut stack: Vec<&str> = job.inputs.iter().map(|s| s.as_str()).collect();
         let mut found_source = false;
@@ -463,12 +476,35 @@ mod tests {
     }
 
     #[test]
+    fn validate_does_not_double_report_cycle_as_unreachable() {
+        // Jobs in a cycle are technically also unreachable from any
+        // source ref, but reporting both is noise. Cycle alone is enough.
+        let jobs = parsed_jobs(
+            r#"
+(local ci (require :quire.ci))
+(ci.job :a [:b] (fn [_] nil))
+(ci.job :b [:a] (fn [_] nil))
+"#,
+        );
+        let errs = validate_post_graph(&jobs).unwrap_err();
+        let unreachable_count = errs
+            .iter()
+            .filter(|e| matches!(e, ValidationError::Unreachable { .. }))
+            .count();
+        assert_eq!(
+            unreachable_count, 0,
+            "cycle members should not also be reported as unreachable: {errs:?}"
+        );
+    }
+
+    #[test]
     fn validate_rejects_unreachable_jobs() {
-        // An orphan with non-empty self-input passes pre-graph rules
-        // and reaches the post-graph reachability check.
+        // A job whose only input names a non-existent job passes
+        // pre-graph rules (inputs is non-empty, id has no slash) and
+        // reaches the post-graph reachability check.
         let jobs = parsed_jobs(
             r#"(local ci (require :quire.ci))
-(ci.job :orphan [:orphan] (fn [_] nil))"#,
+(ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
         );
         let errs = validate_post_graph(&jobs).unwrap_err();
         assert!(
