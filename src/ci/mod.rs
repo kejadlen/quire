@@ -17,11 +17,13 @@ pub struct CommitRef {
     pub display: String,
 }
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::Result;
 use crate::event::{PushEvent, PushRef};
 use crate::quire::Repo;
+use crate::secret::SecretString;
 
 /// Path to the CI config within a bare repo, relative to the repo root.
 pub const CI_FNL: &str = ".quire/ci.fnl";
@@ -47,17 +49,25 @@ impl Ci {
 
     /// Load ci.fnl at a given SHA and return the validated pipeline.
     ///
+    /// `secrets` is the map of named secrets exposed to the script via
+    /// `(ci:secret …)`; pass an empty map for structural validation that
+    /// does not need to resolve secrets at registration time.
+    ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
     /// Errors if the Fennel source fails to parse/evaluate or if the
     /// resulting job graph violates any structural rule.
-    pub fn load(&self, commit: &CommitRef) -> Result<Option<Pipeline>> {
+    pub fn load(
+        &self,
+        commit: &CommitRef,
+        secrets: HashMap<String, SecretString>,
+    ) -> Result<Option<Pipeline>> {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
         let fennel = crate::fennel::Fennel::new()?;
         let name = CI_FNL.to_string();
         let lua_name = format!("{}:{CI_FNL}", commit.sha);
-        let pipeline = pipeline::load(&fennel, &source, &lua_name, &name)?;
+        let pipeline = pipeline::load(&fennel, &source, &lua_name, &name, secrets)?;
         Ok(Some(pipeline))
     }
 
@@ -108,8 +118,20 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
+    // Pull the secrets map up front; missing global config means no
+    // secrets are available, but a present-but-broken config is a real
+    // error and aborts the trigger.
+    let secrets = match quire.global_config() {
+        Ok(c) => c.secrets,
+        Err(crate::Error::ConfigNotFound(_)) => HashMap::new(),
+        Err(e) => {
+            tracing::error!(repo = %event.repo, %e, "failed to load global config");
+            return;
+        }
+    };
+
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref) {
+        if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref, secrets.clone()) {
             tracing::error!(
                 repo = %event.repo,
                 sha = %push_ref.new_sha,
@@ -121,7 +143,12 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 }
 
 /// Create and run CI for a single updated ref.
-fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> Result<()> {
+fn trigger_ref(
+    repo: &Repo,
+    pushed_at: jiff::Timestamp,
+    push_ref: &PushRef,
+    secrets: HashMap<String, SecretString>,
+) -> Result<()> {
     let ci = repo.ci();
 
     let Some(source) = ci.source(&push_ref.new_sha)? else {
@@ -149,7 +176,7 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
     let name = CI_FNL.to_string();
     let lua_name = format!("{}:{CI_FNL}", push_ref.new_sha);
 
-    match pipeline::load(&fennel, &source, &lua_name, &name) {
+    match pipeline::load(&fennel, &source, &lua_name, &name, secrets) {
         Ok(_pipeline) => run.transition(RunState::Complete)?,
         Err(e) => {
             run.transition(RunState::Failed)?;

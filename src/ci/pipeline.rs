@@ -1,6 +1,7 @@
 //! CI job graph: evaluation of `ci.fnl` and validation rules.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use miette::{NamedSource, SourceSpan};
@@ -8,6 +9,7 @@ use mlua::UserData;
 
 use crate::Result;
 use crate::fennel::Fennel;
+use crate::secret::SecretString;
 
 /// A registered job extracted from ci.fnl.
 ///
@@ -23,8 +25,8 @@ pub struct Job {
     /// location for both per-job and post-graph diagnostics.
     pub(crate) span: SourceSpan,
     /// The job's run function from the Lua VM.
-    /// Stored for future execution — not yet called.
-    #[expect(dead_code)]
+    /// Currently exercised only from tests until the runtime executor lands.
+    #[allow(dead_code)]
     pub(crate) run_fn: mlua::Function,
 }
 
@@ -82,10 +84,12 @@ impl Pipeline {
 /// ```fennel
 /// (local ci (require :quire.ci))
 /// (ci:job :build [:quire/push] (fn [_] nil))
+/// (ci:secret :github_token)
 /// ```
 struct CiModule {
     jobs: Rc<RefCell<Vec<std::result::Result<Job, ValidationError>>>>,
     source: Rc<String>,
+    secrets: Rc<HashMap<String, SecretString>>,
 }
 
 impl UserData for CiModule {
@@ -104,6 +108,20 @@ impl UserData for CiModule {
                 Ok(())
             },
         );
+
+        // (ci:secret :name) — resolve a named secret declared in global
+        // config and return the string value. Errors as a Lua error if
+        // the name is undeclared or the file form fails to read.
+        methods.add_method("secret", |_, this, name: String| {
+            let secret = this
+                .secrets
+                .get(&name)
+                .ok_or_else(|| mlua::Error::external(crate::Error::UnknownSecret(name)))?;
+            secret
+                .reveal()
+                .map(|s| s.to_string())
+                .map_err(mlua::Error::external)
+        });
     }
 }
 
@@ -120,8 +138,9 @@ pub(crate) fn load(
     source: &str,
     filename: &str,
     display: &str,
+    secrets: HashMap<String, SecretString>,
 ) -> Result<Pipeline> {
-    let results = parse(fennel, source, filename, display)?;
+    let results = parse(fennel, source, filename, display, secrets)?;
 
     let mut errors = Vec::new();
     let mut jobs = Vec::new();
@@ -156,9 +175,11 @@ fn parse(
     source: &str,
     filename: &str,
     display: &str,
+    secrets: HashMap<String, SecretString>,
 ) -> Result<Vec<std::result::Result<Job, ValidationError>>> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
     let src = Rc::new(source.to_string());
+    let secrets = Rc::new(secrets);
 
     fennel.eval_raw(source, filename, display, |lua| {
         let loaded: mlua::Table = lua.globals().get::<mlua::Table>("package")?.get("loaded")?;
@@ -167,6 +188,7 @@ fn parse(
             CiModule {
                 jobs: jobs.clone(),
                 source: src.clone(),
+                secrets: secrets.clone(),
             },
         )?;
         Ok(())
@@ -345,7 +367,7 @@ mod tests {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci:job :test [:quire/push] (fn [_] nil))"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, "test");
@@ -360,7 +382,7 @@ mod tests {
 (ci:job :build [:quire/push] (fn [_] nil))
 (ci:job :test [:build] (fn [_] nil))
 "#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "build");
@@ -378,7 +400,7 @@ mod tests {
 
 
 (ci:job :sixth [:quire/push] (fn [_] nil))";
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl").expect("load should succeed");
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
             .iter()
@@ -390,7 +412,7 @@ mod tests {
     #[test]
     fn load_errors_on_bad_fennel() {
         let f = fennel();
-        let result = load(&f, "{:bad {:}", "ci.fnl", "ci.fnl");
+        let result = load(&f, "{:bad {:}", "ci.fnl", "ci.fnl", HashMap::new());
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
@@ -399,7 +421,7 @@ mod tests {
     /// `Err(ValidationError)`.
     fn parse_results(source: &str) -> Vec<std::result::Result<Job, ValidationError>> {
         let f = fennel();
-        parse(&f, source, "ci.fnl", "ci.fnl").expect("parse should succeed")
+        parse(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("parse should succeed")
     }
 
     /// Discard parse errors and return only the successfully registered
@@ -509,6 +531,43 @@ mod tests {
                 |r| matches!(r, Err(ValidationError::ReservedSlash { job_id, .. }) if job_id == "foo/bar")
             ),
             "should report slash in job id: {results:?}"
+        );
+    }
+
+    #[test]
+    fn ci_secret_returns_resolved_value() {
+        let f = fennel();
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "github_token".to_string(),
+            SecretString::from_plain("ghp_test_value"),
+        );
+        let source = r#"(local ci (require :quire.ci))
+(ci:job :grab [:quire/push] (fn [_] (ci:secret :github_token)))"#;
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl", secrets)
+            .expect("load should succeed");
+        let token: String = pipeline.jobs()[0]
+            .run_fn
+            .call(())
+            .expect("run_fn should return the secret value");
+        assert_eq!(token, "ghp_test_value");
+    }
+
+    #[test]
+    fn ci_secret_errors_for_unknown_name() {
+        let f = fennel();
+        let source = r#"(local ci (require :quire.ci))
+(ci:job :grab [:quire/push] (fn [_] (ci:secret :missing)))"#;
+        let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new())
+            .expect("load should succeed");
+        let err = pipeline.jobs()[0]
+            .run_fn
+            .call::<mlua::Value>(())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown secret") && msg.contains("missing"),
+            "expected unknown-secret error mentioning the name, got: {msg}"
         );
     }
 

@@ -13,7 +13,8 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path);
 
-    let Some(pipeline) = ci.load(&commit)? else {
+    // Structural validation only — no need to resolve secrets.
+    let Some(pipeline) = ci.load(&commit, std::collections::HashMap::new())? else {
         println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };

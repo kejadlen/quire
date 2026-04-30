@@ -13,6 +13,9 @@ pub enum Error {
     #[error("secret resolution failed: {0}")]
     SecretResolve(String),
 
+    #[error("unknown secret: {0:?}")]
+    UnknownSecret(String),
+
     #[error("config not found: {0}")]
     ConfigNotFound(String),
 
