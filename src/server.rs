@@ -111,6 +111,6 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         return;
     }
 
-    ci::trigger(&quire, &event);
     mirror::push(&quire, &event).await;
+    ci::trigger(&quire, &event);
 }
