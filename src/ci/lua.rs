@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mlua::{Lua, LuaSerdeExt};
+use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, ValidationError};
 use crate::Result;
@@ -31,14 +31,13 @@ pub(super) fn parse(
     let src = Rc::new(source.to_string());
 
     fennel.eval_raw(source, name, |lua| {
-        let module = Registration {
-            jobs: jobs.clone(),
-            source: src.clone(),
-        }
-        .install(lua)?;
-        let loaded: mlua::Table = lua.globals().get::<mlua::Table>("package")?.get("loaded")?;
-        loaded.set("quire.ci", module)?;
-        Ok(())
+        lua.register_module(
+            "quire.ci",
+            Registration {
+                jobs: jobs.clone(),
+                source: src.clone(),
+            },
+        )
     })?;
 
     Ok(jobs.take())
@@ -47,10 +46,11 @@ pub(super) fn parse(
 /// The registration-time module exposed to Fennel scripts via
 /// `(require :quire.ci)`.
 ///
-/// `install` stows the registration sink on the Lua VM via
-/// `set_app_data` (so `register_job` can find it) and returns the
-/// `quire.ci` table — `{job}` for now. Runtime primitives (`sh`,
-/// `secret`) live on the per-execution [`Runtime`] handle, not here.
+/// Converted into a Lua table via [`IntoLua`]: stows itself on the
+/// VM as app data (so `register_job` can find the registration sink)
+/// and returns a table whose only entry is `job`. Runtime primitives
+/// (`sh`, `secret`) live on the per-execution [`Runtime`] handle, not
+/// here.
 ///
 /// ```fennel
 /// (local ci (require :quire.ci))
@@ -63,15 +63,12 @@ struct Registration {
     source: Rc<String>,
 }
 
-impl Registration {
-    /// Install on `lua` as app data and return the `quire.ci` table.
-    /// `register_job` errors at call time if the registration isn't
-    /// installed first.
-    fn install(self, lua: &Lua) -> mlua::Result<mlua::Table> {
+impl IntoLua for Registration {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<mlua::Value> {
         lua.set_app_data(self);
         let table = lua.create_table()?;
         table.set("job", lua.create_function(register_job)?)?;
-        Ok(table)
+        table.into_lua(lua)
     }
 }
 
@@ -99,16 +96,15 @@ fn register_job(
 /// Per-execution runtime: holds the secrets exposed to the job, the
 /// current-job cursor, and the per-job captured `sh` outputs.
 ///
-/// `Run::execute` constructs an `Rc<Runtime>`, calls [`install`] to
-/// stow it on the Lua VM as app data and produce the handle table,
-/// and updates `current_job` around each `run_fn` call. `(sh …)` and
-/// `(secret …)` look the runtime back up via app data.
+/// Wrap an `Rc<Runtime>` in [`RuntimeHandle`] and convert it via
+/// [`IntoLua`] to install it on the Lua VM (sets app data, returns
+/// the handle table passed into each `run_fn`). The newtype is
+/// required because the orphan rule forbids `impl IntoLua` directly
+/// on `Rc<Runtime>`.
 ///
 /// Outside a run, no runtime is installed; in that case `(sh …)`
 /// runs the command but doesn't record (the cursor lookup misses).
 /// `(secret …)` requires a runtime — without one, calls error.
-///
-/// [`install`]: Runtime::install
 #[derive(Debug)]
 pub(super) struct Runtime {
     secrets: HashMap<String, SecretString>,
@@ -127,16 +123,6 @@ impl Runtime {
         }
     }
 
-    /// Install on `lua` as app data and return the runtime handle —
-    /// the table passed as the sole argument to each `run_fn`.
-    pub(super) fn install(self: Rc<Self>, lua: &Lua) -> mlua::Result<mlua::Table> {
-        lua.set_app_data(self);
-        let table = lua.create_table()?;
-        table.set("sh", lua.create_function(run_sh)?)?;
-        table.set("secret", lua.create_function(lookup_secret)?)?;
-        Ok(table)
-    }
-
     /// Mark `id` as the currently executing job. `(sh …)` invocations
     /// from this job's `run_fn` will record output under `id`.
     pub(super) fn enter_job(&self, id: &str) {
@@ -153,6 +139,20 @@ impl Runtime {
     /// produced none (or hasn't run).
     pub(super) fn outputs(&self, id: &str) -> Vec<ShOutput> {
         self.outputs.borrow().get(id).cloned().unwrap_or_default()
+    }
+}
+
+/// `IntoLua` carrier for an `Rc<Runtime>`. Stows the Rc on the VM as
+/// app data and returns the handle table — `{sh, secret}` for now.
+pub(super) struct RuntimeHandle(pub Rc<Runtime>);
+
+impl IntoLua for RuntimeHandle {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<mlua::Value> {
+        lua.set_app_data(self.0);
+        let table = lua.create_table()?;
+        table.set("sh", lua.create_function(run_sh)?)?;
+        table.set("secret", lua.create_function(lookup_secret)?)?;
+        table.into_lua(lua)
     }
 }
 
@@ -314,9 +314,9 @@ mod tests {
     /// Install a runtime with the given secrets on `pipeline`'s VM and
     /// return the runtime handle. Mirrors what `Run::execute` does so
     /// tests can drive a `run_fn` directly.
-    fn rt(pipeline: &Pipeline, secrets: HashMap<String, SecretString>) -> mlua::Table {
-        Rc::new(Runtime::new(secrets))
-            .install(pipeline.fennel().lua())
+    fn rt(pipeline: &Pipeline, secrets: HashMap<String, SecretString>) -> mlua::Value {
+        RuntimeHandle(Rc::new(Runtime::new(secrets)))
+            .into_lua(pipeline.fennel().lua())
             .expect("install runtime")
     }
 

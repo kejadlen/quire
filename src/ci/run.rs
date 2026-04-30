@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use jiff::Timestamp;
+use mlua::IntoLua;
 
-use super::lua::{Runtime, ShOutput};
+use super::lua::{Runtime, RuntimeHandle, ShOutput};
 use super::pipeline::Pipeline;
 use crate::secret::SecretString;
 use crate::{Error, Result};
@@ -275,10 +276,8 @@ impl Run {
         secrets: HashMap<String, SecretString>,
     ) -> Result<()> {
         self.runtime = Rc::new(Runtime::new(secrets));
-        let rt_table = self
-            .runtime
-            .clone()
-            .install(pipeline.fennel().lua())
+        let rt_value = RuntimeHandle(self.runtime.clone())
+            .into_lua(pipeline.fennel().lua())
             .expect("install runtime on Lua VM");
 
         let order: Vec<String> = pipeline
@@ -295,7 +294,7 @@ impl Run {
                 .expect("topo_order returned a job id not in pipeline");
 
             self.runtime.enter_job(&job.id);
-            let result = job.run_fn.call::<mlua::Value>(rt_table.clone());
+            let result = job.run_fn.call::<mlua::Value>(rt_value.clone());
             self.runtime.leave_job();
 
             if let Err(e) = result {
