@@ -47,7 +47,7 @@ The dependency graph is *derived* from the inputs list. No separate `:needs` fie
 
 ### Accessing inputs
 
-The function receives the **runtime handle** as its sole argument — a table with `sh`, `secret`, and (planned) `jobs` bound on it. Destructure the primitives the body needs:
+The function receives the **runtime handle** as its sole argument — a table with `sh`, `secret`, and `jobs` bound on it. Destructure the primitives the body needs:
 
 ```
 (fn [{: sh : jobs}]
@@ -59,7 +59,7 @@ The function receives the **runtime handle** as its sole argument — a table wi
 
 The function-call form sidesteps the awkward dot-access on `/`-containing keys. The `:as` rebinding sugar planned for cron and cherry-picked outputs (see "Future: input args" below) layers on top of the same accessor.
 
-> **v0 status:** the runtime handle currently carries `sh` and `secret`. The `jobs` accessor is the next addition (tracked separately); until it lands, jobs cannot read upstream outputs and `:quire/push` data is not exposed to the body.
+> **v0 status:** `(jobs :quire/push)` is wired. Job-to-job outputs (where `(jobs :build)` returns a job's `run-fn` return value) are not — there's no writer API yet, and a reachable name with no recorded outputs returns `nil`.
 
 ### Sources
 
@@ -192,7 +192,7 @@ Bound on the runtime handle passed into each `run` function. Destructure what yo
 
 Each of these blocks the Fennel function until it returns. Multi-container parallelism inside one job is a v2 want; the v1 model is "the function runs sequentially, calling primitives that block."
 
-> **v0 status:** `sh` and `secret` are bound today. `jobs`, `container`, `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
+> **v0 status:** `sh`, `secret`, and `jobs` are bound today. `container`, `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
 
 Eval is unsandboxed by default (see CI.md). A `run` function that loops forever or allocates without bound will hang or OOM `quire serve`. The mitigation is the same as for any Fennel hang: write `ci.fnl` thoughtfully. The bwrap opt-in (also see CI.md) covers eval and primitive calls together when it lands.
 

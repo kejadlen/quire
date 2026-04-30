@@ -4,11 +4,12 @@
 //! Lua/Fennel evaluation lives in the sibling [`super::lua`] module;
 //! this module owns the domain types and the structural rules.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use miette::{NamedSource, SourceSpan};
 use petgraph::Graph;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::{Bfs, Reversed};
 
 use super::lua;
 use crate::Result;
@@ -115,6 +116,40 @@ impl Pipeline {
             .into_iter()
             .map(|idx| self.jobs[self.graph[idx]].id.as_str())
             .collect()
+    }
+
+    /// For each job, the set of input names — direct and transitive,
+    /// including source refs — reachable through the input graph. The
+    /// job's own id is not included.
+    ///
+    /// Used by the executor to validate `(jobs name)` lookups: the
+    /// calling job may only read outputs from names in its set.
+    ///
+    /// Walks the existing dependency graph in reverse (ancestors of
+    /// the job) via petgraph's BFS. Source refs aren't graph nodes,
+    /// so they're scooped up from the inputs lists of every visited
+    /// job.
+    pub(crate) fn transitive_inputs(&self) -> HashMap<String, HashSet<String>> {
+        let reversed = Reversed(&self.graph);
+        let mut result: HashMap<String, HashSet<String>> = HashMap::new();
+        for job in &self.jobs {
+            let start = self.node_index[&job.id];
+            let mut reachable = HashSet::new();
+            let mut bfs = Bfs::new(reversed, start);
+            while let Some(idx) = bfs.next(reversed) {
+                let visited = &self.jobs[self.graph[idx]];
+                if idx != start {
+                    reachable.insert(visited.id.clone());
+                }
+                for input in &visited.inputs {
+                    if !self.node_index.contains_key(input) {
+                        reachable.insert(input.clone());
+                    }
+                }
+            }
+            result.insert(job.id.clone(), reachable);
+        }
+        result
     }
 
     /// Parse and validate a ci.fnl source string into a `Pipeline`.
@@ -548,5 +583,51 @@ mod tests {
             ),
             "should report unreachable job 'orphan': {errs:?}"
         );
+    }
+
+    #[test]
+    fn transitive_inputs_collects_direct_and_indirect() {
+        let pipeline = Pipeline::load(
+            r#"(local ci (require :quire.ci))
+(ci.job :setup [:quire/push] (fn [_] nil))
+(ci.job :build [:setup] (fn [_] nil))
+(ci.job :test [:build :setup] (fn [_] nil))"#,
+            "ci.fnl",
+        )
+        .expect("load should succeed");
+
+        let map = pipeline.transitive_inputs();
+
+        assert_eq!(
+            map["setup"],
+            ["quire/push"].iter().map(|s| s.to_string()).collect()
+        );
+        assert_eq!(
+            map["build"],
+            ["setup", "quire/push"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        );
+        assert_eq!(
+            map["test"],
+            ["build", "setup", "quire/push"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        );
+    }
+
+    #[test]
+    fn transitive_inputs_excludes_self() {
+        let pipeline = Pipeline::load(
+            r#"(local ci (require :quire.ci))
+(ci.job :only [:quire/push] (fn [_] nil))"#,
+            "ci.fnl",
+        )
+        .expect("load should succeed");
+
+        let map = pipeline.transitive_inputs();
+        assert!(!map["only"].contains("only"), "self should not be in set");
     }
 }

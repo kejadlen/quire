@@ -250,7 +250,7 @@ impl Run {
             base,
             state,
             id,
-            runtime: Rc::new(Runtime::new(HashMap::new())),
+            runtime: Rc::new(Runtime::new(HashMap::new(), HashMap::new(), HashMap::new())),
         };
         run.read_meta()?;
         run.read_times()?;
@@ -259,14 +259,16 @@ impl Run {
 
     /// Drive `pipeline` to completion through this run.
     ///
-    /// Constructs a fresh [`Runtime`] with `secrets`, installs it on
-    /// the pipeline's Lua VM, topo-sorts the jobs, transitions
-    /// Pending → Active, then invokes each `run_fn` in dependency
-    /// order with the runtime handle as its sole argument. `(sh …)`
-    /// calls record their captured output under the current job —
-    /// readable via [`Run::outputs`] after `execute` returns. The
-    /// run finishes in `Complete` if every job's `run_fn` returned
-    /// without error, otherwise `Failed`.
+    /// Constructs a fresh [`Runtime`] with `secrets`, the source
+    /// outputs (`:quire/push` from `meta.yml`), and the per-job
+    /// transitive-input sets; installs it on the pipeline's Lua VM,
+    /// topo-sorts the jobs, transitions Pending → Active, then
+    /// invokes each `run_fn` in dependency order with the runtime
+    /// handle as its sole argument. `(sh …)` calls record their
+    /// captured output under the current job — readable via
+    /// [`Run::outputs`] after `execute` returns. The run finishes
+    /// in `Complete` if every job's `run_fn` returned without error,
+    /// otherwise `Failed`.
     ///
     /// Source-ref filtering (e.g. running only `quire/push`-reachable
     /// jobs) is not yet implemented; for now every validated job runs.
@@ -275,9 +277,13 @@ impl Run {
         pipeline: &Pipeline,
         secrets: HashMap<String, SecretString>,
     ) -> Result<()> {
-        self.runtime = Rc::new(Runtime::new(secrets));
+        let lua = pipeline.fennel().lua();
+        let inputs =
+            source_outputs(lua, &self.read_meta()?).expect("build source outputs on Lua VM");
+        let transitive_inputs = pipeline.transitive_inputs();
+        self.runtime = Rc::new(Runtime::new(secrets, inputs, transitive_inputs));
         let rt_value = RuntimeHandle(self.runtime.clone())
-            .into_lua(pipeline.fennel().lua())
+            .into_lua(lua)
             .expect("install runtime on Lua VM");
 
         let order: Vec<String> = pipeline
@@ -379,6 +385,20 @@ impl Run {
     pub fn write_times(&self, times: &RunTimes) -> Result<()> {
         write_yaml(&self.path().join("times.yml"), times)
     }
+}
+
+/// Build the source-ref outputs table read by `(jobs name)` for source
+/// names. For v1, only `:quire/push` is exposed, derived from the run
+/// meta — `:sha`, `:ref`, `:pushed-at`. Branch/tag/etc are deferred.
+fn source_outputs(lua: &mlua::Lua, meta: &RunMeta) -> mlua::Result<HashMap<String, mlua::Value>> {
+    let push = lua.create_table()?;
+    push.set("sha", meta.sha.clone())?;
+    push.set("ref", meta.r#ref.clone())?;
+    push.set("pushed-at", meta.pushed_at.to_string())?;
+
+    let mut inputs = HashMap::new();
+    inputs.insert("quire/push".to_string(), mlua::Value::Table(push));
+    Ok(inputs)
 }
 
 /// Write a serializable value to a YAML file atomically (temp file + rename).
@@ -563,7 +583,7 @@ mod tests {
             base: PathBuf::from("/tmp/quire-test-runs/test.git"),
             state: RunState::Pending,
             id: uuid::Uuid::now_v7().to_string(),
-            runtime: Rc::new(Runtime::new(HashMap::new())),
+            runtime: Rc::new(Runtime::new(HashMap::new(), HashMap::new(), HashMap::new())),
         };
 
         let result = run.transition(RunState::Active);
@@ -727,5 +747,131 @@ mod tests {
             run.outputs("b").is_empty(),
             "b should not have run after a failed"
         );
+    }
+
+    #[test]
+    fn jobs_returns_quire_push_outputs_for_direct_input() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :grab [:quire/push]
+  (fn [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (sh ["echo" push.sha push.ref]))))"#,
+        );
+
+        run.execute(&pipeline, HashMap::new()).expect("execute");
+
+        let outputs = run.outputs("grab");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].stdout, "abc123 refs/heads/main\n");
+    }
+
+    #[test]
+    fn jobs_returns_quire_push_outputs_through_transitive_input() {
+        // `b` depends on `a` which depends on `:quire/push`; `b` reads
+        // `:quire/push` directly even though it's not a direct input.
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :a [:quire/push] (fn [_] nil))
+(ci.job :b [:a]
+  (fn [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (sh ["echo" push.sha]))))"#,
+        );
+
+        run.execute(&pipeline, HashMap::new()).expect("execute");
+
+        let outputs = run.outputs("b");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].stdout, "abc123\n");
+    }
+
+    #[test]
+    fn jobs_errors_on_unknown_name() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :grab [:quire/push] (fn [{: jobs}] (jobs :nope)))"#,
+        );
+
+        let err = run
+            .execute(&pipeline, HashMap::new())
+            .expect_err("expected failure");
+        match err {
+            Error::JobFailed { job, source } => {
+                assert_eq!(job, "grab");
+                let msg = source.to_string();
+                assert!(
+                    msg.contains("not in transitive inputs") && msg.contains("nope"),
+                    "expected 'not in transitive inputs' error, got: {msg}"
+                );
+            }
+            other => panic!("expected JobFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jobs_errors_on_non_ancestor_job() {
+        // `peer` exists as a job but isn't an ancestor of `grab`.
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :peer [:quire/push] (fn [_] nil))
+(ci.job :grab [:quire/push] (fn [{: jobs}] (jobs :peer)))"#,
+        );
+
+        let err = run
+            .execute(&pipeline, HashMap::new())
+            .expect_err("expected failure");
+        match err {
+            Error::JobFailed { source, .. } => {
+                let msg = source.to_string();
+                assert!(
+                    msg.contains("not in transitive inputs") && msg.contains("peer"),
+                    "expected non-ancestor error, got: {msg}"
+                );
+            }
+            other => panic!("expected JobFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jobs_errors_on_self_lookup() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :grab [:quire/push] (fn [{: jobs}] (jobs :grab)))"#,
+        );
+
+        let err = run
+            .execute(&pipeline, HashMap::new())
+            .expect_err("expected failure");
+        match err {
+            Error::JobFailed { source, .. } => {
+                let msg = source.to_string();
+                assert!(
+                    msg.contains("cannot read its own outputs"),
+                    "expected self-lookup error, got: {msg}"
+                );
+            }
+            other => panic!("expected JobFailed, got: {other:?}"),
+        }
     }
 }
