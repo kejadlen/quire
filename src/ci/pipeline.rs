@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use miette::{NamedSource, SourceSpan};
-use mlua::UserData;
+use mlua::Lua;
 
 use crate::Result;
 use crate::fennel::Fennel;
@@ -21,7 +21,7 @@ use crate::secret::SecretString;
 pub struct Job {
     pub id: String,
     pub inputs: Vec<String>,
-    /// Span covering the `(ci:job …)` call site. Used as the label
+    /// Span covering the `(ci.job …)` call site. Used as the label
     /// location for both per-job and post-graph diagnostics.
     pub(crate) span: SourceSpan,
     /// The job's run function from the Lua VM.
@@ -31,7 +31,7 @@ pub struct Job {
 }
 
 impl Job {
-    /// Build a `Job` from the raw `(ci:job …)` arguments, applying the
+    /// Build a `Job` from the raw `(ci.job …)` arguments, applying the
     /// per-job validation rules. `line` is the 1-indexed source line of
     /// the call site; `source` is the full Fennel source string used to
     /// compute the diagnostic span.
@@ -79,12 +79,15 @@ impl Pipeline {
 
 /// The `quire.ci` module exposed to Fennel scripts via `require`.
 ///
-/// Registered as `package.loaded["quire.ci"]` so scripts can write:
+/// `install` stows the module on the Lua VM via `set_app_data`, then
+/// builds a plain table whose entries are bare functions that look the
+/// module back up at call time. Both `(ci.job …)` field access and
+/// `(local {: job : secret} (require :quire.ci))` destructuring work.
 ///
 /// ```fennel
 /// (local ci (require :quire.ci))
-/// (ci:job :build [:quire/push] (fn [_] nil))
-/// (ci:secret :github_token)
+/// (ci.job :build [:quire/push] (fn [_] nil))
+/// (ci.secret :github_token)
 /// ```
 struct CiModule {
     jobs: Rc<RefCell<Vec<std::result::Result<Job, ValidationError>>>>,
@@ -92,37 +95,58 @@ struct CiModule {
     secrets: Rc<HashMap<String, SecretString>>,
 }
 
-impl UserData for CiModule {
-    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method(
-            "job",
-            |lua, this, (id, inputs, run_fn): (String, Vec<String>, mlua::Function)| {
-                let line = lua
-                    .inspect_stack(1, |d| d.current_line())
-                    .flatten()
-                    .map(|l| l as u32)
-                    .unwrap_or(0);
-                this.jobs
-                    .borrow_mut()
-                    .push(Job::new(id, inputs, run_fn, line, &this.source));
-                Ok(())
-            },
-        );
-
-        // (ci:secret :name) — resolve a named secret declared in global
-        // config and return the string value. Errors as a Lua error if
-        // the name is undeclared or the file form fails to read.
-        methods.add_method("secret", |_, this, name: String| {
-            let secret = this
-                .secrets
-                .get(&name)
-                .ok_or_else(|| mlua::Error::external(crate::Error::UnknownSecret(name)))?;
-            secret
-                .reveal()
-                .map(|s| s.to_string())
-                .map_err(mlua::Error::external)
-        });
+impl CiModule {
+    /// Install the module on `lua` as app data and return the
+    /// `quire.ci` table. The registered functions error at call time
+    /// if the module isn't installed first.
+    fn install(self, lua: &Lua) -> mlua::Result<mlua::Table> {
+        lua.set_app_data(self);
+        let table = lua.create_table()?;
+        table.set("job", lua.create_function(register_job)?)?;
+        table.set("secret", lua.create_function(lookup_secret)?)?;
+        Ok(table)
     }
+}
+
+/// Pull the `CiModule` off the Lua VM's app data. Errors with a
+/// reasonable message if `install` was never called — should be
+/// impossible in practice but worth surfacing if it ever happens.
+fn module(lua: &Lua) -> mlua::Result<mlua::AppDataRef<'_, CiModule>> {
+    lua.app_data_ref::<CiModule>()
+        .ok_or_else(|| mlua::Error::external("quire.ci module not installed on Lua VM"))
+}
+
+/// Body of `(ci.job id inputs run-fn)`. Captures the call-site line
+/// from the Lua debug stack so per-job validation errors carry a span
+/// pointing back at the user's source.
+fn register_job(
+    lua: &Lua,
+    (id, inputs, run_fn): (String, Vec<String>, mlua::Function),
+) -> mlua::Result<()> {
+    let m = module(lua)?;
+    let line = lua
+        .inspect_stack(1, |d| d.current_line())
+        .flatten()
+        .map(|l| l as u32)
+        .unwrap_or(0);
+    m.jobs
+        .borrow_mut()
+        .push(Job::new(id, inputs, run_fn, line, &m.source));
+    Ok(())
+}
+
+/// Body of `(ci.secret name)`. Errors as a Lua error if the name is
+/// undeclared or the file form fails to read.
+fn lookup_secret(lua: &Lua, name: String) -> mlua::Result<String> {
+    let m = module(lua)?;
+    let secret = m
+        .secrets
+        .get(&name)
+        .ok_or_else(|| mlua::Error::external(crate::Error::UnknownSecret(name)))?;
+    secret
+        .reveal()
+        .map(|s| s.to_string())
+        .map_err(mlua::Error::external)
 }
 
 /// Parse and validate a ci.fnl source string into a `Pipeline`.
@@ -167,7 +191,7 @@ pub(crate) fn load(
 }
 
 /// Evaluate `source` with the `quire.ci` module bound and collect the
-/// registration results — one `Result` per `(ci:job …)` call. Pre-graph
+/// registration results — one `Result` per `(ci.job …)` call. Pre-graph
 /// rules run inside the callback, so a single bad job does not abort
 /// the rest of the script.
 fn parse(
@@ -182,15 +206,14 @@ fn parse(
     let secrets = Rc::new(secrets);
 
     fennel.eval_raw(source, filename, display, |lua| {
+        let module = CiModule {
+            jobs: jobs.clone(),
+            source: src.clone(),
+            secrets: secrets.clone(),
+        }
+        .install(lua)?;
         let loaded: mlua::Table = lua.globals().get::<mlua::Table>("package")?.get("loaded")?;
-        loaded.set(
-            "quire.ci",
-            CiModule {
-                jobs: jobs.clone(),
-                source: src.clone(),
-                secrets: secrets.clone(),
-            },
-        )?;
+        loaded.set("quire.ci", module)?;
         Ok(())
     })?;
 
@@ -273,7 +296,7 @@ pub struct LoadError {
 /// reachability — over the surviving jobs from parsing.
 ///
 /// Per-job pre-graph rules (slash-in-id, empty inputs) run inside the
-/// `(ci:job …)` callback during `parse`, so they are not re-checked here.
+/// `(ci.job …)` callback during `parse`, so they are not re-checked here.
 fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
@@ -366,7 +389,7 @@ mod tests {
     fn load_registers_a_job() {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
-(ci:job :test [:quire/push] (fn [_] nil))"#;
+(ci.job :test [:quire/push] (fn [_] nil))"#;
         let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
@@ -379,8 +402,8 @@ mod tests {
         let f = fennel();
         let source = r#"
 (local ci (require :quire.ci))
-(ci:job :build [:quire/push] (fn [_] nil))
-(ci:job :test [:build] (fn [_] nil))
+(ci.job :build [:quire/push] (fn [_] nil))
+(ci.job :test [:build] (fn [_] nil))
 "#;
         let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
@@ -395,11 +418,11 @@ mod tests {
     fn load_captures_source_line() {
         let f = fennel();
         let source = "(local ci (require :quire.ci))
-(ci:job :first [:quire/push] (fn [_] nil))
-(ci:job :second [:quire/push] (fn [_] nil))
+(ci.job :first [:quire/push] (fn [_] nil))
+(ci.job :second [:quire/push] (fn [_] nil))
 
 
-(ci:job :sixth [:quire/push] (fn [_] nil))";
+(ci.job :sixth [:quire/push] (fn [_] nil))";
         let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
@@ -438,8 +461,8 @@ mod tests {
         let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci:job :build [:quire/push] (fn [_] nil))
-(ci:job :test [:build :quire/push] (fn [_] nil))
+(ci.job :build [:quire/push] (fn [_] nil))
+(ci.job :test [:build :quire/push] (fn [_] nil))
 "#,
         );
         assert!(validate_post_graph(&jobs).is_ok());
@@ -450,8 +473,8 @@ mod tests {
         let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci:job :a [:b] (fn [_] nil))
-(ci:job :b [:a] (fn [_] nil))
+(ci.job :a [:b] (fn [_] nil))
+(ci.job :b [:a] (fn [_] nil))
 "#,
         );
         let errs = validate_post_graph(&jobs).unwrap_err();
@@ -466,9 +489,9 @@ mod tests {
         let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci:job :a [:b :quire/push] (fn [_] nil))
-(ci:job :b [:a :quire/push] (fn [_] nil))
-(ci:job :clean [:quire/push] (fn [_] nil))
+(ci.job :a [:b :quire/push] (fn [_] nil))
+(ci.job :b [:a :quire/push] (fn [_] nil))
+(ci.job :clean [:quire/push] (fn [_] nil))
 "#,
         );
         let errs = validate_post_graph(&jobs).unwrap_err();
@@ -492,10 +515,10 @@ mod tests {
         let jobs = parsed_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci:job :a [:b :quire/push] (fn [_] nil))
-(ci:job :b [:a :quire/push] (fn [_] nil))
-(ci:job :c [:d :quire/push] (fn [_] nil))
-(ci:job :d [:c :quire/push] (fn [_] nil))
+(ci.job :a [:b :quire/push] (fn [_] nil))
+(ci.job :b [:a :quire/push] (fn [_] nil))
+(ci.job :c [:d :quire/push] (fn [_] nil))
+(ci.job :d [:c :quire/push] (fn [_] nil))
 "#,
         );
         let errs = validate_post_graph(&jobs).unwrap_err();
@@ -510,7 +533,7 @@ mod tests {
     fn parse_rejects_empty_inputs() {
         let results = parse_results(
             r#"(local ci (require :quire.ci))
-(ci:job :setup [] (fn [_] nil))"#,
+(ci.job :setup [] (fn [_] nil))"#,
         );
         assert!(
             results.iter().any(
@@ -524,7 +547,7 @@ mod tests {
     fn parse_rejects_slash_in_job_id() {
         let results = parse_results(
             r#"(local ci (require :quire.ci))
-(ci:job :foo/bar [:quire/push] (fn [_] nil))"#,
+(ci.job :foo/bar [:quire/push] (fn [_] nil))"#,
         );
         assert!(
             results.iter().any(
@@ -543,7 +566,7 @@ mod tests {
             SecretString::from_plain("ghp_test_value"),
         );
         let source = r#"(local ci (require :quire.ci))
-(ci:job :grab [:quire/push] (fn [_] (ci:secret :github_token)))"#;
+(ci.job :grab [:quire/push] (fn [_] (ci.secret :github_token)))"#;
         let pipeline = load(&f, source, "ci.fnl", "ci.fnl", secrets)
             .expect("load should succeed");
         let token: String = pipeline.jobs()[0]
@@ -557,7 +580,7 @@ mod tests {
     fn ci_secret_errors_for_unknown_name() {
         let f = fennel();
         let source = r#"(local ci (require :quire.ci))
-(ci:job :grab [:quire/push] (fn [_] (ci:secret :missing)))"#;
+(ci.job :grab [:quire/push] (fn [_] (ci.secret :missing)))"#;
         let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new())
             .expect("load should succeed");
         let err = pipeline.jobs()[0]
@@ -577,7 +600,7 @@ mod tests {
         // and reaches the post-graph reachability check.
         let jobs = parsed_jobs(
             r#"(local ci (require :quire.ci))
-(ci:job :orphan [:orphan] (fn [_] nil))"#,
+(ci.job :orphan [:orphan] (fn [_] nil))"#,
         );
         let errs = validate_post_graph(&jobs).unwrap_err();
         assert!(
