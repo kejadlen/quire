@@ -150,7 +150,7 @@ impl Cmd {
     // TODO: stream stdout/stderr live instead of buffering. `output()`
     // captures the full child output in memory and only returns at exit,
     // so long-running or chatty jobs show nothing until they finish.
-    fn run(self, opts: ShOpts) -> std::io::Result<Output> {
+    fn run(self, opts: ShOpts) -> std::io::Result<ShOutput> {
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
             command.env(k, v);
@@ -161,7 +161,7 @@ impl Cmd {
         let output = command.output()?;
         // Signal-killed processes have no exit code; collapse them to -1
         // for now. Surfacing the signal as a separate field is future work.
-        Ok(Output {
+        Ok(ShOutput {
             exit: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -221,19 +221,68 @@ impl mlua::FromLua for ShOpts {
 /// A non-zero exit is reported in `:exit`, not raised as a Lua error —
 /// matches the shape `(container …)` will eventually use so callers can
 /// branch on it.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Output {
-    exit: i32,
-    stdout: String,
-    stderr: String,
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ShOutput {
+    pub exit: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Per-execution state the Lua bridge consults at run time.
+///
+/// `Run::execute` constructs one of these, installs it on the Lua VM
+/// via app data, and updates `current_job` around each `run_fn` call.
+/// `(ci.sh …)` reads the state on each invocation and appends its
+/// captured output to `outputs[current_job]`.
+///
+/// Outside a run (e.g. unit tests that drive `run_fn` directly), no
+/// `Rc<RuntimeState>` is installed and `(ci.sh …)` simply executes
+/// the command and returns its result without recording.
+#[derive(Debug, Default)]
+pub(super) struct RuntimeState {
+    current_job: RefCell<Option<String>>,
+    outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
+}
+
+impl RuntimeState {
+    /// Mark `id` as the currently executing job. `(ci.sh …)` invocations
+    /// from this job's `run_fn` will record output under `id`.
+    pub(super) fn enter_job(&self, id: &str) {
+        *self.current_job.borrow_mut() = Some(id.to_string());
+    }
+
+    /// Clear the current-job cursor. Subsequent `(ci.sh …)` calls (if
+    /// any) won't be attributed to a job until `enter_job` is called again.
+    pub(super) fn leave_job(&self) {
+        *self.current_job.borrow_mut() = None;
+    }
+
+    /// Snapshot the recorded outputs for `id`. Empty if the job
+    /// produced none (or hasn't run).
+    pub(super) fn outputs(&self, id: &str) -> Vec<ShOutput> {
+        self.outputs.borrow().get(id).cloned().unwrap_or_default()
+    }
 }
 
 /// Body of `(ci.sh cmd opts?)`. Glue between the Lua call and
-/// `Cmd::run` — defaults the opts and converts both directions.
+/// `Cmd::run` — defaults the opts, runs the command, records output
+/// into the active `RuntimeState` (if any), and converts the result
+/// back to a Lua table.
 fn run_sh(lua: &Lua, (cmd, opts): (Cmd, Option<ShOpts>)) -> mlua::Result<mlua::Value> {
     let output = cmd
         .run(opts.unwrap_or_default())
         .map_err(mlua::Error::external)?;
+
+    if let Some(rt) = lua.app_data_ref::<Rc<RuntimeState>>() {
+        if let Some(job) = rt.current_job.borrow().as_ref() {
+            rt.outputs
+                .borrow_mut()
+                .entry(job.clone())
+                .or_default()
+                .push(output.clone());
+        }
+    }
+
     lua.to_value(&output)
 }
 
@@ -242,13 +291,8 @@ mod tests {
     use super::super::pipeline::load;
     use super::*;
 
-    fn fennel() -> Fennel {
-        Fennel::new().expect("Fennel::new() should succeed")
-    }
-
     #[test]
     fn ci_secret_returns_resolved_value() {
-        let f = fennel();
         let mut secrets = HashMap::new();
         secrets.insert(
             "github_token".to_string(),
@@ -256,8 +300,7 @@ mod tests {
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [_] (ci.secret :github_token)))"#;
-        let pipeline =
-            load(&f, source, "ci.fnl", "ci.fnl", secrets).expect("load should succeed");
+        let pipeline = load(source, "ci.fnl", "ci.fnl", secrets).expect("load should succeed");
         let token: String = pipeline.jobs()[0]
             .run_fn
             .call(())
@@ -267,11 +310,10 @@ mod tests {
 
     #[test]
     fn ci_secret_errors_for_unknown_name() {
-        let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [_] (ci.secret :missing)))"#;
-        let pipeline = load(&f, source, "ci.fnl", "ci.fnl", HashMap::new())
-            .expect("load should succeed");
+        let pipeline =
+            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
             .call::<mlua::Value>(())
@@ -284,18 +326,20 @@ mod tests {
     }
 
     /// Build a pipeline whose single job's run-fn invokes `(ci.sh …)`,
-    /// invoke it, and decode the resulting Lua table as Output through
-    /// the same VM via `lua.from_value`. Owned data, so the Fennel VM
-    /// can drop without a use-after-free.
-    fn run_sh_via_job(source: &str) -> Output {
-        let f = fennel();
+    /// invoke it, and decode the resulting Lua table as ShOutput through
+    /// the pipeline's VM via `lua.from_value`.
+    fn run_sh_via_job(source: &str) -> ShOutput {
         let pipeline =
-            load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let value: mlua::Value = pipeline.jobs()[0]
             .run_fn
             .call(())
             .expect("ci.sh call should return a value");
-        f.lua().from_value(value).expect("decode Output")
+        pipeline
+            .fennel()
+            .lua()
+            .from_value(value)
+            .expect("decode ShOutput")
     }
 
     #[test]
@@ -362,9 +406,7 @@ mod tests {
 
     #[test]
     fn ci_sh_rejects_unknown_opt_key() {
-        let f = fennel();
         let pipeline = load(
-            &f,
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh "echo hi" {:cwdir "/tmp"})))"#,
             "ci.fnl",
@@ -385,9 +427,7 @@ mod tests {
 
     #[test]
     fn ci_sh_rejects_non_sequence_table_as_cmd() {
-        let f = fennel();
         let pipeline = load(
-            &f,
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh {:env {:FOO "bar"}})))"#,
             "ci.fnl",
@@ -408,9 +448,7 @@ mod tests {
 
     #[test]
     fn ci_sh_rejects_empty_argv() {
-        let f = fennel();
         let pipeline = load(
-            &f,
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh [])))"#,
             "ci.fnl",

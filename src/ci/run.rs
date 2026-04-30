@@ -6,9 +6,12 @@
 //! `rename` operations.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use jiff::Timestamp;
 
+use super::lua::{RuntimeState, ShOutput};
+use super::pipeline::Pipeline;
 use crate::{Error, Result};
 
 /// The state of a CI run.
@@ -204,13 +207,17 @@ impl Runs {
 
 /// A CI run on disk.
 ///
-/// Owns the path to the run directory. Tracks current state so that
+/// Owns the path to the run directory and the in-memory execution
+/// state used while driving a pipeline. Tracks current state so that
 /// `transition` can move the directory in one call.
-#[derive(Debug)]
 pub struct Run {
     base: PathBuf,
     state: RunState,
     id: String,
+    /// Per-execution state shared with the Lua bridge: tracks the
+    /// currently-running job and accumulates per-job `(ci.sh …)` output.
+    /// Cloned (Rc) into Lua app data when `execute` runs.
+    runtime: Rc<RuntimeState>,
 }
 
 impl Run {
@@ -235,10 +242,65 @@ impl Run {
     /// `pending/`, `active/`). Returns an error if `meta.yml` or
     /// `times.yml` are missing or unreadable.
     pub fn open(base: PathBuf, state: RunState, id: String) -> Result<Self> {
-        let run = Self { base, state, id };
+        let run = Self {
+            base,
+            state,
+            id,
+            runtime: Rc::new(RuntimeState::default()),
+        };
         run.read_meta()?;
         run.read_times()?;
         Ok(run)
+    }
+
+    /// Drive `pipeline` to completion through this run.
+    ///
+    /// Topo-sorts the jobs, transitions Pending → Active, then invokes
+    /// each `run_fn` in dependency order. `(ci.sh …)` calls record their
+    /// captured output under the current job — readable via [`outputs`]
+    /// after `execute` returns. The run finishes in `Complete` if every
+    /// job's `run_fn` returned without error, otherwise `Failed`.
+    ///
+    /// Source-ref filtering (e.g. running only `quire/push`-reachable
+    /// jobs) is not yet implemented; for now every validated job runs.
+    pub fn execute(&mut self, pipeline: &Pipeline) -> Result<()> {
+        pipeline.fennel().lua().set_app_data(self.runtime.clone());
+
+        let order: Vec<String> = pipeline
+            .topo_order()
+            .into_iter()
+            .map(String::from)
+            .collect();
+
+        self.transition(RunState::Active)?;
+
+        for job_id in &order {
+            let job = pipeline
+                .job(job_id)
+                .expect("topo_order returned a job id not in pipeline");
+
+            self.runtime.enter_job(&job.id);
+            let result = job.run_fn.call::<mlua::Value>(());
+            self.runtime.leave_job();
+
+            if let Err(e) = result {
+                self.transition(RunState::Failed)?;
+                return Err(Error::JobFailed {
+                    job: job.id.clone(),
+                    source: Box::new(e),
+                });
+            }
+        }
+
+        self.transition(RunState::Complete)?;
+        Ok(())
+    }
+
+    /// Snapshot the `(ci.sh …)` outputs recorded for `job_id` during
+    /// the most recent `execute` call. Empty if the job hasn't run or
+    /// produced no output.
+    pub fn outputs(&self, job_id: &str) -> Vec<ShOutput> {
+        self.runtime.outputs(job_id)
     }
 
     /// Transition the run from its current state to a new state.
@@ -487,6 +549,7 @@ mod tests {
             base: PathBuf::from("/tmp/quire-test-runs/test.git"),
             state: RunState::Pending,
             id: uuid::Uuid::now_v7().to_string(),
+            runtime: Rc::new(RuntimeState::default()),
         };
 
         let result = run.transition(RunState::Active);
@@ -575,5 +638,79 @@ mod tests {
         // Meta is unchanged.
         let loaded_meta = run.read_meta().expect("read meta");
         assert_eq!(loaded_meta, test_meta());
+    }
+
+    fn load(source: &str) -> Pipeline {
+        super::super::pipeline::load(source, "ci.fnl", "ci.fnl", std::collections::HashMap::new())
+            .expect("load should succeed")
+    }
+
+    #[test]
+    fn execute_records_outputs_per_job() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :a [:quire/push] (fn [_] (ci.sh ["echo" "from-a"])))
+(ci.job :b [:a] (fn [_] (ci.sh ["echo" "from-b"])))"#,
+        );
+
+        run.execute(&pipeline).expect("execute");
+
+        assert_eq!(run.state(), RunState::Complete);
+
+        let a = run.outputs("a");
+        let b = run.outputs("b");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].stdout, "from-a\n");
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].stdout, "from-b\n");
+    }
+
+    #[test]
+    fn execute_runs_jobs_in_topo_order() {
+        // `b` depends on `a`, but the registration order puts `b` first.
+        // Topo-sorted execution must run `a` before `b`.
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let log = quire.base_dir().join("order.log");
+        let log_str = log.to_string_lossy();
+        let source = format!(
+            r#"(local ci (require :quire.ci))
+(ci.job :b [:a] (fn [_] (ci.sh (.. "echo b >> {log}"))))
+(ci.job :a [:quire/push] (fn [_] (ci.sh (.. "echo a >> {log}"))))"#,
+            log = log_str
+        );
+        let pipeline = load(&source);
+
+        run.execute(&pipeline).expect("execute");
+
+        let contents = fs_err::read_to_string(&log).expect("read log");
+        assert_eq!(contents, "a\nb\n");
+    }
+
+    #[test]
+    fn execute_stops_on_first_failure_and_transitions_failed() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :a [:quire/push] (fn [_] (error "boom")))
+(ci.job :b [:a] (fn [_] (ci.sh ["echo" "should-not-run"])))"#,
+        );
+
+        let err = run.execute(&pipeline).expect_err("expected failure");
+        assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
+        assert_eq!(run.state(), RunState::Failed);
+        assert!(
+            run.outputs("b").is_empty(),
+            "b should not have run after a failed"
+        );
     }
 }

@@ -30,6 +30,13 @@ pub enum Error {
     #[error("invalid run transition: {from:?} -> {to:?}")]
     InvalidTransition { from: RunState, to: RunState },
 
+    #[error("job '{job}' failed")]
+    JobFailed {
+        job: String,
+        #[source]
+        source: Box<mlua::Error>,
+    },
+
     #[error("git error: {0}")]
     Git(String),
 

@@ -84,6 +84,13 @@ enum CiCommands {
         #[arg(short, long)]
         sha: Option<String>,
     },
+
+    /// Execute a repo's ci.fnl locally for testing.
+    Run {
+        /// Commit SHA to run. Defaults to the working-copy revision.
+        #[arg(short, long)]
+        sha: Option<String>,
+    },
 }
 
 /// Initialize Sentry if the global config provides a DSN.
@@ -158,6 +165,7 @@ async fn main() -> Result<()> {
         },
         Commands::Ci { command } => match command {
             CiCommands::Validate { sha } => commands::ci::validate(sha.as_deref()).await?,
+            CiCommands::Run { sha } => commands::ci::run(&quire, sha.as_deref()).await?,
         },
     }
 

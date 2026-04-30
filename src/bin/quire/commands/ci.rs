@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
-use quire::ci::{Ci, CommitRef};
+use quire::Quire;
+use quire::ci::{Ci, CommitRef, RunMeta, RunState, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -33,6 +34,82 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 
     println!("\nAll validations passed.");
     Ok(())
+}
+
+/// Execute a repo's ci.fnl locally for testing.
+///
+/// Loads the pipeline at the resolved commit (working-copy `@` by
+/// default), creates a transient Run rooted at a tempdir, drives the
+/// pipeline through it, and prints each job's `(ci.sh …)` output to
+/// stdout. The tempdir is removed when the command exits.
+pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
+    let repo_path = discover_repo()?;
+    let commit = resolve_commit(maybe_sha)?;
+    let ci = Ci::new(repo_path);
+
+    // Pull secrets from the global config; absence is fine for local
+    // testing. A broken-but-present config is a real error.
+    let secrets = match quire.global_config() {
+        Ok(c) => c.secrets,
+        Err(quire::Error::ConfigNotFound(_)) => std::collections::HashMap::new(),
+        Err(e) => return Err(e).into_diagnostic(),
+    };
+
+    let Some(pipeline) = ci.load(&commit, secrets)? else {
+        println!("No ci.fnl found at {}.", commit.display);
+        return Ok(());
+    };
+
+    // Tempdir for run artifacts. TODO: switch to an XDG cache dir
+    // (e.g. $XDG_CACHE_HOME/quire/local-runs) so logs survive past the
+    // command and `tail -f` becomes useful.
+    let tmp = tempfile::tempdir().into_diagnostic()?;
+    let runs = Runs::new(tmp.path().to_path_buf());
+
+    let meta = RunMeta {
+        sha: commit.sha.clone(),
+        r#ref: "@".to_string(),
+        pushed_at: jiff::Timestamp::now(),
+    };
+
+    let mut run = runs.create(&meta)?;
+    println!("Run {}: executing at {}", run.id(), commit.display);
+
+    let exec_result = run.execute(&pipeline);
+
+    for job in pipeline.jobs() {
+        let outputs = run.outputs(&job.id);
+        if outputs.is_empty() {
+            continue;
+        }
+        println!("\n==> {}", job.id);
+        for o in &outputs {
+            if !o.stdout.is_empty() {
+                print!("{}", o.stdout);
+            }
+            if !o.stderr.is_empty() {
+                eprint!("{}", o.stderr);
+            }
+            if o.exit != 0 {
+                println!("(exit {})", o.exit);
+            }
+        }
+    }
+
+    match (run.state(), exec_result) {
+        (RunState::Complete, _) => {
+            println!("\nRun complete.");
+            Ok(())
+        }
+        (RunState::Failed, Err(e)) => {
+            println!("\nRun failed.");
+            Err(e).into_diagnostic()
+        }
+        (state, result) => {
+            println!("\nRun ended in unexpected state: {state:?}");
+            result.into_diagnostic()
+        }
+    }
 }
 
 /// Find the repo root from the current working directory using jj.

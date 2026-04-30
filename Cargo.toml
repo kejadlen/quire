@@ -24,6 +24,7 @@ serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 serde_yaml_ng = "*"
 shell-words = "*"
+tempfile = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 tracing = "*"
@@ -34,5 +35,4 @@ walkdir = "*"
 [dev-dependencies]
 assert_cmd = "*"
 predicates = "*"
-tempfile = "*"
 serde_json = "*"

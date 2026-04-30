@@ -7,11 +7,17 @@
 use std::collections::HashMap;
 
 use miette::{NamedSource, SourceSpan};
+use petgraph::Graph;
+use petgraph::graph::NodeIndex;
 
 use super::lua;
 use crate::Result;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
+
+/// Edges point from dependency to dependent. Node weights are indices
+/// into `Pipeline::jobs`; source refs (e.g. `quire/push`) are not nodes.
+type JobGraph = Graph<usize, ()>;
 
 /// A registered job extracted from ci.fnl.
 ///
@@ -72,14 +78,66 @@ impl Job {
 /// Obtain via `pipeline::load`, which parses the Fennel source and
 /// validates the result. Holding a `Pipeline` is proof that the graph
 /// is sound.
+///
+/// Owns the Fennel/Lua VM so the registered `run_fn`s remain callable
+/// after `load` returns.
 pub struct Pipeline {
     jobs: Vec<Job>,
+    graph: JobGraph,
+    /// Job id → node index in `graph`, for O(1) lookup.
+    node_index: HashMap<String, NodeIndex>,
+    fennel: Fennel,
 }
 
 impl Pipeline {
     pub fn jobs(&self) -> &[Job] {
         &self.jobs
     }
+
+    /// Look up a job by id.
+    pub fn job(&self, id: &str) -> Option<&Job> {
+        self.node_index
+            .get(id)
+            .map(|&idx| &self.jobs[self.graph[idx]])
+    }
+
+    /// Borrow the underlying Fennel/Lua VM. Used by the executor to
+    /// install runtime state on the VM before invoking job `run_fn`s.
+    pub(crate) fn fennel(&self) -> &Fennel {
+        &self.fennel
+    }
+
+    /// Return job IDs in topological order — dependencies before
+    /// dependents. The pipeline is already validated as acyclic, so
+    /// this never fails.
+    pub(crate) fn topo_order(&self) -> Vec<&str> {
+        petgraph::algo::toposort(&self.graph, None)
+            .expect("pipeline is validated as acyclic")
+            .into_iter()
+            .map(|idx| self.jobs[self.graph[idx]].id.as_str())
+            .collect()
+    }
+}
+
+/// Build the dependency graph for `jobs`. Inputs that don't match a
+/// known job id are treated as source refs (e.g. `quire/push`) and
+/// don't get an edge — they're not nodes in this graph.
+fn build_graph(jobs: &[Job]) -> (JobGraph, HashMap<String, NodeIndex>) {
+    let mut graph = JobGraph::new();
+    let mut node_index = HashMap::new();
+    for (i, job) in jobs.iter().enumerate() {
+        let idx = graph.add_node(i);
+        node_index.insert(job.id.clone(), idx);
+    }
+    for job in jobs {
+        let dependent = node_index[&job.id];
+        for input in &job.inputs {
+            if let Some(&dependency) = node_index.get(input) {
+                graph.add_edge(dependency, dependent, ());
+            }
+        }
+    }
+    (graph, node_index)
 }
 
 /// Parse and validate a ci.fnl source string into a `Pipeline`.
@@ -89,13 +147,13 @@ impl Pipeline {
 /// found are gathered into a single `LoadError` carrying the source
 /// for miette to render with inline labels.
 pub(crate) fn load(
-    fennel: &Fennel,
     source: &str,
     filename: &str,
     display: &str,
     secrets: HashMap<String, SecretString>,
 ) -> Result<Pipeline> {
-    let results = lua::parse(fennel, source, filename, display, secrets)?;
+    let fennel = Fennel::new()?;
+    let results = lua::parse(&fennel, source, filename, display, secrets)?;
 
     let mut errors = Vec::new();
     let mut jobs = Vec::new();
@@ -106,12 +164,19 @@ pub(crate) fn load(
         }
     }
 
-    if let Err(post) = validate_post_graph(&jobs) {
+    let (graph, node_index) = build_graph(&jobs);
+
+    if let Err(post) = validate_post_graph(&jobs, &graph) {
         errors.extend(post);
     }
 
     if errors.is_empty() {
-        Ok(Pipeline { jobs })
+        Ok(Pipeline {
+            jobs,
+            graph,
+            node_index,
+            fennel,
+        })
     } else {
         Err(LoadError {
             src: NamedSource::new(display, source.to_string()),
@@ -199,43 +264,22 @@ pub struct LoadError {
 /// Per-job pre-graph rules (slash-in-id, empty inputs) run inside the
 /// `(ci.job …)` callback during `lua::parse`, so they are not re-checked
 /// here.
-fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
+fn validate_post_graph(
+    jobs: &[Job],
+    graph: &JobGraph,
+) -> std::result::Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
     let mut cycle_members: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
-    // Rule 1: acyclic.
-    //
-    // Build a directed graph where edges point from dependency to
-    // dependent. Source refs (e.g. "quire/push") are not nodes.
-    let mut graph: petgraph::Graph<&str, ()> = petgraph::Graph::new();
-    let mut node_map: std::collections::HashMap<&str, petgraph::graph::NodeIndex> =
-        std::collections::HashMap::new();
-
-    for job in jobs {
-        let idx = graph.add_node(job.id.as_str());
-        node_map.insert(job.id.as_str(), idx);
-    }
-
-    for job in jobs {
-        let dependent = node_map[job.id.as_str()];
-        for input in &job.inputs {
-            if let Some(&dependency) = node_map.get(input.as_str()) {
-                graph.add_edge(dependency, dependent, ());
-            }
-        }
-    }
-
-    // Each non-trivial strongly connected component is a distinct cycle.
-    // A single-node SCC is only a cycle if it has a self-edge.
-    for scc in petgraph::algo::tarjan_scc(&graph) {
+    // Rule 1: acyclic. Each non-trivial strongly connected component
+    // is a distinct cycle. A single-node SCC is only a cycle if it has
+    // a self-edge.
+    for scc in petgraph::algo::tarjan_scc(graph) {
         let is_cycle = scc.len() > 1 || (scc.len() == 1 && graph.contains_edge(scc[0], scc[0]));
         if !is_cycle {
             continue;
         }
-        let mut members: Vec<&Job> = scc
-            .iter()
-            .filter_map(|&idx| jobs.iter().find(|j| j.id == graph[idx]))
-            .collect();
+        let mut members: Vec<&Job> = scc.iter().map(|&idx| &jobs[graph[idx]]).collect();
         members.sort_by(|a, b| a.id.cmp(&b.id));
         for j in &members {
             cycle_members.insert(j.id.as_str());
@@ -296,17 +340,12 @@ fn validate_post_graph(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationEr
 mod tests {
     use super::*;
 
-    fn fennel() -> Fennel {
-        Fennel::new().expect("Fennel::new() should succeed")
-    }
-
     #[test]
     fn load_registers_a_job() {
-        let f = fennel();
         let source = r#"(local ci (require :quire.ci))
 (ci.job :test [:quire/push] (fn [_] nil))"#;
         let pipeline =
-            load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, "test");
@@ -315,14 +354,13 @@ mod tests {
 
     #[test]
     fn load_registers_multiple_jobs() {
-        let f = fennel();
         let source = r#"
 (local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [_] nil))
 (ci.job :test [:build] (fn [_] nil))
 "#;
         let pipeline =
-            load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "build");
@@ -333,7 +371,6 @@ mod tests {
 
     #[test]
     fn load_captures_source_line() {
-        let f = fennel();
         let source = "(local ci (require :quire.ci))
 (ci.job :first [:quire/push] (fn [_] nil))
 (ci.job :second [:quire/push] (fn [_] nil))
@@ -341,7 +378,7 @@ mod tests {
 
 (ci.job :sixth [:quire/push] (fn [_] nil))";
         let pipeline =
-            load(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
             .iter()
@@ -352,16 +389,16 @@ mod tests {
 
     #[test]
     fn load_errors_on_bad_fennel() {
-        let f = fennel();
-        let result = load(&f, "{:bad {:}", "ci.fnl", "ci.fnl", HashMap::new());
+        let result = load("{:bad {:}", "ci.fnl", "ci.fnl", HashMap::new());
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
     /// Parse a Fennel source into per-job results. Pre-graph rules
     /// run during parsing, so each entry is `Ok(Job)` or
-    /// `Err(ValidationError)`.
+    /// `Err(ValidationError)`. The local Fennel is dropped on return,
+    /// but the returned `Job`s only need their non-VM fields here.
     fn parse_results(source: &str) -> Vec<std::result::Result<Job, ValidationError>> {
-        let f = fennel();
+        let f = Fennel::new().expect("Fennel::new() should succeed");
         lua::parse(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("parse should succeed")
     }
 
@@ -374,6 +411,13 @@ mod tests {
             .collect()
     }
 
+    /// Run post-graph validation against `jobs`, building the dependency
+    /// graph the same way `load` does.
+    fn validate(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
+        let (graph, _) = build_graph(jobs);
+        validate_post_graph(jobs, &graph)
+    }
+
     #[test]
     fn validate_accepts_valid_config() {
         let jobs = parsed_jobs(
@@ -383,7 +427,7 @@ mod tests {
 (ci.job :test [:build :quire/push] (fn [_] nil))
 "#,
         );
-        assert!(validate_post_graph(&jobs).is_ok());
+        assert!(validate(&jobs).is_ok());
     }
 
     #[test]
@@ -395,7 +439,7 @@ mod tests {
 (ci.job :b [:a] (fn [_] nil))
 "#,
         );
-        let errs = validate_post_graph(&jobs).unwrap_err();
+        let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs, .. } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
@@ -412,7 +456,7 @@ mod tests {
 (ci.job :clean [:quire/push] (fn [_] nil))
 "#,
         );
-        let errs = validate_post_graph(&jobs).unwrap_err();
+        let errs = validate(&jobs).unwrap_err();
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
             .filter_map(|e| match e {
@@ -439,7 +483,7 @@ mod tests {
 (ci.job :d [:c :quire/push] (fn [_] nil))
 "#,
         );
-        let errs = validate_post_graph(&jobs).unwrap_err();
+        let errs = validate(&jobs).unwrap_err();
         let cycle_count = errs
             .iter()
             .filter(|e| matches!(e, ValidationError::Cycle { .. }))
@@ -486,7 +530,7 @@ mod tests {
 (ci.job :b [:a] (fn [_] nil))
 "#,
         );
-        let errs = validate_post_graph(&jobs).unwrap_err();
+        let errs = validate(&jobs).unwrap_err();
         let unreachable_count = errs
             .iter()
             .filter(|e| matches!(e, ValidationError::Unreachable { .. }))
@@ -506,7 +550,7 @@ mod tests {
             r#"(local ci (require :quire.ci))
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
         );
-        let errs = validate_post_graph(&jobs).unwrap_err();
+        let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter().any(
                 |e| matches!(e, ValidationError::Unreachable { job_id, .. } if job_id == "orphan")

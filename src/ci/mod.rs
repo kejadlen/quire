@@ -65,10 +65,9 @@ impl Ci {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
-        let fennel = crate::fennel::Fennel::new()?;
         let name = CI_FNL.to_string();
         let lua_name = format!("{}:{CI_FNL}", commit.sha);
-        let pipeline = pipeline::load(&fennel, &source, &lua_name, &name, secrets)?;
+        let pipeline = pipeline::load(&source, &lua_name, &name, secrets)?;
         Ok(Some(pipeline))
     }
 
@@ -173,11 +172,10 @@ fn trigger_ref(
 
     run.transition(RunState::Active)?;
 
-    let fennel = crate::fennel::Fennel::new()?;
     let name = CI_FNL.to_string();
     let lua_name = format!("{}:{CI_FNL}", push_ref.new_sha);
 
-    match pipeline::load(&fennel, &source, &lua_name, &name, secrets) {
+    match pipeline::load(&source, &lua_name, &name, secrets) {
         Ok(_pipeline) => run.transition(RunState::Complete)?,
         Err(e) => {
             run.transition(RunState::Failed)?;
