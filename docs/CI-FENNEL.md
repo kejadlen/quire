@@ -47,26 +47,19 @@ The dependency graph is *derived* from the inputs list. No separate `:needs` fie
 
 ### Accessing inputs
 
-The function receives an outer table with an `:inputs` key. Standard pattern is to destructure:
+The function receives the **runtime handle** as its sole argument — a table with `sh`, `secret`, and (planned) `jobs` bound on it. Destructure the primitives the body needs:
 
 ```
-(fn [{: inputs}]
-  (.. "checkout " inputs.build.sha))
+(fn [{: sh : jobs}]
+  (let [push (jobs :quire/push)]
+    (sh ["git" "checkout" push.sha])))
 ```
 
-For source inputs whose names contain `/`, the dot-access syntax is awkward. **Destructure at the function arg** — both cleaner and less error-prone:
+`(jobs name)` returns the outputs for `name` if `name` is a transitive ancestor of the calling job in the input graph; an unknown or non-ancestor name raises a Lua error. Self-lookup is rejected. Sources and jobs share one namespace — `(jobs :quire/push)` reads the source's outputs uniformly.
 
-```
-(fn [{:inputs {:quire/push push}}]
-  (.. "checkout " push.sha))
-```
+The function-call form sidesteps the awkward dot-access on `/`-containing keys. The `:as` rebinding sugar planned for cron and cherry-picked outputs (see "Future: input args" below) layers on top of the same accessor.
 
-The `push` local rebinding is the recommended idiom for any source input. Use the same pattern when destructuring multiple inputs:
-
-```
-(fn [{:inputs {:quire/push push : build : compute-version}}]
-  (.. "deploying " compute-version.version " from " push.sha))
-```
+> **v0 status:** the runtime handle currently carries `sh` and `secret`. The `jobs` accessor is the next addition (tracked separately); until it lands, jobs cannot read upstream outputs and `:quire/push` data is not exposed to the body.
 
 ### Sources
 
@@ -87,16 +80,16 @@ Every push to any ref fires a run that includes every job whose transitive input
 
 ```
 (job :test-main [:quire/push]
-  (fn [{:inputs {:quire/push push}}]
-    (when (= "main" push.branch)
-      (container {:image "rust:1.75"
-                  :cmd (.. "git checkout " push.sha " && cargo test")}))))
+  (fn [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (when (= "main" push.branch)
+        (sh (.. "git checkout " push.sha " && cargo test"))))))
 
 (job :release [:quire/push]
-  (fn [{:inputs {:quire/push push}}]
-    (when (and push.tag (string.match push.tag "^v"))
-      (container {:image "alpine"
-                  :cmd (.. "publish " push.tag)}))))
+  (fn [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (when (and push.tag (string.match push.tag "^v"))
+        (sh (.. "publish " push.tag))))))
 ```
 
 Fennel's `when` returns `nil` if the predicate is false, otherwise the body. That nil propagates out as the `run` return value, the runner records the job as skipped. The gate and the work are in the same expression.
@@ -109,10 +102,12 @@ Source types that need configuration — cron schedules, webhook paths — can't
 
 ```
 (job :nightly-audit [(cron :daily)]
-  (fn [{:inputs {: cron}}] ...))
+  (fn [{: jobs}]
+    (let [tick (jobs :cron)] ...)))
 
 (job :hourly-check [(cron :every "1h" :as :hourly)]
-  (fn [{:inputs {: hourly}}] ...))
+  (fn [{: jobs}]
+    (let [tick (jobs :hourly)] ...)))
 ```
 
 `cron`, `webhook`, etc. would be quire-provided functions in the eval scope. They return marker values; the runner inspects the inputs list for them, registers their event sources, instantiates runs when they fire. The `:as` keyword names the binding when the default name (the source type) would collide.
@@ -135,20 +130,21 @@ A bad `ci.fnl` push gets a CI run that fails immediately with the parse error, s
 
 ## `run` — the only primitive
 
-`run` is a host-side Fennel function (the container can't run Fennel) called when the job is about to execute, with all upstream inputs resolved. It returns either:
+`run` is a host-side Fennel function (the container can't run Fennel) called when the job is about to execute. It receives the runtime handle and returns either:
 
-* **A table** — the job's outputs. Whatever keys are in it become available to dependent jobs as `inputs.<this-job>.<key>`.
-* **`nil`** — the job is skipped. Dependents see `inputs.<this-job>` as `nil`.
+* **A table** — the job's outputs. Available to dependent jobs through `(jobs <this-job>)`.
+* **`nil`** — the job is skipped. Dependents see `(jobs <this-job>)` return `nil`.
 
 That's the whole contract. No sugar layer, no introspection, no defaulting. The runner records what was returned.
 
-Inside `run`, the function uses **runtime primitives** to do work. The most important is `(container {...})`, which runs a container and returns a result table:
+Inside `run`, the function uses **runtime primitives** bound on the handle. The most important is `(container {...})`, which runs a container and returns a result table:
 
 ```
 (job :test [:quire/push]
-  (fn [{:inputs {:quire/push push}}]
-    (container {:image "rust:1.75"
-                :cmd (.. "git checkout " push.sha " && cargo test")})))
+  (fn [{: container : jobs}]
+    (let [push (jobs :quire/push)]
+      (container {:image "rust:1.75"
+                  :cmd (.. "git checkout " push.sha " && cargo test")}))))
 ```
 
 `(container ...)` returns `{:exit :stdout :stderr :duration}`. That's what `run` returns. The runner records it as the outputs.
@@ -157,8 +153,9 @@ For more complex jobs, the function does its own orchestration: multiple contain
 
 ```
 (job :test-and-package [:quire/push]
-  (fn [{:inputs {:quire/push push}}]
-    (let [test (container {:image "rust:1.75"
+  (fn [{: container : jobs}]
+    (let [push (jobs :quire/push)
+          test (container {:image "rust:1.75"
                            :cmd ["git checkout" push.sha "&&" "cargo test"]})]
       (when (= 0 test.exit)
         (let [pkg (container {:image "alpine"
@@ -183,15 +180,19 @@ The residual things that *aren't* "just functions" — the inputs list and the i
 
 ## Runtime primitives
 
-Functions in scope inside `run`:
+Bound on the runtime handle passed into each `run` function. Destructure what you need: `(fn [{: sh : secret : jobs}] ...)`.
 
+* `(jobs name)` — return outputs for `name` (a transitive ancestor of the calling job, or a source ref). Errors if `name` is not in the calling job's transitive inputs.
 * `(container {opts})` — run a container, return `{:exit :stdout :stderr :duration}`. Opts: `:image`, `:cmd` (string or list), `:env`, `:cwd`, `:cache` (cache dir mount, defaults to job's image-keyed cache).
 * `(sh cmd)` — run a command on the host, no container. For cheap utility work. Returns the same shape as `container`.
+* `(secret name)` — resolve a named secret from the operator's config. Errors if the name isn't declared.
 * `(read-file path)`, `(read-json path)`, `(write-file path content)` — workspace I/O. Paths relative to the workspace.
 * `(log msg)` — append to the job's log file. Visible in the web UI.
-* `(env name)` — read an environment variable from the runner's environment (typically secrets).
+* `(env name)` — read an environment variable from the runner's environment.
 
 Each of these blocks the Fennel function until it returns. Multi-container parallelism inside one job is a v2 want; the v1 model is "the function runs sequentially, calling primitives that block."
+
+> **v0 status:** `sh` and `secret` are bound today. `jobs`, `container`, `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
 
 Eval is unsandboxed by default (see CI.md). A `run` function that loops forever or allocates without bound will hang or OOM `quire serve`. The mitigation is the same as for any Fennel hang: write `ci.fnl` thoughtfully. The bwrap opt-in (also see CI.md) covers eval and primitive calls together when it lands.
 
@@ -201,11 +202,12 @@ Eval is unsandboxed by default (see CI.md). A `run` function that loops forever 
 ;; Helper: a parameterized test job
 (fn rust-test [version]
   (job (.. "test-" version) [:quire/push]
-    (fn [{:inputs {:quire/push push}}]
-      (when (= "main" push.branch)
-        (container {:image (.. "rust:" version)
-                    :cmd [(.. "git checkout " push.sha)
-                          "cargo test --all-features"]})))))
+    (fn [{: container : jobs}]
+      (let [push (jobs :quire/push)]
+        (when (= "main" push.branch)
+          (container {:image (.. "rust:" version)
+                      :cmd [(.. "git checkout " push.sha)
+                            "cargo test --all-features"]}))))))
 
 ;; Matrix testing on every push to main
 (each [_ v (ipairs [:1.75 :1.76 :stable])]
@@ -213,31 +215,36 @@ Eval is unsandboxed by default (see CI.md). A `run` function that loops forever 
 
 ;; Build only if all tests passed
 (job :build [:test-1.75 :test-1.76 :test-stable :quire/push]
-  (fn [{:inputs {:quire/push push : test-1.75 : test-1.76 : test-stable}}]
-    (when (and test-1.75 test-1.76 test-stable
-               (= 0 test-1.75.exit)
-               (= 0 test-1.76.exit)
-               (= 0 test-stable.exit))
-      (let [r (container {:image "rust:1.75"
-                          :cmd [(.. "git checkout " push.sha)
-                                "cargo build --release"]})]
-        {:exit r.exit
-         :artifacts ["target/release/quire"]}))))
+  (fn [{: container : jobs}]
+    (let [push (jobs :quire/push)
+          t-175 (jobs :test-1.75)
+          t-176 (jobs :test-1.76)
+          t-stb (jobs :test-stable)]
+      (when (and t-175 t-176 t-stb
+                 (= 0 t-175.exit)
+                 (= 0 t-176.exit)
+                 (= 0 t-stb.exit))
+        (let [r (container {:image "rust:1.75"
+                            :cmd [(.. "git checkout " push.sha)
+                                  "cargo build --release"]})]
+          {:exit r.exit
+           :artifacts ["target/release/quire"]})))))
 
 ;; Deploy on push to main only
 (job :deploy [:build]
-  (fn [{:inputs {: build}}]
-    (when build
+  (fn [{: container : jobs}]
+    (when (jobs :build)
       (container {:image "alpine"
                   :cmd "scp target/release/quire host:/usr/local/bin/"}))))
 
 ;; Tagged release: publish to a registry
 (job :publish [:quire/push]
-  (fn [{:inputs {:quire/push push}}]
-    (when (and push.tag (string.match push.tag "^v"))
-      (container {:image "rust:1.75"
-                  :cmd [(.. "git checkout " push.tag)
-                        "cargo publish"]}))))
+  (fn [{: container : jobs}]
+    (let [push (jobs :quire/push)]
+      (when (and push.tag (string.match push.tag "^v"))
+        (container {:image "rust:1.75"
+                    :cmd [(.. "git checkout " push.tag)
+                          "cargo publish"]})))))
 ```
 
 What this expresses:
@@ -279,10 +286,11 @@ The three-context model means **`ci.fnl` is re-evaluated more than you might exp
 * **Builtins live under `quire/`**; user job ids cannot contain `/`.
 * **For v1, the only source is `:quire/push`.** Cron, webhook, manual deferred.
 * **Filtering happens inside `run`** by returning `nil`. Every push starts a run; jobs that return nil from `run` are skipped.
-* **Destructure source inputs at the function arg** — `(fn [{:inputs {:quire/push push}}] ...)` — to avoid awkward dot-access on `/`-containing keys.
+* **Runtime handle as the run-fn argument.** The function receives a single table `{: sh : secret : jobs : container ...}` and destructures the primitives it uses. Slash-containing source names are read via the `jobs` accessor — `(jobs :quire/push)` — never via dot access.
+* **`(jobs name)` is the only accessor for upstream outputs**, covering both source refs and job outputs. Transitive ancestors are visible; non-ancestors and unknown names raise a Lua error.
 * **Dependency graph derived from the inputs list**, not declared separately. No `:needs`.
 * **Four structural validations**: acyclic (registration eval), non-empty inputs (registration eval), reachability from a source (registration eval), no `/` in user job ids (parse time). All fail-closed with named-target error messages.
-* **`run` is a function** `(fn [{: inputs}] ...)`. Returns a table (the outputs) or `nil` (skipped). No sugar.
+* **`run` is a function** `(fn [{: jobs ...}] ...)`. Returns a table (the outputs) or `nil` (skipped). No sugar.
 * **`(container {opts})` is the primary primitive** for running containers. Opts include `:image`, so a single job can use multiple images by making multiple container calls.
 * **Three eval contexts** — registration, run start, per job — all in-process inside `quire serve`. Sandboxing model and threat model are described in CI.md.
 * **Source registration sourced from the default branch only** (relevant once registration becomes meaningful — for v1 it's a no-op since `:quire/push` needs no registration).

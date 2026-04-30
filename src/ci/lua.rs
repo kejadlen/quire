@@ -1,10 +1,11 @@
-//! Lua bridge for `ci.fnl`: the `quire.ci` module exposed to Fennel
-//! scripts and the runtime primitives (`job`, `secret`, `sh`).
+//! Lua bridge for `ci.fnl`: the registration-time module exposed via
+//! `(require :quire.ci)` and the per-execution runtime handle passed
+//! into each job's `run-fn`.
 //!
 //! All mlua/Fennel interaction lives here. The pipeline module calls
 //! [`parse`] to evaluate a script and collect the registered jobs;
-//! everything else (the `quire.ci` table, the primitive bodies, the
-//! Lua-side data shapes) is internal.
+//! the run module installs a [`Runtime`] and threads its handle into
+//! each `run-fn` at execute time.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,25 +18,22 @@ use crate::Result;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
 
-/// Evaluate `source` with the `quire.ci` module bound and collect the
-/// registration results — one `Result` per `(ci.job …)` call. Pre-graph
-/// rules run inside the callback, so a single bad job does not abort
-/// the rest of the script.
+/// Evaluate `source` with the registration module bound and collect
+/// the registration results — one `Result` per `(ci.job …)` call.
+/// Pre-graph rules run inside the callback, so a single bad job does
+/// not abort the rest of the script.
 pub(super) fn parse(
     fennel: &Fennel,
     source: &str,
     name: &str,
-    secrets: HashMap<String, SecretString>,
 ) -> Result<Vec<std::result::Result<Job, ValidationError>>> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
     let src = Rc::new(source.to_string());
-    let secrets = Rc::new(secrets);
 
     fennel.eval_raw(source, name, |lua| {
-        let module = CiModule {
+        let module = Registration {
             jobs: jobs.clone(),
             source: src.clone(),
-            secrets: secrets.clone(),
         }
         .install(lua)?;
         let loaded: mlua::Table = lua.globals().get::<mlua::Table>("package")?.get("loaded")?;
@@ -46,34 +44,33 @@ pub(super) fn parse(
     Ok(jobs.take())
 }
 
-/// The `quire.ci` module exposed to Fennel scripts via `require`.
+/// The registration-time module exposed to Fennel scripts via
+/// `(require :quire.ci)`.
 ///
-/// `install` stows the module on the Lua VM via `set_app_data`, then
-/// builds a plain table whose entries are bare functions that look the
-/// module back up at call time. Both `(ci.job …)` field access and
-/// `(local {: job : secret} (require :quire.ci))` destructuring work.
+/// `install` stows the registration sink on the Lua VM via
+/// `set_app_data` (so `register_job` can find it) and returns the
+/// `quire.ci` table — `{job}` for now. Runtime primitives (`sh`,
+/// `secret`) live on the per-execution [`Runtime`] handle, not here.
 ///
 /// ```fennel
 /// (local ci (require :quire.ci))
-/// (ci.job :build [:quire/push] (fn [_] nil))
-/// (ci.secret :github_token)
+/// (ci.job :build [:quire/push]
+///   (fn [{: sh : secret}]
+///     (sh ["echo" (secret :github_token)])))
 /// ```
-struct CiModule {
+struct Registration {
     jobs: Rc<RefCell<Vec<std::result::Result<Job, ValidationError>>>>,
     source: Rc<String>,
-    secrets: Rc<HashMap<String, SecretString>>,
 }
 
-impl CiModule {
-    /// Install the module on `lua` as app data and return the
-    /// `quire.ci` table. The registered functions error at call time
-    /// if the module isn't installed first.
+impl Registration {
+    /// Install on `lua` as app data and return the `quire.ci` table.
+    /// `register_job` errors at call time if the registration isn't
+    /// installed first.
     fn install(self, lua: &Lua) -> mlua::Result<mlua::Table> {
         lua.set_app_data(self);
         let table = lua.create_table()?;
         table.set("job", lua.create_function(register_job)?)?;
-        table.set("secret", lua.create_function(lookup_secret)?)?;
-        table.set("sh", lua.create_function(run_sh)?)?;
         Ok(table)
     }
 }
@@ -85,27 +82,88 @@ fn register_job(
     lua: &Lua,
     (id, inputs, run_fn): (String, Vec<String>, mlua::Function),
 ) -> mlua::Result<()> {
-    let m = lua
-        .app_data_ref::<CiModule>()
-        .ok_or_else(|| mlua::Error::external("quire.ci module not installed on Lua VM"))?;
+    let r = lua
+        .app_data_ref::<Registration>()
+        .ok_or_else(|| mlua::Error::external("quire.ci registration not installed on Lua VM"))?;
     let line = lua
         .inspect_stack(1, |d| d.current_line())
         .flatten()
         .map(|l| l as u32)
         .unwrap_or(0);
-    m.jobs
+    r.jobs
         .borrow_mut()
-        .push(Job::new(id, inputs, run_fn, line, &m.source));
+        .push(Job::new(id, inputs, run_fn, line, &r.source));
     Ok(())
 }
 
-/// Body of `(ci.secret name)`. Errors as a Lua error if the name is
-/// undeclared or the file form fails to read.
+/// Per-execution runtime: holds the secrets exposed to the job, the
+/// current-job cursor, and the per-job captured `sh` outputs.
+///
+/// `Run::execute` constructs an `Rc<Runtime>`, calls [`install`] to
+/// stow it on the Lua VM as app data and produce the handle table,
+/// and updates `current_job` around each `run_fn` call. `(sh …)` and
+/// `(secret …)` look the runtime back up via app data.
+///
+/// Outside a run, no runtime is installed; in that case `(sh …)`
+/// runs the command but doesn't record (the cursor lookup misses).
+/// `(secret …)` requires a runtime — without one, calls error.
+///
+/// [`install`]: Runtime::install
+#[derive(Debug)]
+pub(super) struct Runtime {
+    secrets: HashMap<String, SecretString>,
+    current_job: RefCell<Option<String>>,
+    outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
+}
+
+impl Runtime {
+    /// Build a fresh runtime with the given secrets. Cursor and
+    /// outputs start empty.
+    pub(super) fn new(secrets: HashMap<String, SecretString>) -> Self {
+        Self {
+            secrets,
+            current_job: RefCell::new(None),
+            outputs: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Install on `lua` as app data and return the runtime handle —
+    /// the table passed as the sole argument to each `run_fn`.
+    pub(super) fn install(self: Rc<Self>, lua: &Lua) -> mlua::Result<mlua::Table> {
+        lua.set_app_data(self);
+        let table = lua.create_table()?;
+        table.set("sh", lua.create_function(run_sh)?)?;
+        table.set("secret", lua.create_function(lookup_secret)?)?;
+        Ok(table)
+    }
+
+    /// Mark `id` as the currently executing job. `(sh …)` invocations
+    /// from this job's `run_fn` will record output under `id`.
+    pub(super) fn enter_job(&self, id: &str) {
+        *self.current_job.borrow_mut() = Some(id.to_string());
+    }
+
+    /// Clear the current-job cursor. Subsequent `(sh …)` calls (if
+    /// any) won't be attributed to a job until `enter_job` is called again.
+    pub(super) fn leave_job(&self) {
+        *self.current_job.borrow_mut() = None;
+    }
+
+    /// Snapshot the recorded outputs for `id`. Empty if the job
+    /// produced none (or hasn't run).
+    pub(super) fn outputs(&self, id: &str) -> Vec<ShOutput> {
+        self.outputs.borrow().get(id).cloned().unwrap_or_default()
+    }
+}
+
+/// Body of `(secret name)`. Errors as a Lua error if the runtime
+/// isn't installed, the name is undeclared, or the file form fails to
+/// read.
 fn lookup_secret(lua: &Lua, name: String) -> mlua::Result<String> {
-    let m = lua
-        .app_data_ref::<CiModule>()
-        .ok_or_else(|| mlua::Error::external("quire.ci module not installed on Lua VM"))?;
-    let secret = m
+    let rt = lua
+        .app_data_ref::<Rc<Runtime>>()
+        .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
+    let secret = rt
         .secrets
         .get(&name)
         .ok_or_else(|| mlua::Error::external(crate::Error::UnknownSecret(name)))?;
@@ -115,7 +173,7 @@ fn lookup_secret(lua: &Lua, name: String) -> mlua::Result<String> {
         .map_err(mlua::Error::external)
 }
 
-/// The two valid shapes of `cmd` for `(ci.sh cmd …)`. A bare string
+/// The two valid shapes of `cmd` for `(sh cmd …)`. A bare string
 /// runs under `sh -c`; a sequence runs as argv with no shell.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
@@ -183,8 +241,7 @@ impl mlua::FromLua for Cmd {
                     from: "table",
                     to: "Cmd".into(),
                     message: Some(
-                        "ci.sh: cmd must be a non-empty sequence of strings or a shell string"
-                            .into(),
+                        "sh: cmd must be a non-empty sequence of strings or a shell string".into(),
                     ),
                 })
             }
@@ -192,14 +249,14 @@ impl mlua::FromLua for Cmd {
             other => Err(mlua::Error::FromLuaConversionError {
                 from: other.type_name(),
                 to: "Cmd".into(),
-                message: Some("ci.sh: cmd must be a string or sequence of strings".into()),
+                message: Some("sh: cmd must be a string or sequence of strings".into()),
             }),
         }
     }
 }
 
-/// The optional `opts` table for `(ci.sh cmd opts?)`. Unknown keys
-/// fail closed so typos surface rather than being silently ignored.
+/// The optional `opts` table for `(sh cmd opts?)`. Unknown keys fail
+/// closed so typos surface rather than being silently ignored.
 #[derive(Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ShOpts {
@@ -213,9 +270,9 @@ impl mlua::FromLua for ShOpts {
     }
 }
 
-/// The captured outcome of running a process — what `(ci.sh …)`
-/// returns. Crosses the boundary as plain serde data: `lua.to_value`
-/// on the way out, `lua.from_value` on the way in.
+/// The captured outcome of running a process — what `(sh …)` returns.
+/// Crosses the boundary as plain serde data: `lua.to_value` on the
+/// way out, `lua.from_value` on the way in.
 ///
 /// A non-zero exit is reported in `:exit`, not raised as a Lua error —
 /// matches the shape `(container …)` will eventually use so callers can
@@ -227,52 +284,16 @@ pub struct ShOutput {
     pub stderr: String,
 }
 
-/// Per-execution state the Lua bridge consults at run time.
-///
-/// `Run::execute` constructs one of these, installs it on the Lua VM
-/// via app data, and updates `current_job` around each `run_fn` call.
-/// `(ci.sh …)` reads the state on each invocation and appends its
-/// captured output to `outputs[current_job]`.
-///
-/// Outside a run (e.g. unit tests that drive `run_fn` directly), no
-/// `Rc<RuntimeState>` is installed and `(ci.sh …)` simply executes
-/// the command and returns its result without recording.
-#[derive(Debug, Default)]
-pub(super) struct RuntimeState {
-    current_job: RefCell<Option<String>>,
-    outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
-}
-
-impl RuntimeState {
-    /// Mark `id` as the currently executing job. `(ci.sh …)` invocations
-    /// from this job's `run_fn` will record output under `id`.
-    pub(super) fn enter_job(&self, id: &str) {
-        *self.current_job.borrow_mut() = Some(id.to_string());
-    }
-
-    /// Clear the current-job cursor. Subsequent `(ci.sh …)` calls (if
-    /// any) won't be attributed to a job until `enter_job` is called again.
-    pub(super) fn leave_job(&self) {
-        *self.current_job.borrow_mut() = None;
-    }
-
-    /// Snapshot the recorded outputs for `id`. Empty if the job
-    /// produced none (or hasn't run).
-    pub(super) fn outputs(&self, id: &str) -> Vec<ShOutput> {
-        self.outputs.borrow().get(id).cloned().unwrap_or_default()
-    }
-}
-
-/// Body of `(ci.sh cmd opts?)`. Glue between the Lua call and
-/// `Cmd::run` — defaults the opts, runs the command, records output
-/// into the active `RuntimeState` (if any), and converts the result
-/// back to a Lua table.
+/// Body of `(sh cmd opts?)`. Glue between the Lua call and `Cmd::run`
+/// — defaults the opts, runs the command, records output into the
+/// active runtime (if any) under the current job, and converts the
+/// result back to a Lua table.
 fn run_sh(lua: &Lua, (cmd, opts): (Cmd, Option<ShOpts>)) -> mlua::Result<mlua::Value> {
     let output = cmd
         .run(opts.unwrap_or_default())
         .map_err(mlua::Error::external)?;
 
-    if let Some(rt) = lua.app_data_ref::<Rc<RuntimeState>>()
+    if let Some(rt) = lua.app_data_ref::<Rc<Runtime>>()
         && let Some(job) = rt.current_job.borrow().as_ref()
     {
         rt.outputs
@@ -290,32 +311,40 @@ mod tests {
     use super::super::pipeline::Pipeline;
     use super::*;
 
+    /// Install a runtime with the given secrets on `pipeline`'s VM and
+    /// return the runtime handle. Mirrors what `Run::execute` does so
+    /// tests can drive a `run_fn` directly.
+    fn rt(pipeline: &Pipeline, secrets: HashMap<String, SecretString>) -> mlua::Table {
+        Rc::new(Runtime::new(secrets))
+            .install(pipeline.fennel().lua())
+            .expect("install runtime")
+    }
+
     #[test]
-    fn ci_secret_returns_resolved_value() {
+    fn secret_returns_resolved_value() {
         let mut secrets = HashMap::new();
         secrets.insert(
             "github_token".to_string(),
             SecretString::from_plain("ghp_test_value"),
         );
         let source = r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [_] (ci.secret :github_token)))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl", secrets).expect("load should succeed");
+(ci.job :grab [:quire/push] (fn [{: secret}] (secret :github_token)))"#;
+        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
         let token: String = pipeline.jobs()[0]
             .run_fn
-            .call(())
+            .call(rt(&pipeline, secrets))
             .expect("run_fn should return the secret value");
         assert_eq!(token, "ghp_test_value");
     }
 
     #[test]
-    fn ci_secret_errors_for_unknown_name() {
+    fn secret_errors_for_unknown_name() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [_] (ci.secret :missing)))"#;
-        let pipeline =
-            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
+(ci.job :grab [:quire/push] (fn [{: secret}] (secret :missing)))"#;
+        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
-            .call::<mlua::Value>(())
+            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -324,16 +353,15 @@ mod tests {
         );
     }
 
-    /// Build a pipeline whose single job's run-fn invokes `(ci.sh …)`,
-    /// invoke it, and decode the resulting Lua table as ShOutput through
-    /// the pipeline's VM via `lua.from_value`.
+    /// Build a pipeline whose single job's run-fn invokes `(sh …)`,
+    /// invoke it with the runtime handle, and decode the resulting Lua
+    /// table as ShOutput through the pipeline's VM via `lua.from_value`.
     fn run_sh_via_job(source: &str) -> ShOutput {
-        let pipeline =
-            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
         let value: mlua::Value = pipeline.jobs()[0]
             .run_fn
-            .call(())
-            .expect("ci.sh call should return a value");
+            .call(rt(&pipeline, HashMap::new()))
+            .expect("sh call should return a value");
         pipeline
             .fennel()
             .lua()
@@ -342,10 +370,10 @@ mod tests {
     }
 
     #[test]
-    fn ci_sh_runs_argv_and_captures_stdout() {
+    fn sh_runs_argv_and_captures_stdout() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh ["echo" "hello"])))"#,
+(ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hello"])))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "hello\n");
@@ -353,26 +381,26 @@ mod tests {
     }
 
     #[test]
-    fn ci_sh_runs_string_under_shell() {
+    fn sh_runs_string_under_shell() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh "echo hello | tr a-z A-Z")))"#,
+(ci.job :go [:quire/push] (fn [{: sh}] (sh "echo hello | tr a-z A-Z")))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "HELLO\n");
     }
 
     #[test]
-    fn ci_sh_reports_nonzero_exit_without_erroring() {
+    fn sh_reports_nonzero_exit_without_erroring() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh "exit 7")))"#,
+(ci.job :go [:quire/push] (fn [{: sh}] (sh "exit 7")))"#,
         );
         assert_eq!(r.exit, 7);
     }
 
     #[test]
-    fn ci_sh_merges_env_into_inherited() {
+    fn sh_merges_env_into_inherited() {
         // SAFETY: setting an env var in a single-threaded test process.
         unsafe {
             std::env::set_var("CI_SH_INHERITED_TEST", "from-parent");
@@ -380,22 +408,22 @@ mod tests {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push]
-  (fn [_]
-    (ci.sh "echo $CI_SH_INHERITED_TEST $CI_SH_OVERRIDE_TEST"
-           {:env {:CI_SH_OVERRIDE_TEST "from-opts"}})))"#,
+  (fn [{: sh}]
+    (sh "echo $CI_SH_INHERITED_TEST $CI_SH_OVERRIDE_TEST"
+        {:env {:CI_SH_OVERRIDE_TEST "from-opts"}})))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "from-parent from-opts\n");
     }
 
     #[test]
-    fn ci_sh_honors_cwd() {
+    fn sh_honors_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
         // Resolve symlinks (macOS /tmp → /private/tmp) so the assertion holds.
         let canonical = fs_err::canonicalize(dir.path()).expect("canonicalize");
         let source = format!(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh "pwd" {{:cwd "{}"}})))"#,
+(ci.job :go [:quire/push] (fn [{{: sh}}] (sh "pwd" {{:cwd "{}"}})))"#,
             canonical.display()
         );
         let r = run_sh_via_job(&source);
@@ -404,17 +432,16 @@ mod tests {
     }
 
     #[test]
-    fn ci_sh_rejects_unknown_opt_key() {
+    fn sh_rejects_unknown_opt_key() {
         let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh "echo hi" {:cwdir "/tmp"})))"#,
+(ci.job :go [:quire/push] (fn [{: sh}] (sh "echo hi" {:cwdir "/tmp"})))"#,
             "ci.fnl",
-            HashMap::new(),
         )
         .expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
-            .call::<mlua::Value>(())
+            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -424,17 +451,16 @@ mod tests {
     }
 
     #[test]
-    fn ci_sh_rejects_non_sequence_table_as_cmd() {
+    fn sh_rejects_non_sequence_table_as_cmd() {
         let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh {:env {:FOO "bar"}})))"#,
+(ci.job :go [:quire/push] (fn [{: sh}] (sh {:env {:FOO "bar"}})))"#,
             "ci.fnl",
-            HashMap::new(),
         )
         .expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
-            .call::<mlua::Value>(())
+            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
             .unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -444,17 +470,16 @@ mod tests {
     }
 
     #[test]
-    fn ci_sh_rejects_empty_argv() {
+    fn sh_rejects_empty_argv() {
         let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [_] (ci.sh [])))"#,
+(ci.job :go [:quire/push] (fn [{: sh}] (sh [])))"#,
             "ci.fnl",
-            HashMap::new(),
         )
         .expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
-            .call::<mlua::Value>(())
+            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
             .unwrap_err();
         let msg = err.to_string();
         assert!(

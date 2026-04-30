@@ -14,8 +14,7 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path);
 
-    // Structural validation only — no need to resolve secrets.
-    let Some(pipeline) = ci.load(&commit, std::collections::HashMap::new())? else {
+    let Some(pipeline) = ci.load(&commit)? else {
         println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };
@@ -48,14 +47,16 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let ci = Ci::new(repo_path);
 
     // Pull secrets from the global config; absence is fine for local
-    // testing. A broken-but-present config is a real error.
+    // testing. A broken-but-present config is a real error. Secrets
+    // are passed to `Run::execute` rather than `Ci::load` since they
+    // only matter when the run-fns actually fire.
     let secrets = match quire.global_config() {
         Ok(c) => c.secrets,
         Err(quire::Error::ConfigNotFound(_)) => std::collections::HashMap::new(),
         Err(e) => return Err(e).into_diagnostic(),
     };
 
-    let Some(pipeline) = ci.load(&commit, secrets)? else {
+    let Some(pipeline) = ci.load(&commit)? else {
         println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };
@@ -75,7 +76,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let mut run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
-    let exec_result = run.execute(&pipeline);
+    let exec_result = run.execute(&pipeline, secrets);
 
     for job in pipeline.jobs() {
         let outputs = run.outputs(&job.id);

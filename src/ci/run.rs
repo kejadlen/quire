@@ -5,13 +5,15 @@
 //! parent name is the authoritative state; transitions are atomic
 //! `rename` operations.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use jiff::Timestamp;
 
-use super::lua::{RuntimeState, ShOutput};
+use super::lua::{Runtime, ShOutput};
 use super::pipeline::Pipeline;
+use crate::secret::SecretString;
 use crate::{Error, Result};
 
 /// The state of a CI run.
@@ -214,10 +216,11 @@ pub struct Run {
     base: PathBuf,
     state: RunState,
     id: String,
-    /// Per-execution state shared with the Lua bridge: tracks the
-    /// currently-running job and accumulates per-job `(ci.sh …)` output.
-    /// Cloned (Rc) into Lua app data when `execute` runs.
-    runtime: Rc<RuntimeState>,
+    /// Per-execution runtime shared with the Lua bridge: holds the
+    /// secrets exposed to the script, tracks the currently-running
+    /// job, and accumulates per-job captured `sh` output. Replaced
+    /// fresh each `execute` call so secrets are scoped to that call.
+    runtime: Rc<Runtime>,
 }
 
 impl Run {
@@ -246,7 +249,7 @@ impl Run {
             base,
             state,
             id,
-            runtime: Rc::new(RuntimeState::default()),
+            runtime: Rc::new(Runtime::new(HashMap::new())),
         };
         run.read_meta()?;
         run.read_times()?;
@@ -255,16 +258,28 @@ impl Run {
 
     /// Drive `pipeline` to completion through this run.
     ///
-    /// Topo-sorts the jobs, transitions Pending → Active, then invokes
-    /// each `run_fn` in dependency order. `(ci.sh …)` calls record their
-    /// captured output under the current job — readable via [`outputs`]
-    /// after `execute` returns. The run finishes in `Complete` if every
-    /// job's `run_fn` returned without error, otherwise `Failed`.
+    /// Constructs a fresh [`Runtime`] with `secrets`, installs it on
+    /// the pipeline's Lua VM, topo-sorts the jobs, transitions
+    /// Pending → Active, then invokes each `run_fn` in dependency
+    /// order with the runtime handle as its sole argument. `(sh …)`
+    /// calls record their captured output under the current job —
+    /// readable via [`Run::outputs`] after `execute` returns. The
+    /// run finishes in `Complete` if every job's `run_fn` returned
+    /// without error, otherwise `Failed`.
     ///
     /// Source-ref filtering (e.g. running only `quire/push`-reachable
     /// jobs) is not yet implemented; for now every validated job runs.
-    pub fn execute(&mut self, pipeline: &Pipeline) -> Result<()> {
-        pipeline.fennel().lua().set_app_data(self.runtime.clone());
+    pub fn execute(
+        &mut self,
+        pipeline: &Pipeline,
+        secrets: HashMap<String, SecretString>,
+    ) -> Result<()> {
+        self.runtime = Rc::new(Runtime::new(secrets));
+        let rt_table = self
+            .runtime
+            .clone()
+            .install(pipeline.fennel().lua())
+            .expect("install runtime on Lua VM");
 
         let order: Vec<String> = pipeline
             .topo_order()
@@ -280,7 +295,7 @@ impl Run {
                 .expect("topo_order returned a job id not in pipeline");
 
             self.runtime.enter_job(&job.id);
-            let result = job.run_fn.call::<mlua::Value>(());
+            let result = job.run_fn.call::<mlua::Value>(rt_table.clone());
             self.runtime.leave_job();
 
             if let Err(e) = result {
@@ -296,8 +311,8 @@ impl Run {
         Ok(())
     }
 
-    /// Snapshot the `(ci.sh …)` outputs recorded for `job_id` during
-    /// the most recent `execute` call. Empty if the job hasn't run or
+    /// Snapshot the `(sh …)` outputs recorded for `job_id` during the
+    /// most recent `execute` call. Empty if the job hasn't run or
     /// produced no output.
     pub fn outputs(&self, job_id: &str) -> Vec<ShOutput> {
         self.runtime.outputs(job_id)
@@ -549,7 +564,7 @@ mod tests {
             base: PathBuf::from("/tmp/quire-test-runs/test.git"),
             state: RunState::Pending,
             id: uuid::Uuid::now_v7().to_string(),
-            runtime: Rc::new(RuntimeState::default()),
+            runtime: Rc::new(Runtime::new(HashMap::new())),
         };
 
         let result = run.transition(RunState::Active);
@@ -641,8 +656,7 @@ mod tests {
     }
 
     fn load(source: &str) -> Pipeline {
-        super::super::pipeline::Pipeline::load(source, "ci.fnl", std::collections::HashMap::new())
-            .expect("load should succeed")
+        super::super::pipeline::Pipeline::load(source, "ci.fnl").expect("load should succeed")
     }
 
     #[test]
@@ -653,11 +667,11 @@ mod tests {
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [_] (ci.sh ["echo" "from-a"])))
-(ci.job :b [:a] (fn [_] (ci.sh ["echo" "from-b"])))"#,
+(ci.job :a [:quire/push] (fn [{: sh}] (sh ["echo" "from-a"])))
+(ci.job :b [:a] (fn [{: sh}] (sh ["echo" "from-b"])))"#,
         );
 
-        run.execute(&pipeline).expect("execute");
+        run.execute(&pipeline, HashMap::new()).expect("execute");
 
         assert_eq!(run.state(), RunState::Complete);
 
@@ -681,13 +695,13 @@ mod tests {
         let log_str = log.to_string_lossy();
         let source = format!(
             r#"(local ci (require :quire.ci))
-(ci.job :b [:a] (fn [_] (ci.sh (.. "echo b >> {log}"))))
-(ci.job :a [:quire/push] (fn [_] (ci.sh (.. "echo a >> {log}"))))"#,
+(ci.job :b [:a] (fn [{{: sh}}] (sh (.. "echo b >> {log}"))))
+(ci.job :a [:quire/push] (fn [{{: sh}}] (sh (.. "echo a >> {log}"))))"#,
             log = log_str
         );
         let pipeline = load(&source);
 
-        run.execute(&pipeline).expect("execute");
+        run.execute(&pipeline, HashMap::new()).expect("execute");
 
         let contents = fs_err::read_to_string(&log).expect("read log");
         assert_eq!(contents, "a\nb\n");
@@ -702,10 +716,12 @@ mod tests {
         let pipeline = load(
             r#"(local ci (require :quire.ci))
 (ci.job :a [:quire/push] (fn [_] (error "boom")))
-(ci.job :b [:a] (fn [_] (ci.sh ["echo" "should-not-run"])))"#,
+(ci.job :b [:a] (fn [{: sh}] (sh ["echo" "should-not-run"])))"#,
         );
 
-        let err = run.execute(&pipeline).expect_err("expected failure");
+        let err = run
+            .execute(&pipeline, HashMap::new())
+            .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
         assert_eq!(run.state(), RunState::Failed);
         assert!(
