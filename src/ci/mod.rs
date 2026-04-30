@@ -1,5 +1,6 @@
 //! CI: trigger runs from push events, validate the job graph.
 
+mod lua;
 pub mod pipeline;
 pub mod run;
 
