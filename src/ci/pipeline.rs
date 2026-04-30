@@ -75,7 +75,7 @@ impl Job {
 /// A validated CI pipeline — a job graph that has passed all
 /// structural rules.
 ///
-/// Obtain via `pipeline::load`, which parses the Fennel source and
+/// Obtain via [`Pipeline::load`], which parses the Fennel source and
 /// validates the result. Holding a `Pipeline` is proof that the graph
 /// is sound.
 ///
@@ -117,6 +117,52 @@ impl Pipeline {
             .map(|idx| self.jobs[self.graph[idx]].id.as_str())
             .collect()
     }
+
+    /// Parse and validate a ci.fnl source string into a `Pipeline`.
+    ///
+    /// Delegates evaluation to [`lua::parse`] for the Fennel-side work,
+    /// then runs the post-graph rules over the surviving jobs. Any errors
+    /// found are gathered into a single `LoadError` carrying the source
+    /// for miette to render with inline labels.
+    pub(crate) fn load(
+        source: &str,
+        filename: &str,
+        display: &str,
+        secrets: HashMap<String, SecretString>,
+    ) -> Result<Pipeline> {
+        let fennel = Fennel::new()?;
+        let results = lua::parse(&fennel, source, filename, display, secrets)?;
+
+        let mut errors = Vec::new();
+        let mut jobs = Vec::new();
+        for r in results {
+            match r {
+                Ok(j) => jobs.push(j),
+                Err(e) => errors.push(e),
+            }
+        }
+
+        let (graph, node_index) = build_graph(&jobs);
+
+        if let Err(post) = validate_post_graph(&jobs, &graph) {
+            errors.extend(post);
+        }
+
+        if errors.is_empty() {
+            Ok(Self {
+                jobs,
+                graph,
+                node_index,
+                fennel,
+            })
+        } else {
+            Err(LoadError {
+                src: NamedSource::new(display, source.to_string()),
+                errors,
+            }
+            .into())
+        }
+    }
 }
 
 /// Build the dependency graph for `jobs`. Inputs that don't match a
@@ -138,52 +184,6 @@ fn build_graph(jobs: &[Job]) -> (JobGraph, HashMap<String, NodeIndex>) {
         }
     }
     (graph, node_index)
-}
-
-/// Parse and validate a ci.fnl source string into a `Pipeline`.
-///
-/// Delegates evaluation to [`lua::parse`] for the Fennel-side work,
-/// then runs the post-graph rules over the surviving jobs. Any errors
-/// found are gathered into a single `LoadError` carrying the source
-/// for miette to render with inline labels.
-pub(crate) fn load(
-    source: &str,
-    filename: &str,
-    display: &str,
-    secrets: HashMap<String, SecretString>,
-) -> Result<Pipeline> {
-    let fennel = Fennel::new()?;
-    let results = lua::parse(&fennel, source, filename, display, secrets)?;
-
-    let mut errors = Vec::new();
-    let mut jobs = Vec::new();
-    for r in results {
-        match r {
-            Ok(j) => jobs.push(j),
-            Err(e) => errors.push(e),
-        }
-    }
-
-    let (graph, node_index) = build_graph(&jobs);
-
-    if let Err(post) = validate_post_graph(&jobs, &graph) {
-        errors.extend(post);
-    }
-
-    if errors.is_empty() {
-        Ok(Pipeline {
-            jobs,
-            graph,
-            node_index,
-            fennel,
-        })
-    } else {
-        Err(LoadError {
-            src: NamedSource::new(display, source.to_string()),
-            errors,
-        }
-        .into())
-    }
 }
 
 /// Compute a span covering the given 1-indexed line in `source`.
@@ -344,8 +344,8 @@ mod tests {
     fn load_registers_a_job() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :test [:quire/push] (fn [_] nil))"#;
-        let pipeline =
-            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
+            .expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, "test");
@@ -359,8 +359,8 @@ mod tests {
 (ci.job :build [:quire/push] (fn [_] nil))
 (ci.job :test [:build] (fn [_] nil))
 "#;
-        let pipeline =
-            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
+            .expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "build");
@@ -377,8 +377,8 @@ mod tests {
 
 
 (ci.job :sixth [:quire/push] (fn [_] nil))";
-        let pipeline =
-            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
+            .expect("load should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
             .iter()
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn load_errors_on_bad_fennel() {
-        let result = load("{:bad {:}", "ci.fnl", "ci.fnl", HashMap::new());
+        let result = Pipeline::load("{:bad {:}", "ci.fnl", "ci.fnl", HashMap::new());
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 

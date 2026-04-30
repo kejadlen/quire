@@ -273,14 +273,14 @@ fn run_sh(lua: &Lua, (cmd, opts): (Cmd, Option<ShOpts>)) -> mlua::Result<mlua::V
         .run(opts.unwrap_or_default())
         .map_err(mlua::Error::external)?;
 
-    if let Some(rt) = lua.app_data_ref::<Rc<RuntimeState>>() {
-        if let Some(job) = rt.current_job.borrow().as_ref() {
-            rt.outputs
-                .borrow_mut()
-                .entry(job.clone())
-                .or_default()
-                .push(output.clone());
-        }
+    if let Some(rt) = lua.app_data_ref::<Rc<RuntimeState>>()
+        && let Some(job) = rt.current_job.borrow().as_ref()
+    {
+        rt.outputs
+            .borrow_mut()
+            .entry(job.clone())
+            .or_default()
+            .push(output.clone());
     }
 
     lua.to_value(&output)
@@ -288,7 +288,7 @@ fn run_sh(lua: &Lua, (cmd, opts): (Cmd, Option<ShOpts>)) -> mlua::Result<mlua::V
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::load;
+    use super::super::pipeline::Pipeline;
     use super::*;
 
     #[test]
@@ -300,7 +300,8 @@ mod tests {
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [_] (ci.secret :github_token)))"#;
-        let pipeline = load(source, "ci.fnl", "ci.fnl", secrets).expect("load should succeed");
+        let pipeline =
+            Pipeline::load(source, "ci.fnl", "ci.fnl", secrets).expect("load should succeed");
         let token: String = pipeline.jobs()[0]
             .run_fn
             .call(())
@@ -312,8 +313,8 @@ mod tests {
     fn ci_secret_errors_for_unknown_name() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [_] (ci.secret :missing)))"#;
-        let pipeline =
-            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
+            .expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
             .call::<mlua::Value>(())
@@ -329,8 +330,8 @@ mod tests {
     /// invoke it, and decode the resulting Lua table as ShOutput through
     /// the pipeline's VM via `lua.from_value`.
     fn run_sh_via_job(source: &str) -> ShOutput {
-        let pipeline =
-            load(source, "ci.fnl", "ci.fnl", HashMap::new()).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
+            .expect("load should succeed");
         let value: mlua::Value = pipeline.jobs()[0]
             .run_fn
             .call(())
@@ -406,7 +407,7 @@ mod tests {
 
     #[test]
     fn ci_sh_rejects_unknown_opt_key() {
-        let pipeline = load(
+        let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh "echo hi" {:cwdir "/tmp"})))"#,
             "ci.fnl",
@@ -427,7 +428,7 @@ mod tests {
 
     #[test]
     fn ci_sh_rejects_non_sequence_table_as_cmd() {
-        let pipeline = load(
+        let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh {:env {:FOO "bar"}})))"#,
             "ci.fnl",
@@ -448,7 +449,7 @@ mod tests {
 
     #[test]
     fn ci_sh_rejects_empty_argv() {
-        let pipeline = load(
+        let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh [])))"#,
             "ci.fnl",
