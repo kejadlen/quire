@@ -8,7 +8,7 @@
 //! each `run-fn` at execute time.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{IntoLua, Lua, LuaSerdeExt};
@@ -93,10 +93,37 @@ fn register_job(
     Ok(())
 }
 
+/// Outputs of the `:quire/push` source, exposed to `(jobs :quire/push)`.
+/// For v1: `:sha`, `:ref`, `:pushed-at`. Branch/tag/etc are deferred.
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct PushOutputs {
+    pub sha: String,
+    #[serde(rename = "ref")]
+    pub r#ref: String,
+    #[serde(rename = "pushed-at")]
+    pub pushed_at: jiff::Timestamp,
+}
+
+/// What `(jobs name)` resolves to. One variant per kind of input;
+/// `untagged` so the on-the-Lua-side shape is the inner struct
+/// directly, not a wrapper table with a tag field.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(untagged)]
+pub(super) enum InputOutputs {
+    Push(PushOutputs),
+}
+
 /// Per-execution runtime: holds the secrets exposed to the job, the
-/// inputs available via `(jobs name)`, the per-job transitive-input
-/// reachability sets, the current-job cursor, and the per-job
-/// captured `sh` outputs.
+/// per-job `(jobs name)` views, the current-job cursor, and the
+/// per-job captured `sh` outputs.
+///
+/// `inputs` is keyed by the calling job; each inner map covers
+/// exactly the names that job may read. Reachability is implicit in
+/// the structure, so `(jobs name)` is a flat lookup. The inner value
+/// is `None` for reachable names without recorded outputs (future
+/// job-to-job outputs drop in without changing the lookup contract);
+/// names absent from the inner map are unreachable and produce a Lua
+/// error.
 ///
 /// Wrap an `Rc<Runtime>` in [`RuntimeHandle`] and convert it via
 /// [`IntoLua`] to install it on the Lua VM (sets app data, returns
@@ -108,34 +135,25 @@ fn register_job(
 /// runs the command but doesn't record (the cursor lookup misses).
 /// `(secret …)` and `(jobs …)` require a runtime — without one, calls
 /// error.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct Runtime {
     secrets: HashMap<String, SecretString>,
-    /// Inputs readable via `(jobs name)`. Source outputs (e.g.
-    /// `quire/push`) are populated by the executor before the loop;
-    /// job-to-job outputs are not yet wired up.
-    inputs: RefCell<HashMap<String, mlua::Value>>,
-    /// For each job, the set of names it may legally read via
-    /// `(jobs name)` — its transitive ancestors in the input graph,
-    /// including source refs. Self is never present.
-    transitive_inputs: HashMap<String, HashSet<String>>,
+    inputs: HashMap<String, HashMap<String, Option<InputOutputs>>>,
     current_job: RefCell<Option<String>>,
     outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
 }
 
 impl Runtime {
-    /// Build a fresh runtime. `inputs` is the map of source outputs
-    /// already prepared as Lua values; `transitive_inputs` is the
-    /// per-job reachability set from [`Pipeline::transitive_inputs`].
+    /// Build a fresh runtime. `inputs` is the precomputed per-job
+    /// `(jobs name)` view from [`Pipeline::transitive_inputs`] and
+    /// the source outputs.
     pub(super) fn new(
         secrets: HashMap<String, SecretString>,
-        inputs: HashMap<String, mlua::Value>,
-        transitive_inputs: HashMap<String, HashSet<String>>,
+        inputs: HashMap<String, HashMap<String, Option<InputOutputs>>>,
     ) -> Self {
         Self {
             secrets,
-            inputs: RefCell::new(inputs),
-            transitive_inputs,
+            inputs,
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
         }
@@ -143,7 +161,7 @@ impl Runtime {
 
     /// Mark `id` as the currently executing job. `(sh …)` invocations
     /// from this job's `run_fn` will record output under `id`, and
-    /// `(jobs …)` lookups will validate against `id`'s reachability set.
+    /// `(jobs …)` lookups will resolve against `id`'s view.
     pub(super) fn enter_job(&self, id: &str) {
         *self.current_job.borrow_mut() = Some(id.to_string());
     }
@@ -176,10 +194,11 @@ impl IntoLua for RuntimeHandle {
     }
 }
 
-/// Body of `(jobs name)`. Returns the outputs registered for `name`
-/// if `name` is a transitive ancestor of the calling job (or a source
-/// ref reachable through one). Errors loudly if `name` isn't reachable
-/// or no runtime is installed.
+/// Body of `(jobs name)`. Returns the typed outputs the calling job's
+/// view has for `name`, serialized to a Lua value via serde. Reachable
+/// names without recorded outputs come back as `Nil`. Errors if `name`
+/// is outside the calling job's view, if the calling job tries to read
+/// its own outputs, or if the runtime isn't installed.
 fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
     let rt = lua
         .app_data_ref::<Rc<Runtime>>()
@@ -188,29 +207,19 @@ fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
     let calling = calling
         .as_ref()
         .ok_or_else(|| mlua::Error::external("(jobs ...) called outside a job's run-fn"))?;
-    let reachable = rt.transitive_inputs.get(calling).ok_or_else(|| {
-        mlua::Error::external(format!(
-            "no transitive-input set for calling job '{calling}'"
-        ))
+    let view = rt.inputs.get(calling).ok_or_else(|| {
+        mlua::Error::external(format!("no inputs view for calling job '{calling}'"))
     })?;
-    if !reachable.contains(&name) {
-        if name == *calling {
-            return Err(mlua::Error::external(format!(
-                "Job '{calling}' cannot read its own outputs"
-            )));
-        }
-        return Err(mlua::Error::external(format!(
+    match view.get(&name) {
+        Some(Some(value)) => lua.to_value(value),
+        Some(None) => Ok(mlua::Value::Nil),
+        None if name == *calling => Err(mlua::Error::external(format!(
+            "Job '{calling}' cannot read its own outputs"
+        ))),
+        None => Err(mlua::Error::external(format!(
             "Job '{calling}' cannot read outputs from '{name}' — not in transitive inputs"
-        )));
+        ))),
     }
-    // Reachable but no outputs recorded yet: nil. Job-to-job outputs
-    // aren't wired up, so this is the common case for non-source names.
-    Ok(rt
-        .inputs
-        .borrow()
-        .get(&name)
-        .cloned()
-        .unwrap_or(mlua::Value::Nil))
 }
 
 /// Body of `(secret name)`. Errors as a Lua error if the runtime
@@ -372,13 +381,9 @@ mod tests {
     /// return the runtime handle. Mirrors what `Run::execute` does so
     /// tests can drive a `run_fn` directly.
     fn rt(pipeline: &Pipeline, secrets: HashMap<String, SecretString>) -> mlua::Value {
-        RuntimeHandle(Rc::new(Runtime::new(
-            secrets,
-            HashMap::new(),
-            HashMap::new(),
-        )))
-        .into_lua(pipeline.fennel().lua())
-        .expect("install runtime")
+        RuntimeHandle(Rc::new(Runtime::new(secrets, HashMap::new())))
+            .into_lua(pipeline.fennel().lua())
+            .expect("install runtime")
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::rc::Rc;
 use jiff::Timestamp;
 use mlua::IntoLua;
 
-use super::lua::{Runtime, RuntimeHandle, ShOutput};
+use super::lua::{InputOutputs, PushOutputs, Runtime, RuntimeHandle, ShOutput};
 use super::pipeline::Pipeline;
 use crate::secret::SecretString;
 use crate::{Error, Result};
@@ -250,7 +250,7 @@ impl Run {
             base,
             state,
             id,
-            runtime: Rc::new(Runtime::new(HashMap::new(), HashMap::new(), HashMap::new())),
+            runtime: Rc::new(Runtime::default()),
         };
         run.read_meta()?;
         run.read_times()?;
@@ -278,10 +278,10 @@ impl Run {
         secrets: HashMap<String, SecretString>,
     ) -> Result<()> {
         let lua = pipeline.fennel().lua();
-        let inputs =
-            source_outputs(lua, &self.read_meta()?).expect("build source outputs on Lua VM");
-        let transitive_inputs = pipeline.transitive_inputs();
-        self.runtime = Rc::new(Runtime::new(secrets, inputs, transitive_inputs));
+        let meta = self.read_meta()?;
+        let sources = source_outputs(&meta);
+        let inputs = build_inputs_views(&pipeline.transitive_inputs(), &sources);
+        self.runtime = Rc::new(Runtime::new(secrets, inputs));
         let rt_value = RuntimeHandle(self.runtime.clone())
             .into_lua(lua)
             .expect("install runtime on Lua VM");
@@ -387,18 +387,42 @@ impl Run {
     }
 }
 
-/// Build the source-ref outputs table read by `(jobs name)` for source
+/// Build the source-ref outputs read by `(jobs name)` for source
 /// names. For v1, only `:quire/push` is exposed, derived from the run
 /// meta — `:sha`, `:ref`, `:pushed-at`. Branch/tag/etc are deferred.
-fn source_outputs(lua: &mlua::Lua, meta: &RunMeta) -> mlua::Result<HashMap<String, mlua::Value>> {
-    let push = lua.create_table()?;
-    push.set("sha", meta.sha.clone())?;
-    push.set("ref", meta.r#ref.clone())?;
-    push.set("pushed-at", meta.pushed_at.to_string())?;
-
+/// Pure Rust data; `lookup_input` serializes to Lua via serde.
+fn source_outputs(meta: &RunMeta) -> HashMap<String, InputOutputs> {
+    let push = PushOutputs {
+        sha: meta.sha.clone(),
+        r#ref: meta.r#ref.clone(),
+        pushed_at: meta.pushed_at,
+    };
     let mut inputs = HashMap::new();
-    inputs.insert("quire/push".to_string(), mlua::Value::Table(push));
-    Ok(inputs)
+    inputs.insert("quire/push".to_string(), InputOutputs::Push(push));
+    inputs
+}
+
+/// Materialize the per-job `(jobs name)` views from the pipeline's
+/// transitive-input map and the source outputs.
+///
+/// For each job J, the view holds every name reachable from J as a
+/// key. Source values populate the source entries; everything else
+/// sits as `None` so future job-to-job outputs can drop in without
+/// changing the lookup contract.
+fn build_inputs_views(
+    transitive_inputs: &HashMap<String, std::collections::HashSet<String>>,
+    sources: &HashMap<String, InputOutputs>,
+) -> HashMap<String, HashMap<String, Option<InputOutputs>>> {
+    transitive_inputs
+        .iter()
+        .map(|(job_id, reachable)| {
+            let view = reachable
+                .iter()
+                .map(|name| (name.clone(), sources.get(name).cloned()))
+                .collect();
+            (job_id.clone(), view)
+        })
+        .collect()
 }
 
 /// Write a serializable value to a YAML file atomically (temp file + rename).
@@ -583,7 +607,7 @@ mod tests {
             base: PathBuf::from("/tmp/quire-test-runs/test.git"),
             state: RunState::Pending,
             id: uuid::Uuid::now_v7().to_string(),
-            runtime: Rc::new(Runtime::new(HashMap::new(), HashMap::new(), HashMap::new())),
+            runtime: Rc::new(Runtime::default()),
         };
 
         let result = run.transition(RunState::Active);
