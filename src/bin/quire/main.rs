@@ -6,7 +6,9 @@ use miette::IntoDiagnostic;
 use miette::Result;
 use quire::Quire;
 use sentry::ClientInitGuard;
+use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
@@ -126,21 +128,37 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
     Some(guard)
 }
 
+/// Initialize tracing with a stderr fmt layer.
+///
+/// Emits structured JSON when stderr is not a terminal (e.g. piped to a log
+/// collector), and human-readable text when running interactively.
+fn init_tracing() -> Result<()> {
+    let filter = EnvFilter::builder()
+        .with_env_var("QUIRE_LOG")
+        .from_env()
+        .into_diagnostic()?;
+
+    let layer = fmt::layer().with_writer(std::io::stderr);
+    let fmt_layer = if std::io::stderr().is_terminal() {
+        layer.boxed()
+    } else {
+        layer.json().boxed()
+    };
+
+    tracing_subscriber::registry()
+        .with(sentry_tracing::layer())
+        .with(fmt_layer)
+        .with(filter)
+        .init();
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let quire = Quire::default();
     let _sentry = init_sentry(&quire);
-
-    tracing_subscriber::registry()
-        .with(sentry_tracing::layer())
-        .with(fmt::layer().with_writer(std::io::stderr))
-        .with(
-            EnvFilter::builder()
-                .with_env_var("QUIRE_LOG")
-                .from_env()
-                .into_diagnostic()?,
-        )
-        .init();
+    init_tracing()?;
 
     let cli = Cli::parse();
 

@@ -28,7 +28,7 @@ tempfile = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 tracing = "*"
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+tracing-subscriber = { version = "*", features = ["env-filter", "json"] }
 uuid = { version = "*", features = ["v7"] }
 walkdir = "*"
 
