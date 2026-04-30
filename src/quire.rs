@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use miette::{Context, IntoDiagnostic, Result, ensure};
@@ -15,6 +16,10 @@ pub struct GlobalConfig {
     pub github: GithubConfig,
     #[serde(default)]
     pub sentry: Option<SentryConfig>,
+    /// Named secrets exposed to `ci.fnl` jobs as `(secret :name)`.
+    /// Each value is a `SecretString` (plain literal or `{:file "..."}`).
+    #[serde(default)]
+    pub secrets: HashMap<String, SecretString>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -699,6 +704,51 @@ mod tests {
         };
         let config = q.global_config().expect("global_config should load");
         assert!(config.sentry.is_none());
+    }
+
+    #[test]
+    fn global_config_secrets_default_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(&config_path, r#"{:github {:token "ghp_test"}}"#).expect("write");
+
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let config = q.global_config().expect("global_config should load");
+        assert!(config.secrets.is_empty());
+    }
+
+    #[test]
+    fn global_config_loads_secrets_map() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        let secret_file = dir.path().join("gh_token");
+        fs_err::write(&secret_file, "ghp_from_file\n").expect("write secret");
+        fs_err::write(
+            &config_path,
+            format!(
+                r#"{{:github {{:token "ghp_test"}}
+                    :secrets {{:github_token {{:file "{}"}}
+                              :slack_webhook "https://hooks.slack.com/abc"}}}}"#,
+                secret_file.display()
+            ),
+        )
+        .expect("write");
+
+        let q = Quire {
+            base_dir: dir.path().to_path_buf(),
+        };
+        let config = q.global_config().expect("global_config should load");
+        assert_eq!(config.secrets.len(), 2);
+        assert_eq!(
+            config.secrets["github_token"].reveal().unwrap(),
+            "ghp_from_file"
+        );
+        assert_eq!(
+            config.secrets["slack_webhook"].reveal().unwrap(),
+            "https://hooks.slack.com/abc"
+        );
     }
 
     /// Helper: run a git subcommand in `cwd` with hermetic env, panicking on failure.
