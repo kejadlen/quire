@@ -85,16 +85,15 @@ impl Fennel {
     /// `setup` is called before evaluation and can inject globals or
     /// modify the VM.
     ///
-    /// `filename` is passed to Lua as the source name (used in tracebacks).
-    /// `display` is used in miette error messages (can be more human-readable).
+    /// `name` is used as the Lua source name (for tracebacks) and in
+    /// miette error messages.
     pub fn eval_raw(
         &self,
         source: &str,
-        filename: &str,
-        display: &str,
+        name: &str,
         setup: impl Fn(&Lua) -> mlua::Result<()>,
     ) -> Result<mlua::Value, FennelError> {
-        setup(&self.lua).map_err(|e| FennelError::from_lua(source, display, e))?;
+        setup(&self.lua).map_err(|e| FennelError::from_lua(source, name, e))?;
 
         let fennel: mlua::Table = self.lua.globals().get("fennel")?;
 
@@ -102,14 +101,14 @@ impl Fennel {
 
         let opts = self.lua.create_table()?;
 
-        opts.set("filename", filename)?;
+        opts.set("filename", name)?;
         // Align Lua line numbers with Fennel source lines so debug
         // info points back at the user's `.fnl`.
         opts.set("correlate", true)?;
 
         let result = eval
             .call::<mlua::Value>((source, opts))
-            .map_err(|e| FennelError::from_lua(source, display, e))?;
+            .map_err(|e| FennelError::from_lua(source, name, e))?;
 
         Ok(result)
     }
@@ -129,7 +128,7 @@ impl Fennel {
             });
         }
 
-        let result = self.eval_raw(source, name, name, |_| Ok(()))?;
+        let result = self.eval_raw(source, name, |_| Ok(()))?;
 
         // Reject nil results — a config file that evaluates to nothing is
         // almost always a mistake.

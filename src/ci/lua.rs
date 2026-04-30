@@ -24,15 +24,14 @@ use crate::secret::SecretString;
 pub(super) fn parse(
     fennel: &Fennel,
     source: &str,
-    filename: &str,
-    display: &str,
+    name: &str,
     secrets: HashMap<String, SecretString>,
 ) -> Result<Vec<std::result::Result<Job, ValidationError>>> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
     let src = Rc::new(source.to_string());
     let secrets = Rc::new(secrets);
 
-    fennel.eval_raw(source, filename, display, |lua| {
+    fennel.eval_raw(source, name, |lua| {
         let module = CiModule {
             jobs: jobs.clone(),
             source: src.clone(),
@@ -300,8 +299,7 @@ mod tests {
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [_] (ci.secret :github_token)))"#;
-        let pipeline =
-            Pipeline::load(source, "ci.fnl", "ci.fnl", secrets).expect("load should succeed");
+        let pipeline = Pipeline::load(source, "ci.fnl", secrets).expect("load should succeed");
         let token: String = pipeline.jobs()[0]
             .run_fn
             .call(())
@@ -313,8 +311,8 @@ mod tests {
     fn ci_secret_errors_for_unknown_name() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [_] (ci.secret :missing)))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
-            .expect("load should succeed");
+        let pipeline =
+            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
         let err = pipeline.jobs()[0]
             .run_fn
             .call::<mlua::Value>(())
@@ -330,8 +328,8 @@ mod tests {
     /// invoke it, and decode the resulting Lua table as ShOutput through
     /// the pipeline's VM via `lua.from_value`.
     fn run_sh_via_job(source: &str) -> ShOutput {
-        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
-            .expect("load should succeed");
+        let pipeline =
+            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
         let value: mlua::Value = pipeline.jobs()[0]
             .run_fn
             .call(())
@@ -411,7 +409,6 @@ mod tests {
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh "echo hi" {:cwdir "/tmp"})))"#,
             "ci.fnl",
-            "ci.fnl",
             HashMap::new(),
         )
         .expect("load should succeed");
@@ -432,7 +429,6 @@ mod tests {
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh {:env {:FOO "bar"}})))"#,
             "ci.fnl",
-            "ci.fnl",
             HashMap::new(),
         )
         .expect("load should succeed");
@@ -452,7 +448,6 @@ mod tests {
         let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [_] (ci.sh [])))"#,
-            "ci.fnl",
             "ci.fnl",
             HashMap::new(),
         )

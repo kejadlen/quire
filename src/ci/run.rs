@@ -641,13 +641,8 @@ mod tests {
     }
 
     fn load(source: &str) -> Pipeline {
-        super::super::pipeline::Pipeline::load(
-            source,
-            "ci.fnl",
-            "ci.fnl",
-            std::collections::HashMap::new(),
-        )
-        .expect("load should succeed")
+        super::super::pipeline::Pipeline::load(source, "ci.fnl", std::collections::HashMap::new())
+            .expect("load should succeed")
     }
 
     #[test]

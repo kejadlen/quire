@@ -126,12 +126,11 @@ impl Pipeline {
     /// for miette to render with inline labels.
     pub(crate) fn load(
         source: &str,
-        filename: &str,
-        display: &str,
+        name: &str,
         secrets: HashMap<String, SecretString>,
     ) -> Result<Pipeline> {
         let fennel = Fennel::new()?;
-        let results = lua::parse(&fennel, source, filename, display, secrets)?;
+        let results = lua::parse(&fennel, source, name, secrets)?;
 
         let mut errors = Vec::new();
         let mut jobs = Vec::new();
@@ -157,7 +156,7 @@ impl Pipeline {
             })
         } else {
             Err(LoadError {
-                src: NamedSource::new(display, source.to_string()),
+                src: NamedSource::new(name, source.to_string()),
                 errors,
             }
             .into())
@@ -344,8 +343,8 @@ mod tests {
     fn load_registers_a_job() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :test [:quire/push] (fn [_] nil))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
-            .expect("load should succeed");
+        let pipeline =
+            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, "test");
@@ -359,8 +358,8 @@ mod tests {
 (ci.job :build [:quire/push] (fn [_] nil))
 (ci.job :test [:build] (fn [_] nil))
 "#;
-        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
-            .expect("load should succeed");
+        let pipeline =
+            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "build");
@@ -377,8 +376,8 @@ mod tests {
 
 
 (ci.job :sixth [:quire/push] (fn [_] nil))";
-        let pipeline = Pipeline::load(source, "ci.fnl", "ci.fnl", HashMap::new())
-            .expect("load should succeed");
+        let pipeline =
+            Pipeline::load(source, "ci.fnl", HashMap::new()).expect("load should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
             .iter()
@@ -389,7 +388,7 @@ mod tests {
 
     #[test]
     fn load_errors_on_bad_fennel() {
-        let result = Pipeline::load("{:bad {:}", "ci.fnl", "ci.fnl", HashMap::new());
+        let result = Pipeline::load("{:bad {:}", "ci.fnl", HashMap::new());
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
@@ -399,7 +398,7 @@ mod tests {
     /// but the returned `Job`s only need their non-VM fields here.
     fn parse_results(source: &str) -> Vec<std::result::Result<Job, ValidationError>> {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        lua::parse(&f, source, "ci.fnl", "ci.fnl", HashMap::new()).expect("parse should succeed")
+        lua::parse(&f, source, "ci.fnl", HashMap::new()).expect("parse should succeed")
     }
 
     /// Discard parse errors and return only the successfully registered

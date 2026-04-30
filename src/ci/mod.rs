@@ -66,8 +66,7 @@ impl Ci {
             return Ok(None);
         };
         let name = CI_FNL.to_string();
-        let lua_name = format!("{}:{CI_FNL}", commit.sha);
-        let pipeline = Pipeline::load(&source, &lua_name, &name, secrets)?;
+        let pipeline = Pipeline::load(&source, &name, secrets)?;
         Ok(Some(pipeline))
     }
 
@@ -173,9 +172,8 @@ fn trigger_ref(
     run.transition(RunState::Active)?;
 
     let name = CI_FNL.to_string();
-    let lua_name = format!("{}:{CI_FNL}", push_ref.new_sha);
 
-    match Pipeline::load(&source, &lua_name, &name, secrets) {
+    match Pipeline::load(&source, &name, secrets) {
         Ok(_pipeline) => run.transition(RunState::Complete)?,
         Err(e) => {
             run.transition(RunState::Failed)?;
