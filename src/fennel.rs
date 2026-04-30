@@ -72,6 +72,13 @@ impl Fennel {
         Ok(Self { lua })
     }
 
+    /// Borrow the underlying Lua VM. Useful for callers that need to
+    /// `to_value` / `from_value` against the same VM the Fennel script
+    /// ran in.
+    pub fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
     /// Compile and evaluate a Fennel source string, returning the raw
     /// Lua value.
     ///
