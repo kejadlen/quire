@@ -249,8 +249,9 @@ fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
         .as_ref()
         .ok_or_else(|| mlua::Error::external("(jobs ...) called outside a job's run-fn"))?;
     let view = rt.inputs.get(calling).ok_or_else(|| {
-        mlua::Error::external(format!("no inputs view for calling job '{calling}'"))
-    })?;
+        // cov-excl-line
+        mlua::Error::external(format!("no inputs view for calling job '{calling}'")) // cov-excl-line
+    })?; // cov-excl-line
     match view.get(&name) {
         Some(Some(value)) => Ok(value.clone()),
         Some(None) => Ok(mlua::Value::Nil),

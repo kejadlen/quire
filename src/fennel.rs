@@ -205,7 +205,7 @@ fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
 /// Convert a 1-based line number to a byte offset in the source.
 fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
     if line == 0 {
-        return None; // cov-excl-line
+        return None;
     }
     let mut current_line = 1;
     for (i, ch) in source.char_indices() {
@@ -216,7 +216,7 @@ fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
             current_line += 1;
         }
     }
-    None // cov-excl-line
+    None
 }
 
 #[cfg(test)]
@@ -387,5 +387,16 @@ mod tests {
             matches!(result.unwrap_err(), FennelError::Empty { .. }),
             "expected Empty error for nil result"
         );
+    }
+
+    #[test]
+    fn line_offset_returns_none_for_line_zero() {
+        assert!(super::line_offset("hello", 0).is_none());
+    }
+
+    #[test]
+    fn line_offset_returns_none_when_line_exceeds_source() {
+        // Source has 2 lines, ask for line 10.
+        assert!(super::line_offset("line1\nline2\n", 10).is_none());
     }
 }

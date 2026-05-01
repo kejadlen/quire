@@ -138,6 +138,13 @@ mod tests {
     }
 
     #[test]
+    fn clone_preserves_plain_value() {
+        let secret = SecretString::from_plain("clonable");
+        let cloned = secret.clone();
+        assert_eq!(cloned.reveal().unwrap(), "clonable");
+    }
+
+    #[test]
     fn reveal_caches_file_value() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("token");
