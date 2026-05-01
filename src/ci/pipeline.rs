@@ -674,7 +674,7 @@ mod tests {
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
             "ci.fnl",
         );
-        let Err(e) = result else { panic!("expected validation error") }; // cov-excl-start
+        let Err(e) = result else { unreachable!() };
         let msg = e.to_string();
         assert!(
             msg.contains("CI validation failed"),
@@ -682,4 +682,3 @@ mod tests {
         );
     }
 }
-// cov-excl-stop

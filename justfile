@@ -46,6 +46,28 @@ coverage:
         exit 1
     fi
 
+coverage-html:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export RUSTFLAGS="-Cinstrument-coverage"
+    export CARGO_TARGET_DIR="target/coverage"
+    export LLVM_PROFILE_FILE="target/coverage/profraw/%p-%m.profraw"
+    rm -rf target/coverage
+    cargo test --workspace -q
+    rm -rf target/coverage/html
+    grcov target/coverage/profraw \
+        --binary-path ./target/coverage/debug/ \
+        -s . \
+        -t html \
+        --ignore-not-existing \
+        --keep-only 'src/**' \
+        --ignore 'src/bin/**' \
+        --excl-line 'cov-excl-line|unreachable!|tracing::' \
+        --excl-start 'cov-excl-start' \
+        --excl-stop 'cov-excl-stop' \
+        -o target/coverage/html
+    echo "HTML report at target/coverage/html/index.html"
+
 mutants:
     #!/usr/bin/env bash
     set -uo pipefail
