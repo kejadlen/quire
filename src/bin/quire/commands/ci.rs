@@ -78,29 +78,25 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
 
     let exec_result = run.execute(pipeline, secrets);
 
-    // Display outputs from completed jobs.
-    if let Ok(ref outputs) = exec_result {
-        for (job_id, job_outputs) in outputs {
-            if job_outputs.is_empty() {
-                continue;
-            }
-            println!("\n==> {}", job_id);
-            for o in job_outputs {
-                if !o.stdout.is_empty() {
-                    print!("{}", o.stdout);
-                }
-                if !o.stderr.is_empty() {
-                    eprint!("{}", o.stderr);
-                }
-                if o.exit != 0 {
-                    println!("(exit {})", o.exit);
-                }
-            }
-        }
-    }
-
     match exec_result {
-        Ok(_) => {
+        Ok(outputs) => {
+            for (job_id, job_outputs) in &outputs {
+                if job_outputs.is_empty() {
+                    continue;
+                }
+                println!("\n==> {}", job_id);
+                for o in job_outputs {
+                    if !o.stdout.is_empty() {
+                        print!("{}", o.stdout);
+                    }
+                    if !o.stderr.is_empty() {
+                        eprint!("{}", o.stderr);
+                    }
+                    if o.exit != 0 {
+                        println!("(exit {})", o.exit);
+                    }
+                }
+            }
             println!("\nRun complete.");
             Ok(())
         }
