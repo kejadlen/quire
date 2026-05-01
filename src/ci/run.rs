@@ -548,7 +548,11 @@ mod tests {
         run.transition(RunState::Active).expect("to active");
 
         let times = run.read_times().expect("read times");
-        assert_eq!(times.started_at, Some(pre), "should keep pre-set started_at");
+        assert_eq!(
+            times.started_at,
+            Some(pre),
+            "should keep pre-set started_at"
+        );
     }
 
     #[test]
@@ -843,7 +847,9 @@ mod tests {
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
-        let Error::JobFailed { job, source } = err else { unreachable!() };
+        let Error::JobFailed { job, source } = err else {
+            unreachable!()
+        };
         assert_eq!(job, "grab");
         let msg = source.to_string();
         assert!(
@@ -868,7 +874,9 @@ mod tests {
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
-        let Error::JobFailed { source, .. } = err else { unreachable!() };
+        let Error::JobFailed { source, .. } = err else {
+            unreachable!()
+        };
         let msg = source.to_string();
         assert!(
             msg.contains("not in transitive inputs") && msg.contains("peer"),
@@ -890,7 +898,9 @@ mod tests {
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
-        let Error::JobFailed { source, .. } = err else { unreachable!() };
+        let Error::JobFailed { source, .. } = err else {
+            unreachable!()
+        };
         let msg = source.to_string();
         assert!(
             msg.contains("cannot read its own outputs"),

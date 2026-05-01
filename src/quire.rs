@@ -371,13 +371,7 @@ mod tests {
                 .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .output()
                 .expect("git command");
-            if !output.status.success() {
-                panic!(
-                    "git {:?} failed:\n{}",
-                    args,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+            assert!(output.status.success());
             output
         };
 
@@ -418,13 +412,7 @@ mod tests {
                 .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .output()
                 .expect("git command");
-            if !output.status.success() {
-                panic!(
-                    "git {:?} failed:\n{}",
-                    args,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+            assert!(output.status.success());
             output
         };
 
@@ -456,13 +444,7 @@ mod tests {
                 .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .output()
                 .expect("git command");
-            if !output.status.success() {
-                panic!(
-                    "git {:?} failed:\n{}",
-                    args,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+            assert!(output.status.success());
             output
         };
 
@@ -799,13 +781,7 @@ mod tests {
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .output()
             .expect("git command");
-        if !output.status.success() {
-            panic!(
-                "git {:?} failed:\n{}",
-                args,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        assert!(output.status.success());
     }
 
     /// Helper: create a bare repo at `bare` with `main` and one commit.
