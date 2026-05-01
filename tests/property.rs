@@ -1,13 +1,19 @@
 use hegel::TestCase;
-use hegel::generators::{integers, text, vecs};
+use hegel::generators::{from_regex, integers, just, sampled_from, text, vecs};
+use hegel::one_of;
 use quire::event::{PushEvent, PushRef};
+use quire::quire::MirrorConfig;
+use quire::secret::SecretString;
+
+const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 
 #[hegel::composite]
 fn push_ref(tc: TestCase) -> PushRef {
     PushRef {
         r#ref: tc.draw(text()),
         old_sha: tc.draw(text()),
-        new_sha: tc.draw(text()),
+        // Mix in zero-shas so updated_refs() actually exercises its filter.
+        new_sha: tc.draw(one_of![text(), just(ZERO_SHA.to_string())]),
     }
 }
 
@@ -33,4 +39,81 @@ fn push_event_round_trips_json(tc: TestCase) {
     let json = serde_json::to_string(&event).expect("serialize");
     let parsed: PushEvent = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(event, parsed);
+}
+
+#[hegel::test]
+fn updated_refs_excludes_only_zero_sha_deletions(tc: TestCase) {
+    let event = tc.draw(push_event());
+    let kept = event.updated_refs();
+
+    let expected: Vec<&PushRef> = event.refs.iter().filter(|r| r.new_sha != ZERO_SHA).collect();
+    assert_eq!(kept, expected);
+
+    let deleted = event.refs.iter().filter(|r| r.new_sha == ZERO_SHA).count();
+    assert_eq!(kept.len() + deleted, event.refs.len());
+}
+
+#[hegel::test]
+fn secret_string_debug_never_leaks_plain_value(tc: TestCase) {
+    let value = tc.draw(text());
+    let secret = SecretString::from_plain(value.clone());
+    let debug = format!("{secret:?}");
+    assert_eq!(debug, "SecretString(\"<redacted>\")");
+}
+
+#[hegel::test]
+fn secret_string_plain_json_round_trips(tc: TestCase) {
+    let value = tc.draw(text());
+    let json = serde_json::to_string(&value).expect("serialize string");
+    let secret: SecretString = serde_json::from_str(&json).expect("deserialize SecretString");
+    assert_eq!(secret.reveal().expect("plain reveal"), value);
+}
+
+#[hegel::test]
+fn secret_string_from_file_strips_one_trailing_newline(tc: TestCase) {
+    let content = tc.draw(text());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("secret");
+    fs_err::write(&path, &content).expect("write");
+
+    let revealed = SecretString::from_file(&path)
+        .reveal()
+        .expect("reveal")
+        .to_string();
+    let expected = content.strip_suffix('\n').unwrap_or(&content).to_string();
+    assert_eq!(revealed, expected);
+}
+
+fn deserialize_mirror(url: &str) -> Result<MirrorConfig, serde_json::Error> {
+    serde_json::from_value(serde_json::json!({ "url": url }))
+}
+
+#[hegel::test]
+fn mirror_url_rejects_embedded_credentials(tc: TestCase) {
+    // Build `scheme://user@host/path`: the deserializer must reject because the
+    // `@` sits before any `/` in the authority section.
+    let scheme = tc.draw(sampled_from(&["https", "http", "ssh", "git"]));
+    let user = tc.draw(from_regex(r"\A[A-Za-z0-9_:.-]+\Z"));
+    let host = tc.draw(from_regex(r"\A[A-Za-z0-9.-]+\Z"));
+    let path = tc.draw(from_regex(r"\A[A-Za-z0-9/_.-]*\Z"));
+    let url = format!("{scheme}://{user}@{host}/{path}");
+
+    let err = deserialize_mirror(&url).expect_err(&format!("must reject {url}"));
+    assert!(
+        err.to_string().contains("must not embed credentials"),
+        "wrong rejection reason for {url}: {err}",
+    );
+}
+
+#[hegel::test]
+fn mirror_url_accepts_at_in_path(tc: TestCase) {
+    // `@` after the first `/` is in the path, not the authority — must accept.
+    let scheme = tc.draw(sampled_from(&["https", "http", "ssh", "git"]));
+    let host = tc.draw(from_regex(r"\A[A-Za-z0-9.-]+\Z"));
+    let before_at = tc.draw(from_regex(r"\A[A-Za-z0-9/_.-]*\Z"));
+    let after_at = tc.draw(from_regex(r"\A[A-Za-z0-9/_.-]*\Z"));
+    let url = format!("{scheme}://{host}/{before_at}@{after_at}");
+
+    let cfg = deserialize_mirror(&url).expect("must accept");
+    assert_eq!(cfg.url, url);
 }
