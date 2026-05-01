@@ -27,7 +27,7 @@ coverage:
         --ignore-not-existing \
         --keep-only 'src/**' \
         --ignore 'src/bin/**' \
-        --excl-line 'cov-excl-line|unreachable!' \
+        --excl-line 'cov-excl-line|unreachable!|tracing::' \
         --excl-start 'cov-excl-start' \
         --excl-stop 'cov-excl-stop')
     echo "$REPORT" | jq -r '

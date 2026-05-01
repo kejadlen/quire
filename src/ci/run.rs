@@ -163,7 +163,7 @@ impl Runs {
     pub fn reconcile_orphans(&self) -> Result<()> {
         let orphans = self.scan_orphans()?;
         for orphan in &orphans {
-            tracing::warn!( // cov-excl-line
+            tracing::warn!(
                 run_id = %orphan.id(), // cov-excl-line
                 state = ?orphan.state(), // cov-excl-line
                 "found orphaned run"
@@ -173,12 +173,12 @@ impl Runs {
         for mut orphan in orphans {
             match orphan.state() {
                 RunState::Pending => {
-                    tracing::warn!( // cov-excl-line
+                    tracing::warn!(
                         run_id = %orphan.id(), // cov-excl-line
                         "completing orphaned pending run"
                     );
                     if let Err(e) = orphan.transition(RunState::Complete) {
-                        tracing::error!( // cov-excl-line
+                        tracing::error!(
                             run_id = %orphan.id(), // cov-excl-line
                             %e,
                             "failed to transition orphaned pending run"
@@ -186,12 +186,12 @@ impl Runs {
                     }
                 }
                 RunState::Active => {
-                    tracing::warn!( // cov-excl-line
+                    tracing::warn!(
                         run_id = %orphan.id(), // cov-excl-line
                         "marking orphaned active run as failed"
                     );
                     if let Err(e) = orphan.transition(RunState::Failed) {
-                        tracing::error!( // cov-excl-line
+                        tracing::error!(
                             run_id = %orphan.id(), // cov-excl-line
                             %e,
                             "failed to transition orphaned active run to failed"
@@ -199,7 +199,7 @@ impl Runs {
                     }
                 }
                 RunState::Complete | RunState::Failed => {
-                    unreachable!("scan_orphans only returns pending/active") // cov-excl-line
+                    unreachable!("scan_orphans only returns pending/active")
                 }
             }
         }
