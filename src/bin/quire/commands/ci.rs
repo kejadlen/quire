@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 use quire::Quire;
-use quire::ci::{Ci, CommitRef, RunMeta, RunState, Runs};
+use quire::ci::{Ci, CommitRef, RunMeta, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -73,7 +73,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         pushed_at: jiff::Timestamp::now(),
     };
 
-    let mut run = runs.create(&meta)?;
+    let run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
     let exec_result = run.execute(pipeline, secrets);
@@ -99,18 +99,14 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         }
     }
 
-    match (run.state(), exec_result) {
-        (RunState::Complete, _) => {
+    match exec_result {
+        Ok(_) => {
             println!("\nRun complete.");
             Ok(())
         }
-        (RunState::Failed, Err(e)) => {
+        Err(e) => {
             println!("\nRun failed.");
             Err(e).into_diagnostic()
-        }
-        (state, result) => {
-            println!("\nRun ended in unexpected state: {state:?}");
-            result.map(|_| ()).into_diagnostic()
         }
     }
 }

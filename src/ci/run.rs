@@ -262,7 +262,7 @@ impl Run {
     /// Source-ref filtering (e.g. running only `quire/push`-reachable
     /// jobs) is not yet implemented; for now every validated job runs.
     pub fn execute(
-        &mut self,
+        mut self,
         pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
     ) -> Result<HashMap<String, Vec<ShOutput>>> {
@@ -648,7 +648,7 @@ mod tests {
     fn execute_records_outputs_per_job() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
@@ -656,9 +656,12 @@ mod tests {
 (ci.job :b [:a] (fn [{: sh}] (sh ["echo" "from-b"])))"#,
         );
 
+        let run_id = run.id().to_string();
         let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
 
-        assert_eq!(run.state(), RunState::Complete);
+        // Verify the run landed in complete/ on disk.
+        let completed = runs.base.join(RunState::Complete.dir_name()).join(&run_id);
+        assert!(completed.exists(), "run should be in complete/");
 
         let a = &outputs["a"];
         let b = &outputs["b"];
@@ -674,7 +677,7 @@ mod tests {
         // Topo-sorted execution must run `a` before `b`.
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let log = quire.base_dir().join("order.log");
         let log_str = log.to_string_lossy();
@@ -696,7 +699,7 @@ mod tests {
     fn execute_stops_on_first_failure_and_transitions_failed() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
@@ -704,18 +707,22 @@ mod tests {
 (ci.job :b [:a] (fn [{: sh}] (sh ["echo" "should-not-run"])))"#,
         );
 
+        let run_id = run.id().to_string();
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
-        assert_eq!(run.state(), RunState::Failed);
+
+        // Verify the run landed in failed/ on disk.
+        let failed = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
+        assert!(failed.exists(), "run should be in failed/");
     }
 
     #[test]
     fn jobs_returns_quire_push_outputs_for_direct_input() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
@@ -738,7 +745,7 @@ mod tests {
         // `:quire/push` directly even though it's not a direct input.
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
@@ -760,7 +767,7 @@ mod tests {
     fn jobs_errors_on_unknown_name() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
@@ -788,7 +795,7 @@ mod tests {
         // `peer` exists as a job but isn't an ancestor of `grab`.
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
@@ -815,7 +822,7 @@ mod tests {
     fn jobs_errors_on_self_lookup() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
             r#"(local ci (require :quire.ci))
