@@ -1,5 +1,7 @@
 //! CI: trigger runs from push events, validate the job graph.
 
+use std::collections::HashMap;
+
 mod lua;
 mod pipeline;
 mod run;
@@ -111,8 +113,16 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
+    let secrets = match quire.global_config() {
+        Ok(config) => config.secrets,
+        Err(e) => {
+            tracing::error!(repo = %event.repo, %e, "failed to load global config");
+            return;
+        }
+    };
+
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref) {
+        if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref, &secrets) {
             tracing::error!(
                 repo = %event.repo,
                 sha = %push_ref.new_sha, // cov-excl-line
@@ -124,7 +134,12 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 }
 
 /// Create and run CI for a single updated ref.
-fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> Result<()> {
+fn trigger_ref(
+    repo: &Repo,
+    pushed_at: jiff::Timestamp,
+    push_ref: &PushRef,
+    secrets: &HashMap<String, crate::secret::SecretString>,
+) -> Result<()> {
     let ci = repo.ci();
 
     let Some(source) = ci.source(&push_ref.new_sha)? else {
@@ -146,18 +161,17 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
         "created CI run"
     );
 
-    run.transition(RunState::Active)?;
-
     let name = CI_FNL.to_string();
-
-    match Pipeline::load(&source, &name) {
-        Ok(_pipeline) => run.transition(RunState::Complete)?,
+    let pipeline = match Pipeline::load(&source, &name) {
+        Ok(p) => p,
         Err(e) => {
+            run.transition(RunState::Active)?;
             run.transition(RunState::Failed)?;
             return Err(e);
         }
-    }
+    };
 
+    run.execute(pipeline, secrets.clone())?;
     Ok(())
 }
 
@@ -328,7 +342,8 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        trigger_ref(&repo, pushed_at, &push_ref).expect("trigger_ref should succeed");
+        trigger_ref(&repo, pushed_at, &push_ref, &HashMap::new())
+            .expect("trigger_ref should succeed");
 
         // Verify a run was created in complete/.
         let runs = repo.runs();
@@ -348,7 +363,8 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        trigger_ref(&repo, pushed_at, &push_ref).expect("should succeed without ci.fnl");
+        trigger_ref(&repo, pushed_at, &push_ref, &HashMap::new())
+            .expect("should succeed without ci.fnl");
     }
 
     #[test]
@@ -364,7 +380,7 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        let result = trigger_ref(&repo, pushed_at, &push_ref);
+        let result = trigger_ref(&repo, pushed_at, &push_ref, &HashMap::new());
         assert!(result.is_err(), "invalid pipeline should fail");
     }
 
