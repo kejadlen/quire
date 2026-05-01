@@ -12,7 +12,7 @@ use std::rc::Rc;
 use jiff::Timestamp;
 use mlua::IntoLua;
 
-use super::lua::{InputOutputs, PushOutputs, Runtime, RuntimeHandle, ShOutput};
+use super::lua::{Runtime, RuntimeHandle, ShOutput};
 use super::pipeline::Pipeline;
 use crate::secret::SecretString;
 use crate::{Error, Result};
@@ -221,7 +221,8 @@ pub struct Run {
     /// secrets exposed to the script, tracks the currently-running
     /// job, and accumulates per-job captured `sh` output. Replaced
     /// fresh each `execute` call so secrets are scoped to that call.
-    runtime: Rc<Runtime>,
+    /// `None` before `execute` is called.
+    runtime: Option<Rc<Runtime>>,
 }
 
 impl Run {
@@ -250,7 +251,7 @@ impl Run {
             base,
             state,
             id,
-            runtime: Rc::new(Runtime::default()),
+            runtime: None,
         };
         run.read_meta()?;
         run.read_times()?;
@@ -259,59 +260,76 @@ impl Run {
 
     /// Drive `pipeline` to completion through this run.
     ///
-    /// Constructs a fresh [`Runtime`] with `secrets`, the source
-    /// outputs (`:quire/push` from `meta.yml`), and the per-job
-    /// transitive-input sets; installs it on the pipeline's Lua VM,
-    /// topo-sorts the jobs, transitions Pending → Active, then
-    /// invokes each `run_fn` in dependency order with the runtime
-    /// handle as its sole argument. `(sh …)` calls record their
-    /// captured output under the current job — readable via
-    /// [`Run::outputs`] after `execute` returns. The run finishes
-    /// in `Complete` if every job's `run_fn` returned without error,
+    /// Consumes the pipeline, taking ownership of its Lua VM. Constructs
+    /// a fresh [`Runtime`] with `secrets`, the source outputs
+    /// (`:quire/push` from `meta.yml`), and the per-job transitive-input
+    /// sets; installs it on the VM, topo-sorts the jobs, transitions
+    /// Pending → Active, then invokes each `run_fn` in dependency order
+    /// with the runtime handle as its sole argument. `(sh …)` calls
+    /// record their captured output under the current job — readable via
+    /// [`Run::outputs`] after `execute` returns. The run finishes in
+    /// `Complete` if every job's `run_fn` returned without error,
     /// otherwise `Failed`.
     ///
     /// Source-ref filtering (e.g. running only `quire/push`-reachable
     /// jobs) is not yet implemented; for now every validated job runs.
     pub fn execute(
         &mut self,
-        pipeline: &Pipeline,
+        pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
     ) -> Result<()> {
-        let lua = pipeline.fennel().lua();
         let meta = self.read_meta()?;
-        let sources = source_outputs(&meta);
-        let inputs = build_inputs_views(&pipeline.transitive_inputs(), &sources);
-        self.runtime = Rc::new(Runtime::new(secrets, inputs));
-        let rt_value = RuntimeHandle(self.runtime.clone())
-            .into_lua(lua)
-            .expect("install runtime on Lua VM");
 
-        let order: Vec<String> = pipeline
+        // Extract execution plan before consuming the pipeline for its VM.
+        let topo: Vec<String> = pipeline
             .topo_order()
             .into_iter()
             .map(String::from)
             .collect();
+        let transitive = pipeline.transitive_inputs();
+        let run_fns: Vec<(String, mlua::Function)> = topo
+            .iter()
+            .map(|id| {
+                let job = pipeline
+                    .job(id)
+                    .expect("topo_order returned a job id not in pipeline");
+                (job.id.clone(), job.run_fn.clone())
+            })
+            .collect();
+
+        let fennel = pipeline.into_fennel();
+        let runtime = Rc::new(Runtime::new(fennel, secrets, &meta, &transitive));
+        self.runtime = Some(runtime.clone());
+
+        let lua = runtime.lua();
+        let rt_value = RuntimeHandle(runtime.clone())
+            .into_lua(lua)
+            .expect("install runtime on Lua VM");
 
         self.transition(RunState::Active)?;
 
-        for job_id in &order {
-            let job = pipeline
-                .job(job_id)
-                .expect("topo_order returned a job id not in pipeline");
-
-            self.runtime.enter_job(&job.id);
-            let result = job.run_fn.call::<mlua::Value>(rt_value.clone());
-            self.runtime.leave_job();
+        for (job_id, run_fn) in &run_fns {
+            self.runtime
+                .as_ref()
+                .expect("runtime installed")
+                .enter_job(job_id);
+            let result = run_fn.call::<mlua::Value>(rt_value.clone());
+            self.runtime
+                .as_ref()
+                .expect("runtime installed")
+                .leave_job();
 
             if let Err(e) = result {
+                lua.remove_app_data::<Rc<Runtime>>();
                 self.transition(RunState::Failed)?;
                 return Err(Error::JobFailed {
-                    job: job.id.clone(),
+                    job: job_id.clone(),
                     source: Box::new(e),
                 });
             }
         }
 
+        lua.remove_app_data::<Rc<Runtime>>();
         self.transition(RunState::Complete)?;
         Ok(())
     }
@@ -320,7 +338,10 @@ impl Run {
     /// most recent `execute` call. Empty if the job hasn't run or
     /// produced no output.
     pub fn outputs(&self, job_id: &str) -> Vec<ShOutput> {
-        self.runtime.outputs(job_id)
+        self.runtime
+            .as_ref()
+            .map(|rt| rt.outputs(job_id))
+            .unwrap_or_default()
     }
 
     /// Transition the run from its current state to a new state.
@@ -385,44 +406,6 @@ impl Run {
     pub fn write_times(&self, times: &RunTimes) -> Result<()> {
         write_yaml(&self.path().join("times.yml"), times)
     }
-}
-
-/// Build the source-ref outputs read by `(jobs name)` for source
-/// names. For v1, only `:quire/push` is exposed, derived from the run
-/// meta — `:sha`, `:ref`, `:pushed-at`. Branch/tag/etc are deferred.
-/// Pure Rust data; `lookup_input` serializes to Lua via serde.
-fn source_outputs(meta: &RunMeta) -> HashMap<String, InputOutputs> {
-    let push = PushOutputs {
-        sha: meta.sha.clone(),
-        r#ref: meta.r#ref.clone(),
-        pushed_at: meta.pushed_at,
-    };
-    let mut inputs = HashMap::new();
-    inputs.insert("quire/push".to_string(), InputOutputs::Push(push));
-    inputs
-}
-
-/// Materialize the per-job `(jobs name)` views from the pipeline's
-/// transitive-input map and the source outputs.
-///
-/// For each job J, the view holds every name reachable from J as a
-/// key. Source values populate the source entries; everything else
-/// sits as `None` so future job-to-job outputs can drop in without
-/// changing the lookup contract.
-fn build_inputs_views(
-    transitive_inputs: &HashMap<String, std::collections::HashSet<String>>,
-    sources: &HashMap<String, InputOutputs>,
-) -> HashMap<String, HashMap<String, Option<InputOutputs>>> {
-    transitive_inputs
-        .iter()
-        .map(|(job_id, reachable)| {
-            let view = reachable
-                .iter()
-                .map(|name| (name.clone(), sources.get(name).cloned()))
-                .collect();
-            (job_id.clone(), view)
-        })
-        .collect()
 }
 
 /// Write a serializable value to a YAML file atomically (temp file + rename).
@@ -607,7 +590,7 @@ mod tests {
             base: PathBuf::from("/tmp/quire-test-runs/test.git"),
             state: RunState::Pending,
             id: uuid::Uuid::now_v7().to_string(),
-            runtime: Rc::new(Runtime::default()),
+            runtime: None,
         };
 
         let result = run.transition(RunState::Active);
@@ -714,7 +697,7 @@ mod tests {
 (ci.job :b [:a] (fn [{: sh}] (sh ["echo" "from-b"])))"#,
         );
 
-        run.execute(&pipeline, HashMap::new()).expect("execute");
+        run.execute(pipeline, HashMap::new()).expect("execute");
 
         assert_eq!(run.state(), RunState::Complete);
 
@@ -744,7 +727,7 @@ mod tests {
         );
         let pipeline = load(&source);
 
-        run.execute(&pipeline, HashMap::new()).expect("execute");
+        run.execute(pipeline, HashMap::new()).expect("execute");
 
         let contents = fs_err::read_to_string(&log).expect("read log");
         assert_eq!(contents, "a\nb\n");
@@ -763,7 +746,7 @@ mod tests {
         );
 
         let err = run
-            .execute(&pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
         assert_eq!(run.state(), RunState::Failed);
@@ -787,7 +770,7 @@ mod tests {
       (sh ["echo" push.sha push.ref]))))"#,
         );
 
-        run.execute(&pipeline, HashMap::new()).expect("execute");
+        run.execute(pipeline, HashMap::new()).expect("execute");
 
         let outputs = run.outputs("grab");
         assert_eq!(outputs.len(), 1);
@@ -811,7 +794,7 @@ mod tests {
       (sh ["echo" push.sha]))))"#,
         );
 
-        run.execute(&pipeline, HashMap::new()).expect("execute");
+        run.execute(pipeline, HashMap::new()).expect("execute");
 
         let outputs = run.outputs("b");
         assert_eq!(outputs.len(), 1);
@@ -830,7 +813,7 @@ mod tests {
         );
 
         let err = run
-            .execute(&pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
         match err {
             Error::JobFailed { job, source } => {
@@ -859,7 +842,7 @@ mod tests {
         );
 
         let err = run
-            .execute(&pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
         match err {
             Error::JobFailed { source, .. } => {
@@ -885,7 +868,7 @@ mod tests {
         );
 
         let err = run
-            .execute(&pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
         match err {
             Error::JobFailed { source, .. } => {

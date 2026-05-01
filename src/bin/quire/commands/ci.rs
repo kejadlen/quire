@@ -73,17 +73,20 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         pushed_at: jiff::Timestamp::now(),
     };
 
+    let job_ids: Vec<String> = pipeline.jobs().iter().map(|j| j.id.clone()).collect();
+
     let mut run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
-    let exec_result = run.execute(&pipeline, secrets);
+    let exec_result = run.execute(pipeline, secrets);
 
-    for job in pipeline.jobs() {
-        let outputs = run.outputs(&job.id);
+    // Pipeline was consumed by execute. Output display uses run.outputs()
+    for job_id in &job_ids {
+        let outputs = run.outputs(job_id);
         if outputs.is_empty() {
             continue;
         }
-        println!("\n==> {}", job.id);
+        println!("\n==> {}", job_id);
         for o in &outputs {
             if !o.stdout.is_empty() {
                 print!("{}", o.stdout);

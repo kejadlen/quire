@@ -8,7 +8,7 @@
 //! each `run-fn` at execute time.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use mlua::{IntoLua, Lua, LuaSerdeExt};
@@ -93,29 +93,9 @@ fn register_job(
     Ok(())
 }
 
-/// Outputs of the `:quire/push` source, exposed to `(jobs :quire/push)`.
-/// For v1: `:sha`, `:ref`, `:pushed-at`. Branch/tag/etc are deferred.
-#[derive(Clone, Debug, serde::Serialize)]
-pub(super) struct PushOutputs {
-    pub sha: String,
-    #[serde(rename = "ref")]
-    pub r#ref: String,
-    #[serde(rename = "pushed-at")]
-    pub pushed_at: jiff::Timestamp,
-}
-
-/// What `(jobs name)` resolves to. One variant per kind of input;
-/// `untagged` so the on-the-Lua-side shape is the inner struct
-/// directly, not a wrapper table with a tag field.
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(untagged)]
-pub(super) enum InputOutputs {
-    Push(PushOutputs),
-}
-
-/// Per-execution runtime: holds the secrets exposed to the job, the
-/// per-job `(jobs name)` views, the current-job cursor, and the
-/// per-job captured `sh` outputs.
+/// Per-execution runtime: owns the Lua VM, holds the secrets exposed
+/// to the job, the per-job `(jobs name)` views, the current-job
+/// cursor, and the per-job captured `sh` outputs.
 ///
 /// `inputs` is keyed by the calling job; each inner map covers
 /// exactly the names that job may read. Reachability is implicit in
@@ -135,28 +115,63 @@ pub(super) enum InputOutputs {
 /// runs the command but doesn't record (the cursor lookup misses).
 /// `(secret …)` and `(jobs …)` require a runtime — without one, calls
 /// error.
-#[derive(Debug, Default)]
 pub(super) struct Runtime {
+    fennel: Fennel,
     secrets: HashMap<String, SecretString>,
-    inputs: HashMap<String, HashMap<String, Option<InputOutputs>>>,
+    inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
     current_job: RefCell<Option<String>>,
     outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
 }
 
 impl Runtime {
-    /// Build a fresh runtime. `inputs` is the precomputed per-job
-    /// `(jobs name)` view from [`Pipeline::transitive_inputs`] and
-    /// the source outputs.
+    /// Build a fresh runtime owning `fennel` (the Lua VM).
+    ///
+    /// `meta` provides the push data for `:quire/push` source outputs.
+    /// `transitive` maps each job to its set of reachable input names;
+    /// the runtime builds per-job views from this and the source values.
     pub(super) fn new(
+        fennel: Fennel,
         secrets: HashMap<String, SecretString>,
-        inputs: HashMap<String, HashMap<String, Option<InputOutputs>>>,
+        meta: &super::run::RunMeta,
+        transitive: &HashMap<String, HashSet<String>>,
     ) -> Self {
+        let lua = fennel.lua();
+
+        // Build the push outputs as a Lua table.
+        let push = lua.create_table().expect("create push table");
+        push.set("sha", meta.sha.as_str()).expect("set sha");
+        push.set("ref", meta.r#ref.as_str()).expect("set ref");
+        push.set("pushed-at", meta.pushed_at.to_string().as_str())
+            .expect("set pushed-at");
+        let push_value = push.into_lua(lua).expect("push table to value");
+
+        // Build per-job input views from transitive reachability.
+        let mut inputs = HashMap::new();
+        for (job_id, reachable) in transitive {
+            let mut view = HashMap::new();
+            for name in reachable {
+                let value = if name == "quire/push" {
+                    Some(push_value.clone())
+                } else {
+                    None
+                };
+                view.insert(name.clone(), value);
+            }
+            inputs.insert(job_id.clone(), view);
+        }
+
         Self {
+            fennel,
             secrets,
             inputs,
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Borrow the underlying Lua VM.
+    pub(super) fn lua(&self) -> &Lua {
+        self.fennel.lua()
     }
 
     /// Mark `id` as the currently executing job. `(sh …)` invocations
@@ -179,6 +194,20 @@ impl Runtime {
     }
 }
 
+#[cfg(test)]
+impl Runtime {
+    /// Minimal constructor for tests — no inputs, no source outputs.
+    fn for_test(fennel: Fennel, secrets: HashMap<String, SecretString>) -> Self {
+        Self {
+            fennel,
+            secrets,
+            inputs: HashMap::new(),
+            current_job: RefCell::new(None),
+            outputs: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
 /// `IntoLua` carrier for an `Rc<Runtime>`. Stows the Rc on the VM as
 /// app data and returns the handle table — `{sh, secret, jobs}`.
 pub(super) struct RuntimeHandle(pub Rc<Runtime>);
@@ -194,11 +223,11 @@ impl IntoLua for RuntimeHandle {
     }
 }
 
-/// Body of `(jobs name)`. Returns the typed outputs the calling job's
-/// view has for `name`, serialized to a Lua value via serde. Reachable
-/// names without recorded outputs come back as `Nil`. Errors if `name`
-/// is outside the calling job's view, if the calling job tries to read
-/// its own outputs, or if the runtime isn't installed.
+/// Body of `(jobs name)`. Returns the outputs the calling job's
+/// view has for `name` as a Lua value. Reachable names without
+/// recorded outputs come back as `nil`. Errors if `name` is outside
+/// the calling job's view, if the calling job tries to read its own
+/// outputs, or if the runtime isn't installed.
 fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
     let rt = lua
         .app_data_ref::<Rc<Runtime>>()
@@ -211,7 +240,7 @@ fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
         mlua::Error::external(format!("no inputs view for calling job '{calling}'"))
     })?;
     match view.get(&name) {
-        Some(Some(value)) => lua.to_value(value),
+        Some(Some(value)) => Ok(value.clone()),
         Some(None) => Ok(mlua::Value::Nil),
         None if name == *calling => Err(mlua::Error::external(format!(
             "Job '{calling}' cannot read its own outputs"
@@ -377,13 +406,18 @@ mod tests {
     use super::super::pipeline::Pipeline;
     use super::*;
 
-    /// Install a runtime with the given secrets on `pipeline`'s VM and
-    /// return the runtime handle. Mirrors what `Run::execute` does so
-    /// tests can drive a `run_fn` directly.
-    fn rt(pipeline: &Pipeline, secrets: HashMap<String, SecretString>) -> mlua::Value {
-        RuntimeHandle(Rc::new(Runtime::new(secrets, HashMap::new())))
-            .into_lua(pipeline.fennel().lua())
-            .expect("install runtime")
+    /// Extract the first job's `run_fn` from the pipeline, consume the
+    /// pipeline for its VM, build a minimal runtime, and return the
+    /// runtime handle plus the run_fn.
+    fn rt(source: &str, secrets: HashMap<String, SecretString>) -> (Rc<Runtime>, mlua::Function) {
+        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let run_fn = pipeline.jobs()[0].run_fn.clone();
+        let fennel = pipeline.into_fennel();
+        let runtime = Rc::new(Runtime::for_test(fennel, secrets));
+        let _ = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        (runtime, run_fn)
     }
 
     #[test]
@@ -395,10 +429,12 @@ mod tests {
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [{: secret}] (secret :github_token)))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
-        let token: String = pipeline.jobs()[0]
-            .run_fn
-            .call(rt(&pipeline, secrets))
+        let (runtime, run_fn) = rt(source, secrets);
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let token: String = run_fn
+            .call(handle)
             .expect("run_fn should return the secret value");
         assert_eq!(token, "ghp_test_value");
     }
@@ -407,11 +443,11 @@ mod tests {
     fn secret_errors_for_unknown_name() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [{: secret}] (secret :missing)))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
-        let err = pipeline.jobs()[0]
-            .run_fn
-            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
-            .unwrap_err();
+        let (runtime, run_fn) = rt(source, HashMap::new());
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown secret") && msg.contains("missing"),
@@ -421,18 +457,14 @@ mod tests {
 
     /// Build a pipeline whose single job's run-fn invokes `(sh …)`,
     /// invoke it with the runtime handle, and decode the resulting Lua
-    /// table as ShOutput through the pipeline's VM via `lua.from_value`.
+    /// table as ShOutput.
     fn run_sh_via_job(source: &str) -> ShOutput {
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
-        let value: mlua::Value = pipeline.jobs()[0]
-            .run_fn
-            .call(rt(&pipeline, HashMap::new()))
-            .expect("sh call should return a value");
-        pipeline
-            .fennel()
-            .lua()
-            .from_value(value)
-            .expect("decode ShOutput")
+        let (runtime, run_fn) = rt(source, HashMap::new());
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let value: mlua::Value = run_fn.call(handle).expect("sh call should return a value");
+        runtime.lua().from_value(value).expect("decode ShOutput")
     }
 
     #[test]
@@ -499,16 +531,15 @@ mod tests {
 
     #[test]
     fn sh_rejects_unknown_opt_key() {
-        let pipeline = Pipeline::load(
+        let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [{: sh}] (sh "echo hi" {:cwdir "/tmp"})))"#,
-            "ci.fnl",
-        )
-        .expect("load should succeed");
-        let err = pipeline.jobs()[0]
-            .run_fn
-            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
-            .unwrap_err();
+            HashMap::new(),
+        );
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("cwdir"),
@@ -518,16 +549,15 @@ mod tests {
 
     #[test]
     fn sh_rejects_non_sequence_table_as_cmd() {
-        let pipeline = Pipeline::load(
+        let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [{: sh}] (sh {:env {:FOO "bar"}})))"#,
-            "ci.fnl",
-        )
-        .expect("load should succeed");
-        let err = pipeline.jobs()[0]
-            .run_fn
-            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
-            .unwrap_err();
+            HashMap::new(),
+        );
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("sequence"),
@@ -537,16 +567,15 @@ mod tests {
 
     #[test]
     fn sh_rejects_empty_argv() {
-        let pipeline = Pipeline::load(
+        let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push] (fn [{: sh}] (sh [])))"#,
-            "ci.fnl",
-        )
-        .expect("load should succeed");
-        let err = pipeline.jobs()[0]
-            .run_fn
-            .call::<mlua::Value>(rt(&pipeline, HashMap::new()))
-            .unwrap_err();
+            HashMap::new(),
+        );
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("empty"),
