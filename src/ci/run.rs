@@ -93,7 +93,10 @@ impl Runs {
         let final_dir = pending_dir.join(&id);
         fs_err::rename(&tmp_dir, &final_dir)?;
 
-        Run::open(self.base.clone(), RunState::Pending, id)
+        // Set the latest symlink after opening the run so it can do it.
+        let run = Run::open(self.base.clone(), RunState::Pending, id)?;
+        run.update_latest()?;
+        Ok(run)
     }
 
     /// Scan for orphaned runs in `pending/` and `active/` directories.
@@ -383,6 +386,19 @@ impl Run {
             _ => {} // cov-excl-line
         }
         self.write_times(&times)?;
+        self.update_latest()?;
+        Ok(())
+    }
+
+    /// Atomically update the `latest` symlink to point at this run.
+    fn update_latest(&self) -> Result<()> {
+        let latest = self.base.join("latest");
+        let link_target = PathBuf::from(self.state.dir_name()).join(&self.id);
+        let tmp_link = self.base.join(".tmp-latest");
+        let _ = fs_err::remove_file(&tmp_link);
+        std::os::unix::fs::symlink(&link_target, &tmp_link)?;
+        let _ = fs_err::remove_file(&latest);
+        fs_err::rename(&tmp_link, &latest)?;
         Ok(())
     }
 
@@ -455,6 +471,31 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
         let parsed = uuid::Uuid::parse_str(run.id()).expect("should be valid UUID");
         assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
+    fn create_symlinks_latest() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        let latest = runs.base.join("latest");
+        assert!(latest.is_symlink(), "latest should be a symlink");
+        let target = fs_err::read_link(&latest).expect("read link");
+        assert_eq!(
+            target,
+            PathBuf::from(RunState::Pending.dir_name()).join(run.id())
+        );
+        assert!(latest.exists(), "latest should resolve to a real directory");
+
+        // Symlink should follow through transitions.
+        run.transition(RunState::Active).expect("to active");
+        let target = fs_err::read_link(&latest).expect("read link");
+        assert_eq!(
+            target,
+            PathBuf::from(RunState::Active.dir_name()).join(run.id())
+        );
+        assert!(latest.exists(), "latest should resolve after transition");
     }
 
     #[test]
