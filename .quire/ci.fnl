@@ -5,15 +5,14 @@
      (fn [{: sh : secret : jobs}]
        (let [{: ref : sha : git-dir} (jobs :quire/push)
              token (secret :github_token)]
-         (when (= ref "refs/heads/main")
+         (when (= ref :refs/heads/main)
            (let [date (-> (sh "date --utc +%Y-%m-%d")
                           (. :stdout)
                           (: :gsub "\n$" ""))
                  tag (.. :v date "+" (sha:sub 1 12))
                  encoded (-> (sh "printf '%s' \"$T\" | base64 --wrap=0"
                                  {:env {:T (.. "x-access-token:" token)}})
-                             (. :stdout)
-                             (: :gsub "\n$" ""))
+                             (. :stdout))
                  auth-header (.. "Authorization: Basic " encoded)
                  git-opts {:env {:GIT_DIR git-dir}}]
              (sh [:git :tag tag sha] git-opts)
