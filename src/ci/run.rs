@@ -640,6 +640,37 @@ mod tests {
         assert_eq!(loaded_meta, test_meta());
     }
 
+    #[test]
+    fn reconcile_completes_pending_orphans() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+        let id = run.id().to_string();
+
+        runs.reconcile_orphans().expect("reconcile");
+
+        // Pending orphan should be moved to complete.
+        let completed = runs.base.join(RunState::Complete.dir_name()).join(&id);
+        assert!(completed.exists(), "orphan should be in complete/");
+        let pending = runs.base.join(RunState::Pending.dir_name()).join(&id);
+        assert!(!pending.exists(), "orphan should not be in pending/");
+    }
+
+    #[test]
+    fn reconcile_fails_active_orphans() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        run.transition(RunState::Active).expect("to active");
+        let id = run.id().to_string();
+
+        runs.reconcile_orphans().expect("reconcile");
+
+        // Active orphan should be moved to failed.
+        let failed = runs.base.join(RunState::Failed.dir_name()).join(&id);
+        assert!(failed.exists(), "orphan should be in failed/");
+    }
+
     fn load(source: &str) -> Pipeline {
         super::super::pipeline::Pipeline::load(source, "ci.fnl").expect("load should succeed")
     }
@@ -842,5 +873,27 @@ mod tests {
             }
             other => panic!("expected JobFailed, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn jobs_returns_nil_for_dependency_with_no_outputs() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        // `a` does nothing, `b` reads `a`'s outputs — should get nil.
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :a [:quire/push] (fn [_] nil))
+(ci.job :b [:a]
+  (fn [{: sh : jobs}]
+    (let [a-outputs (jobs :a)]
+      (sh ["echo" (tostring a-outputs)]))))"#,
+        );
+
+        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
+        let b = &outputs["b"];
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].stdout, "nil\n");
     }
 }

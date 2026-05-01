@@ -4,11 +4,10 @@ use std::os::unix::net::UnixListener as StdUnixListener;
 use axum::Router;
 use axum::routing::get;
 use miette::{Context, IntoDiagnostic, Result};
-
-use crate::Quire;
-use crate::ci;
-use crate::event::PushEvent;
-use crate::mirror;
+use quire::Quire;
+use quire::ci;
+use quire::event::PushEvent;
+use quire::mirror;
 
 async fn health() -> &'static str {
     "ok"

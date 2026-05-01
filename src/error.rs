@@ -60,3 +60,30 @@ impl From<LoadError> for Error {
         Error::Validation(Box::new(err))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fennel::FennelError;
+
+    #[test]
+    fn from_fennel_error() {
+        let fennel_err = FennelError::FileNotFound("test.fnl".to_string());
+        let err: Error = fennel_err.into();
+        assert!(err.to_string().contains("test.fnl"));
+    }
+
+    #[test]
+    fn from_load_error() {
+        let source = "(ci.job :a [] (fn [_] nil))";
+        let load_err = LoadError {
+            src: miette::NamedSource::new("ci.fnl", source.to_string()),
+            errors: vec![crate::ci::ValidationError::EmptyInputs {
+                job_id: "a".to_string(),
+                span: miette::SourceSpan::from((0, 0)),
+            }],
+        };
+        let err: Error = load_err.into();
+        assert!(err.to_string().contains("CI validation failed"));
+    }
+}

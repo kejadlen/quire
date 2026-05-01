@@ -5,7 +5,6 @@ pub mod fennel;
 pub mod mirror;
 pub mod quire;
 pub mod secret;
-pub mod server;
 
 pub use error::Error;
 pub use error::Result;

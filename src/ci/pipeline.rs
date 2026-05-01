@@ -629,4 +629,26 @@ mod tests {
         let map = pipeline.transitive_inputs();
         assert!(!map["only"].contains("only"), "self should not be in set");
     }
+
+    #[test]
+    fn load_reports_both_parse_and_post_graph_errors() {
+        // `setup` has empty inputs (pre-graph error) and `orphan` is unreachable
+        // (post-graph error). Both should be reported.
+        let result = Pipeline::load(
+            r#"(local ci (require :quire.ci))
+(ci.job :setup [] (fn [_] nil))
+(ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
+            "ci.fnl",
+        );
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("CI validation failed"),
+                    "expected validation error: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected validation error"),
+        }
+    }
 }

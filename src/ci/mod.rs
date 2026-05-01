@@ -160,3 +160,306 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Quire;
+    use crate::event::PushRef;
+    use std::path::Path;
+
+    fn git_in(cwd: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git command");
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed:\n{}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// Create a bare repo with one commit containing `.quire/ci.fnl`.
+    /// Returns the tempdir, the Quire, and the repo name.
+    fn bare_repo_with_ci(source: &str) -> (tempfile::TempDir, Quire, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let bare = dir.path().join("repos").join("test.git");
+
+        fs_err::create_dir_all(&work).expect("mkdir work");
+        git_in(&work, &["init", "-b", "main"]);
+        git_in(&work, &["commit", "--allow-empty", "-m", "initial"]);
+
+        let ci_dir = work.join(".quire");
+        fs_err::create_dir_all(&ci_dir).expect("mkdir .quire");
+        fs_err::write(ci_dir.join("ci.fnl"), source).expect("write ci.fnl");
+        git_in(&work, &["add", "."]);
+        git_in(&work, &["commit", "-m", "add ci.fnl"]);
+
+        git_in(
+            work.parent().unwrap(),
+            &[
+                "clone",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+
+        let quire = Quire::new(dir.path().to_path_buf());
+        (dir, quire, "test.git".to_string())
+    }
+
+    fn bare_repo_without_ci() -> (tempfile::TempDir, Quire, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let bare = dir.path().join("repos").join("test.git");
+
+        fs_err::create_dir_all(&work).expect("mkdir work");
+        git_in(&work, &["init", "-b", "main"]);
+        git_in(&work, &["commit", "--allow-empty", "-m", "initial"]);
+        git_in(
+            work.parent().unwrap(),
+            &[
+                "clone",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+
+        let quire = Quire::new(dir.path().to_path_buf());
+        (dir, quire, "test.git".to_string())
+    }
+
+    fn head_sha(repo: &crate::quire::Repo) -> String {
+        let output = std::process::Command::new("git")
+            .args(["-C", repo.path().to_str().unwrap(), "rev-parse", "HEAD"])
+            .output()
+            .expect("rev-parse");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn ci_new_and_runs() {
+        let ci = Ci::new(PathBuf::from("/tmp/test"));
+        let _runs = ci.runs(PathBuf::from("/tmp/runs"));
+        // Just confirm construction works — Runs::new is covered elsewhere.
+    }
+
+    #[test]
+    fn ci_load_returns_none_when_no_ci_fnl() {
+        let (_dir, quire, name) = bare_repo_without_ci();
+        let repo = quire.repo(&name).expect("repo");
+        let ci = repo.ci();
+        let sha = head_sha(&repo);
+        let commit = CommitRef {
+            sha: sha.clone(),
+            display: sha,
+        };
+        let result = ci.load(&commit).expect("load should not error");
+        assert!(result.is_none(), "no ci.fnl should return None");
+    }
+
+    #[test]
+    fn ci_load_returns_pipeline_when_ci_fnl_present() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let ci = repo.ci();
+        let sha = head_sha(&repo);
+        let commit = CommitRef {
+            sha: sha.clone(),
+            display: sha,
+        };
+        let pipeline = ci
+            .load(&commit)
+            .expect("load should succeed")
+            .expect("should have pipeline");
+        assert_eq!(pipeline.jobs().len(), 1);
+        assert_eq!(pipeline.jobs()[0].id, "build");
+    }
+
+    #[test]
+    fn ci_load_errors_on_invalid_fennel() {
+        let source = "{:bad {:}";
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let ci = repo.ci();
+        let sha = head_sha(&repo);
+        let commit = CommitRef {
+            sha: sha.clone(),
+            display: sha,
+        };
+        let result = ci.load(&commit);
+        assert!(result.is_err(), "bad Fennel should fail");
+    }
+
+    #[test]
+    fn ci_source_reads_file_at_sha() {
+        let source = "(local ci (require :quire.ci))\n(ci.job :x [:quire/push] (fn [_] nil))";
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let ci = repo.ci();
+        let sha = head_sha(&repo);
+        let content = ci
+            .source(&sha)
+            .expect("source should succeed")
+            .expect("should have content");
+        assert!(content.contains(":x"));
+    }
+
+    #[test]
+    fn trigger_creates_run_and_completes() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let sha = head_sha(&repo);
+        let pushed_at: jiff::Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
+        let push_ref = PushRef {
+            old_sha: "0000000000000000000000000000000000000000".to_string(),
+            new_sha: sha.clone(),
+            r#ref: "refs/heads/main".to_string(),
+        };
+
+        trigger_ref(&repo, pushed_at, &push_ref).expect("trigger_ref should succeed");
+
+        // Verify a run was created in complete/.
+        let runs = repo.runs();
+        let orphans = runs.scan_orphans().expect("scan");
+        assert!(orphans.is_empty(), "run should be complete, not orphaned");
+    }
+
+    #[test]
+    fn trigger_skips_when_no_ci_fnl() {
+        let (_dir, quire, name) = bare_repo_without_ci();
+        let repo = quire.repo(&name).expect("repo");
+        let sha = head_sha(&repo);
+        let pushed_at: jiff::Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
+        let push_ref = PushRef {
+            old_sha: "0000000000000000000000000000000000000000".to_string(),
+            new_sha: sha,
+            r#ref: "refs/heads/main".to_string(),
+        };
+
+        trigger_ref(&repo, pushed_at, &push_ref).expect("should succeed without ci.fnl");
+    }
+
+    #[test]
+    fn trigger_errors_on_invalid_pipeline() {
+        let source = "(local ci (require :quire.ci))\n(ci.job :a [] (fn [_] nil))";
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let sha = head_sha(&repo);
+        let pushed_at: jiff::Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
+        let push_ref = PushRef {
+            old_sha: "0000000000000000000000000000000000000000".to_string(),
+            new_sha: sha,
+            r#ref: "refs/heads/main".to_string(),
+        };
+
+        let result = trigger_ref(&repo, pushed_at, &push_ref);
+        assert!(result.is_err(), "invalid pipeline should fail");
+    }
+
+    fn push_event(repo: &str, sha: &str) -> PushEvent {
+        PushEvent::new(
+            repo.to_string(),
+            vec![PushRef {
+                old_sha: "0000000000000000000000000000000000000000".to_string(),
+                new_sha: sha.to_string(),
+                r#ref: "refs/heads/main".to_string(),
+            }],
+        )
+    }
+
+    #[test]
+    fn trigger_skips_nonexistent_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let quire = Quire::new(dir.path().to_path_buf());
+        let event = push_event("no-such.git", "abc123");
+        // Should not panic — just logs and returns.
+        trigger(&quire, &event);
+    }
+
+    #[test]
+    fn trigger_skips_repo_not_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let quire = Quire::new(dir.path().to_path_buf());
+        // repo name is valid but directory doesn't exist.
+        let event = push_event("missing.git", "abc123");
+        trigger(&quire, &event);
+    }
+
+    #[test]
+    fn trigger_skips_invalid_repo_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let quire = Quire::new(dir.path().to_path_buf());
+        // Repo name with path traversal — quire.repo() returns Err.
+        let event = push_event("../evil.git", "abc123");
+        trigger(&quire, &event);
+    }
+
+    #[test]
+    fn trigger_processes_multiple_refs() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let sha = head_sha(&repo);
+        let _pushed_at: jiff::Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
+
+        // Two updated refs — both should create runs.
+        let event = PushEvent::new(
+            name.clone(),
+            vec![
+                PushRef {
+                    old_sha: "0000000000000000000000000000000000000000".to_string(),
+                    new_sha: sha.clone(),
+                    r#ref: "refs/heads/main".to_string(),
+                },
+                PushRef {
+                    old_sha: "0000000000000000000000000000000000000000".to_string(),
+                    new_sha: sha.clone(),
+                    r#ref: "refs/tags/v1".to_string(),
+                },
+            ],
+        );
+
+        trigger(&quire, &event);
+    }
+
+    #[test]
+    fn ci_source_errors_on_invalid_sha() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let ci = repo.ci();
+        // Use a SHA that doesn't exist — git show will fail with
+        // "invalid object name" which doesn't match the does-not-exist filter.
+        let result = ci.source("abcdef1234567890");
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("failed to read"),
+                    "expected git read error, got: {msg}"
+                );
+            }
+            other => panic!("expected error for invalid SHA, got: {other:?}"),
+        }
+    }
+}

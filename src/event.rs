@@ -57,6 +57,27 @@ mod tests {
     }
 
     #[test]
+    fn updated_refs_filters_deletions() {
+        let refs = vec![
+            PushRef {
+                old_sha: "aaa".to_string(),
+                new_sha: "bbb".to_string(),
+                r#ref: "refs/heads/main".to_string(),
+            },
+            PushRef {
+                old_sha: "ccc".to_string(),
+                new_sha: "0000000000000000000000000000000000000000".to_string(),
+                r#ref: "refs/heads/feature".to_string(),
+            },
+        ];
+        let event = PushEvent::new("foo.git".to_string(), refs);
+
+        let updated = event.updated_refs();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].r#ref, "refs/heads/main");
+    }
+
+    #[test]
     fn push_event_round_trips_json() {
         let refs = vec![
             PushRef {

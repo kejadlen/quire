@@ -497,6 +497,7 @@ mod tests {
         assert_eq!(q.base_dir(), Path::new("/var/quire"));
         assert_eq!(q.repos_dir(), PathBuf::from("/var/quire/repos"));
         assert_eq!(q.config_path(), PathBuf::from("/var/quire/config.fnl"));
+        assert_eq!(q.socket_path(), PathBuf::from("/var/quire/server.sock"));
     }
 
     #[test]
@@ -504,6 +505,40 @@ mod tests {
         let q = quire();
         assert!(q.repo("foo.git").is_ok());
         assert!(q.repo("work/foo.git").is_ok());
+    }
+
+    #[test]
+    fn repo_name_returns_name() {
+        let q = quire();
+        let repo = q.repo("foo.git").unwrap();
+        assert_eq!(repo.name(), "foo.git");
+    }
+
+    #[test]
+    fn repos_lists_bare_repos() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let q = Quire::new(dir.path().to_path_buf());
+        let repos_dir = q.repos_dir();
+
+        // Create two bare repos.
+        for name in ["alpha.git", "work/bravo.git"] {
+            let bare = repos_dir.join(name);
+            fs_err::create_dir_all(&bare).expect("mkdir");
+            git_in(&bare, &["init", "--bare", "-b", "main"]);
+        }
+
+        let repos: Vec<_> = q.repos().expect("repos").collect();
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0].name(), "alpha.git");
+        assert_eq!(repos[1].name(), "work/bravo.git");
+    }
+
+    #[test]
+    fn repos_empty_when_no_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let q = Quire::new(dir.path().to_path_buf());
+        let repos: Vec<_> = q.repos().expect("repos").collect();
+        assert!(repos.is_empty());
     }
 
     #[test]

@@ -375,4 +375,16 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn load_string_rejects_nil_result() {
+        let f = fennel();
+        // A Fennel expression that evaluates to nil (not empty, but produces nil).
+        let result: Result<MirrorConfig, _> = f.load_string("nil", "nil.fnl");
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), FennelError::Empty { .. }),
+            "expected Empty error for nil result"
+        );
+    }
 }

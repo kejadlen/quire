@@ -592,4 +592,22 @@ mod tests {
             "expected empty-argv error, got: {msg}"
         );
     }
+
+    #[test]
+    fn sh_rejects_number_as_cmd() {
+        let (runtime, run_fn) = rt(
+            r#"(local ci (require :quire.ci))
+(ci.job :go [:quire/push] (fn [{: sh}] (sh 42)))"#,
+            HashMap::new(),
+        );
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("string or sequence"),
+            "expected type error, got: {msg}"
+        );
+    }
 }
