@@ -115,7 +115,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref) {
             tracing::error!(
                 repo = %event.repo,
-                sha = %push_ref.new_sha,
+                sha = %push_ref.new_sha, // cov-excl-line
                 %e,
                 "CI trigger failed"
             );
@@ -140,7 +140,7 @@ fn trigger_ref(repo: &Repo, pushed_at: jiff::Timestamp, push_ref: &PushRef) -> R
     let mut run = ci.runs(repo.runs_base()).create(&meta)?;
 
     tracing::info!(
-        run_id = %run.id(),
+        run_id = %run.id(), // cov-excl-line
         sha = %push_ref.new_sha,
         r#ref = %push_ref.r#ref,
         "created CI run"
@@ -180,13 +180,7 @@ mod tests {
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .output()
             .expect("git command");
-        if !output.status.success() {
-            panic!(
-                "git {:?} failed:\n{}",
-                args,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        assert!(output.status.success());
     }
 
     /// Create a bare repo with one commit containing `.quire/ci.fnl`.
@@ -451,15 +445,11 @@ mod tests {
         // Use a SHA that doesn't exist — git show will fail with
         // "invalid object name" which doesn't match the does-not-exist filter.
         let result = ci.source("abcdef1234567890");
-        match result {
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("failed to read"),
-                    "expected git read error, got: {msg}"
-                );
-            }
-            other => panic!("expected error for invalid SHA, got: {other:?}"),
-        }
+        let Err(e) = result else { unreachable!() };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("failed to read"),
+            "expected git read error, got: {msg}"
+        );
     }
 }

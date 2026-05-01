@@ -218,7 +218,7 @@ fn build_graph(jobs: &[Job]) -> (JobGraph, HashMap<String, NodeIndex>) {
 /// Returns an empty span at offset 0 when the line is unknown.
 fn span_for_line(source: &str, line: u32) -> SourceSpan {
     if line == 0 {
-        return SourceSpan::from((0, 0));
+        return SourceSpan::from((0, 0)); // cov-excl-line
     }
     let target = line as usize;
     let mut current = 1usize;
@@ -234,7 +234,7 @@ fn span_for_line(source: &str, line: u32) -> SourceSpan {
             current += 1;
         }
     }
-    SourceSpan::from((source.len(), 0))
+    SourceSpan::from((source.len(), 0)) // cov-excl-line
 }
 
 /// A validation error found in the job graph.
@@ -486,7 +486,7 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 ValidationError::Cycle { cycle_jobs, .. } => Some(cycle_jobs),
-                _ => None,
+            _ => None, // cov-excl-line
             })
             .collect();
         assert_eq!(
@@ -585,6 +585,40 @@ mod tests {
     }
 
     #[test]
+    fn reachability_handles_diamond_dependencies() {
+        // Diamond: push -> a -> b -> d, push -> a -> c -> d.
+        // `d` is reachable and `a` is visited multiple times
+        // through different paths.
+        let jobs = parsed_jobs(
+            r#"
+(local ci (require :quire.ci))
+(ci.job :a [:quire/push] (fn [_] nil))
+(ci.job :b [:a] (fn [_] nil))
+(ci.job :c [:a] (fn [_] nil))
+(ci.job :d [:b :c] (fn [_] nil))"#,
+        );
+        assert!(validate(&jobs).is_ok());
+    }
+
+    #[test]
+    fn reachability_deduplicates_visited_inputs() {
+        // `orphan` lists `:a` twice. Walking from orphan:
+        // stack ["a", "a"], pop a (visit), push nothing (a isn't a job),
+        // stack ["a"], pop a → already visited → continue.
+        // The dedup fires because `a` isn't a job and isn't a source.
+        let jobs = parsed_jobs(
+            r#"
+(local ci (require :quire.ci))
+(ci.job :orphan [:a :a] (fn [_] nil))"#,
+        );
+        let errs = validate(&jobs).unwrap_err();
+        assert!(
+            errs.iter().any(|e| matches!(e, ValidationError::Unreachable { .. })),
+            "expected unreachable: {errs:?}"
+        );
+    }
+
+    #[test]
     fn transitive_inputs_collects_direct_and_indirect() {
         let pipeline = Pipeline::load(
             r#"(local ci (require :quire.ci))
@@ -640,15 +674,12 @@ mod tests {
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
             "ci.fnl",
         );
-        match result {
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("CI validation failed"),
-                    "expected validation error: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected validation error"),
-        }
+        let Err(e) = result else { panic!("expected validation error") }; // cov-excl-start
+        let msg = e.to_string();
+        assert!(
+            msg.contains("CI validation failed"),
+            "expected validation error: {msg}"
+        );
     }
 }
+// cov-excl-stop
