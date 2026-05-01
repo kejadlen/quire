@@ -1,1 +1,1 @@
-{:github {:mirror "https://github.com/kejadlen/quire.git"}}
+{:mirror {:url "https://github.com/kejadlen/quire.git"}}
