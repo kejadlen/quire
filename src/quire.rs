@@ -70,7 +70,8 @@ where
 ///
 /// Created by `Quire::repo` after validating the name.
 pub struct Repo {
-    base_dir: PathBuf,
+    /// The quire root directory (e.g. `/var/quire`).
+    quire_root: PathBuf,
     name: String,
 }
 
@@ -80,10 +81,10 @@ impl Repo {
     /// Allows at most one level of grouping (e.g. `foo.git` or `work/foo.git`).
     /// Rejects path traversal, missing `.git` suffix, empty segments, and
     /// reserved path components.
-    pub fn new(base: &Path, name: &str) -> Result<Self> {
+    pub fn new(repos_base: &Path, name: &str) -> Result<Self> {
         Self::validate_name(name)?;
         Ok(Self {
-            base_dir: base.to_path_buf(),
+            quire_root: repos_base.parent().unwrap_or(repos_base).to_path_buf(),
             name: name.to_string(),
         })
     }
@@ -92,15 +93,18 @@ impl Repo {
     ///
     /// Verifies the path falls under `base` and passes name validation.
     /// Used by hooks that receive `GIT_DIR` from git.
-    pub fn from_path(base: &Path, path: &Path) -> Result<Self> {
-        let relative = path.strip_prefix(base).into_diagnostic().context(format!(
-            "path is not under repos directory: {}",
-            path.display()
-        ))?;
+    pub fn from_path(repos_base: &Path, path: &Path) -> Result<Self> {
+        let relative = path
+            .strip_prefix(repos_base)
+            .into_diagnostic()
+            .context(format!(
+                "path is not under repos directory: {}",
+                path.display()
+            ))?;
         let name = relative.to_string_lossy();
         Self::validate_name(&name)?;
         Ok(Self {
-            base_dir: base.to_path_buf(),
+            quire_root: repos_base.parent().unwrap_or(repos_base).to_path_buf(),
             name: name.to_string(),
         })
     }
@@ -132,7 +136,7 @@ impl Repo {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.base_dir.join(&self.name)
+        self.quire_root.join("repos").join(&self.name)
     }
 
     /// The repo name relative to the repos directory (e.g. `foo.git`).
@@ -161,7 +165,7 @@ impl Repo {
 
     /// The base directory for CI runs (`runs/<repo>/`).
     pub fn runs_base(&self) -> PathBuf {
-        self.base_dir.join("runs").join(&self.name)
+        self.quire_root.join("runs").join(&self.name)
     }
 
     /// Access CI runs for this repo.
@@ -420,7 +424,7 @@ mod tests {
 
         let repo = Repo {
             name: "test.git".to_string(),
-            base_dir: bare.parent().unwrap().to_path_buf(),
+            quire_root: bare.parent().unwrap().parent().unwrap().to_path_buf(),
         };
 
         (dir, repo)
@@ -464,7 +468,7 @@ mod tests {
 
         let repo = Repo {
             name: "test.git".to_string(),
-            base_dir: bare.parent().unwrap().to_path_buf(),
+            quire_root: bare.parent().unwrap().parent().unwrap().to_path_buf(),
         };
         (dir, repo)
     }
@@ -607,7 +611,7 @@ mod tests {
         let bare = dir.path().join("repos").join("test.git");
         let repo = Repo {
             name: "test.git".to_string(),
-            base_dir: bare.parent().unwrap().to_path_buf(),
+            quire_root: bare.parent().unwrap().parent().unwrap().to_path_buf(),
         };
 
         let config = repo.config().expect("config should load");
@@ -639,7 +643,7 @@ mod tests {
         let bare = dir.path().join("repos").join("test.git");
         let repo = Repo {
             name: "test.git".to_string(),
-            base_dir: bare.parent().unwrap().to_path_buf(),
+            quire_root: bare.parent().unwrap().parent().unwrap().to_path_buf(),
         };
 
         let config = repo.config().expect("should return default config");
@@ -652,7 +656,7 @@ mod tests {
         let bare = dir.path().join("repos").join("test.git");
         let repo = Repo {
             name: "test.git".to_string(),
-            base_dir: bare.parent().unwrap().to_path_buf(),
+            quire_root: bare.parent().unwrap().parent().unwrap().to_path_buf(),
         };
 
         let err = repo.config().unwrap_err();
@@ -834,17 +838,14 @@ mod tests {
     fn push_to_mirror_pushes_main_to_file_mirror() {
         let dir = tempfile::tempdir().expect("tempdir");
         let work = dir.path().join("work");
-        let source = dir.path().join("source.git");
+        let source = dir.path().join("repos").join("source.git");
         let target = dir.path().join("target.git");
 
         make_bare_with_main(&work, &source);
         fs_err::create_dir_all(&target).expect("mkdir target");
         git_in(&target, &["init", "--bare", "-b", "main"]);
 
-        let repo = Repo {
-            base_dir: source.parent().unwrap().to_path_buf(),
-            name: "source.git".to_string(),
-        };
+        let repo = Repo::new(&dir.path().join("repos"), "source.git").expect("repo");
         let mirror = MirrorConfig {
             url: format!("file://{}", target.display()),
         };
@@ -858,14 +859,11 @@ mod tests {
     fn push_to_mirror_errors_when_target_unreachable() {
         let dir = tempfile::tempdir().expect("tempdir");
         let work = dir.path().join("work");
-        let source = dir.path().join("source.git");
+        let source = dir.path().join("repos").join("source.git");
 
         make_bare_with_main(&work, &source);
 
-        let repo = Repo {
-            base_dir: source.parent().unwrap().to_path_buf(),
-            name: "source.git".to_string(),
-        };
+        let repo = Repo::new(&dir.path().join("repos"), "source.git").expect("repo");
         let mirror = MirrorConfig {
             url: "file:///nonexistent/quire-test/target.git".to_string(),
         };
@@ -884,7 +882,7 @@ mod tests {
         let bare = dir.path().join("repos").join("test.git");
         let repo = Repo {
             name: "test.git".to_string(),
-            base_dir: bare.parent().unwrap().to_path_buf(),
+            quire_root: bare.parent().unwrap().parent().unwrap().to_path_buf(),
         };
 
         let err = repo.config().unwrap_err();
