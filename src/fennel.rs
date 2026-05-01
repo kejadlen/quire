@@ -371,7 +371,9 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            label.expect("label should be set when line is extractable").offset(),
+            label
+                .expect("label should be set when line is extractable")
+                .offset(),
             1,
             "label should point at line 2 despite colons in name"
         );

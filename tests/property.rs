@@ -46,7 +46,11 @@ fn updated_refs_excludes_only_zero_sha_deletions(tc: TestCase) {
     let event = tc.draw(push_event());
     let kept = event.updated_refs();
 
-    let expected: Vec<&PushRef> = event.refs.iter().filter(|r| r.new_sha != ZERO_SHA).collect();
+    let expected: Vec<&PushRef> = event
+        .refs
+        .iter()
+        .filter(|r| r.new_sha != ZERO_SHA)
+        .collect();
     assert_eq!(kept, expected);
 
     let deleted = event.refs.iter().filter(|r| r.new_sha == ZERO_SHA).count();
