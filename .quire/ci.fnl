@@ -10,7 +10,7 @@
                           (. :stdout)
                           (: :gsub "\n$" ""))
                  tag (.. :v date "+" (sha:sub 1 12))
-                 encoded (-> (sh "printf '%s' \"$T\" | base64"
+                 encoded (-> (sh "printf '%s' \"$T\" | base64 --wrap=0"
                                  {:env {:T (.. "x-access-token:" token)}})
                              (. :stdout)
                              (: :gsub "\n$" ""))
