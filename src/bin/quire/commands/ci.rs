@@ -76,7 +76,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
-    let exec_result = run.execute(pipeline, secrets, &repo_path);
+    let exec_result = run.execute(pipeline, secrets, &repo_path.join(".git"));
 
     match exec_result {
         Ok(outputs) => {
