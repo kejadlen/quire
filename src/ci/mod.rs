@@ -170,7 +170,7 @@ fn trigger_ref(
         }
     };
 
-    run.execute(pipeline, secrets.clone())?;
+    run.execute(pipeline, secrets.clone(), &repo.path())?;
     Ok(())
 }
 

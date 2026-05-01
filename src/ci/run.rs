@@ -269,10 +269,11 @@ impl Run {
         mut self,
         pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
+        git_dir: &std::path::Path,
     ) -> Result<HashMap<String, Vec<ShOutput>>> {
         let meta = self.read_meta()?;
 
-        let runtime = Rc::new(Runtime::new(pipeline, secrets, &meta));
+        let runtime = Rc::new(Runtime::new(pipeline, secrets, &meta, git_dir));
 
         let lua = runtime.lua();
         let rt_value = RuntimeHandle(runtime.clone())
@@ -760,7 +761,9 @@ mod tests {
         );
 
         let run_id = run.id().to_string();
-        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute");
 
         // Verify the run landed in complete/ on disk.
         let completed = runs.base.join(RunState::Complete.dir_name()).join(&run_id);
@@ -792,7 +795,8 @@ mod tests {
         );
         let pipeline = load(&source);
 
-        run.execute(pipeline, HashMap::new()).expect("execute");
+        run.execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute");
 
         let contents = fs_err::read_to_string(&log).expect("read log");
         assert_eq!(contents, "a\nb\n");
@@ -812,7 +816,7 @@ mod tests {
 
         let run_id = run.id().to_string();
         let err = run
-            .execute(pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
 
@@ -835,7 +839,9 @@ mod tests {
       (sh ["echo" push.sha push.ref]))))"#,
         );
 
-        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute");
 
         let grab = &outputs["grab"];
         assert_eq!(grab.len(), 1);
@@ -859,7 +865,9 @@ mod tests {
       (sh ["echo" push.sha]))))"#,
         );
 
-        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute");
 
         let b = &outputs["b"];
         assert_eq!(b.len(), 1);
@@ -878,7 +886,7 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
             unreachable!()
@@ -905,7 +913,7 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
             .expect_err("expected failure");
         let Error::JobFailed { source, .. } = err else {
             unreachable!()
@@ -929,7 +937,7 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new())
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
             .expect_err("expected failure");
         let Error::JobFailed { source, .. } = err else {
             unreachable!()
@@ -957,7 +965,9 @@ mod tests {
       (sh ["echo" (tostring a-outputs)]))))"#,
         );
 
-        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute");
         let b = &outputs["b"];
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].stdout, "nil\n");
@@ -975,7 +985,8 @@ mod tests {
         );
 
         let run_id = run.id().to_string();
-        run.execute(pipeline, HashMap::new()).expect("execute");
+        run.execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute");
 
         let log_path = runs
             .base
@@ -1010,7 +1021,7 @@ mod tests {
         );
 
         let run_id = run.id().to_string();
-        let _ = run.execute(pipeline, HashMap::new());
+        let _ = run.execute(pipeline, HashMap::new(), std::path::Path::new("."));
 
         let failed_dir = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
         assert!(failed_dir.exists(), "run should be in failed/");

@@ -44,7 +44,7 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
     let commit = resolve_commit(maybe_sha)?;
-    let ci = Ci::new(repo_path);
+    let ci = Ci::new(repo_path.clone());
 
     // Pull secrets from the global config; absence is fine for local
     // testing. A broken-but-present config is a real error. Secrets
@@ -76,7 +76,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
-    let exec_result = run.execute(pipeline, secrets);
+    let exec_result = run.execute(pipeline, secrets, &repo_path);
 
     match exec_result {
         Ok(outputs) => {

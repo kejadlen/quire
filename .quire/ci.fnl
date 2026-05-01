@@ -3,7 +3,7 @@
 
 (job :tag-and-mirror [:quire/push]
      (fn [{: sh : secret : jobs}]
-       (let [{: ref : sha} (jobs :quire/push)
+       (let [{: ref : sha : git-dir} (jobs :quire/push)
              token (secret :github_token)]
          (when (= ref "refs/heads/main")
            (let [date (-> (sh "date --utc +%Y-%m-%d")
@@ -14,12 +14,13 @@
                                  {:env {:T (.. "x-access-token:" token)}})
                              (. :stdout)
                              (: :gsub "\n$" ""))
-                 auth-header (.. "Authorization: Basic " encoded)]
-             (sh [:git :tag tag sha])
+                 auth-header (.. "Authorization: Basic " encoded)
+                 git-opts {:env {:GIT_DIR git-dir}}]
+             (sh [:git :tag tag sha] git-opts)
              (sh [:git
                   :-c
                   (.. :http.extraHeader= auth-header)
                   :push
                   :--porcelain
                   mirror-url
-                  (.. :refs/tags/ tag)]))))))
+                  (.. :refs/tags/ tag)] git-opts))))))

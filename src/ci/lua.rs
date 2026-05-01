@@ -139,6 +139,7 @@ impl Runtime {
         pipeline: super::pipeline::Pipeline,
         secrets: HashMap<String, SecretString>,
         meta: &super::run::RunMeta,
+        git_dir: &std::path::Path,
     ) -> Self {
         let transitive = pipeline.transitive_inputs();
         let lua = pipeline.fennel().lua();
@@ -149,6 +150,8 @@ impl Runtime {
         push.set("ref", meta.r#ref.as_str()).expect("set ref");
         push.set("pushed-at", meta.pushed_at.to_string().as_str())
             .expect("set pushed-at");
+        push.set("git-dir", git_dir.to_string_lossy().as_ref())
+            .expect("set git-dir");
         let push_value = push.into_lua(lua).expect("push table to value");
 
         // Build per-job input views from transitive reachability.
