@@ -161,8 +161,7 @@ fn trigger_ref(
         "created CI run"
     );
 
-    let name = CI_FNL.to_string();
-    let pipeline = match Pipeline::load(&source, &name) {
+    let pipeline = match Pipeline::load(&source, CI_FNL) {
         Ok(p) => p,
         Err(e) => {
             run.transition(RunState::Active)?;
