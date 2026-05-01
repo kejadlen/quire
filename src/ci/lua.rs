@@ -361,10 +361,12 @@ impl Cmd {
     // TODO: stream stdout/stderr live instead of buffering. `output()`
     // captures the full child output in memory and only returns at exit,
     // so long-running or chatty jobs show nothing until they finish.
-    // The streaming rewrite should also revisit the `from_utf8_lossy`
-    // calls below — non-UTF-8 bytes are silently replaced with U+FFFD
-    // and `:stdout` / `:stderr` end up as mojibake with no signal that
-    // anything was lost.
+    // The streaming rewrite should write to the per-job log file
+    // (`jobs/<id>/log.yml`) as output arrives instead of batching
+    // everything into `write_all_logs` at the end — see `Run::execute`.
+    // Also revisit the `from_utf8_lossy` calls below — non-UTF-8 bytes
+    // are silently replaced with U+FFFD and `:stdout` / `:stderr` end
+    // up as mojibake with no signal that anything was lost.
     fn run(self, opts: ShOpts) -> std::io::Result<ShOutput> {
         let cmd_str = format!("{self}");
         let mut command: std::process::Command = self.into();

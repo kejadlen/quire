@@ -320,11 +320,11 @@ impl Run {
 
     /// Write per-job log files from the captured `(sh …)` outputs.
     ///
-    /// Creates `jobs/<job-id>/log` in the run directory for each job
-    /// that has outputs. Each log entry shows the command, exit code,
-    /// and any stdout/stderr output. Called before the final state
-    /// transition so logs are available for both successful and failed
-    /// runs.
+    /// Creates `jobs/<job-id>/log.yml` in the run directory for each
+    /// job that has outputs. The file contains a YAML list of `ShOutput`
+    /// entries — command, exit code, stdout, stderr — one per `(sh …)`
+    /// call. Written before the final state transition so logs are
+    /// available for both successful and failed runs.
     fn write_all_logs(&self, outputs: &HashMap<String, Vec<ShOutput>>) -> Result<()> {
         for (job_id, sh_outputs) in outputs {
             if sh_outputs.is_empty() {
@@ -332,11 +332,7 @@ impl Run {
             }
             let job_dir = self.path().join("jobs").join(job_id);
             fs_err::create_dir_all(&job_dir)?;
-            let mut log = String::new();
-            for output in sh_outputs {
-                log.push_str(&format_log_entry(output));
-            }
-            fs_err::write(job_dir.join("log"), &log)?;
+            write_yaml(&job_dir.join("log.yml"), sh_outputs)?;
         }
         Ok(())
     }
@@ -418,34 +414,6 @@ pub(crate) fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<
 fn read_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let f = fs_err::File::open(path)?;
     Ok(serde_yaml_ng::from_reader(std::io::BufReader::new(f))?)
-}
-
-/// Format a single `sh` invocation as a readable log entry.
-fn format_log_entry(output: &ShOutput) -> String {
-    let mut s = String::new();
-    s.push_str("$ ");
-    s.push_str(&output.cmd);
-    s.push('\n');
-    s.push_str("exit: ");
-    s.push_str(&output.exit.to_string());
-    s.push('\n');
-    if !output.stdout.is_empty() {
-        s.push('\n');
-        s.push_str(&output.stdout);
-        if !output.stdout.ends_with('\n') {
-            s.push('\n');
-        }
-    }
-    if !output.stderr.is_empty() {
-        s.push('\n');
-        s.push_str("[stderr]\n");
-        s.push_str(&output.stderr);
-        if !output.stderr.ends_with('\n') {
-            s.push('\n');
-        }
-    }
-    s.push_str("---\n");
-    s
 }
 
 #[cfg(test)]
@@ -1015,16 +983,17 @@ mod tests {
             .join(&run_id)
             .join("jobs")
             .join("greet")
-            .join("log");
+            .join("log.yml");
         assert!(log_path.exists(), "job log file should exist");
 
-        let log = fs_err::read_to_string(&log_path).expect("read log");
-        assert!(
-            log.contains("$ [\"echo\", \"hello\"]"),
-            "log should show command: {log}"
-        );
-        assert!(log.contains("exit: 0"), "log should show exit code: {log}");
-        assert!(log.contains("hello"), "log should show stdout: {log}");
+        let entries: Vec<ShOutput> =
+            serde_yaml_ng::from_str(&fs_err::read_to_string(&log_path).expect("read log"))
+                .expect("parse log");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].exit, 0);
+        assert_eq!(entries[0].stdout, "hello\n");
+        assert!(entries[0].stderr.is_empty());
+        assert_eq!(entries[0].cmd, "[\"echo\", \"hello\"]");
     }
 
     #[test]
@@ -1046,16 +1015,16 @@ mod tests {
         let failed_dir = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
         assert!(failed_dir.exists(), "run should be in failed/");
 
-        let log_path = failed_dir.join("jobs").join("a").join("log");
+        let log_path = failed_dir.join("jobs").join("a").join("log.yml");
         assert!(
             log_path.exists(),
             "job 'a' log should exist even though 'b' failed"
         );
 
-        let log = fs_err::read_to_string(&log_path).expect("read log");
-        assert!(
-            log.contains("from-a"),
-            "log should contain a's output: {log}"
-        );
+        let entries: Vec<ShOutput> =
+            serde_yaml_ng::from_str(&fs_err::read_to_string(&log_path).expect("read log"))
+                .expect("parse log");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].stdout, "from-a\n");
     }
 }
