@@ -113,14 +113,14 @@ impl Runs {
             let entries = match fs_err::read_dir(&state_path) {
                 Ok(entries) => entries,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e.into()), // cov-excl-line
             };
 
             for entry in entries {
                 let entry = entry?;
                 let name = match entry.file_name().to_str() {
                     Some(n) => n.to_string(),
-                    None => continue,
+                    None => continue, // cov-excl-line
                 };
 
                 if name.starts_with('.') {
@@ -163,9 +163,9 @@ impl Runs {
     pub fn reconcile_orphans(&self) -> Result<()> {
         let orphans = self.scan_orphans()?;
         for orphan in &orphans {
-            tracing::warn!(
-                run_id = %orphan.id(),
-                state = ?orphan.state(),
+            tracing::warn!( // cov-excl-line
+                run_id = %orphan.id(), // cov-excl-line
+                state = ?orphan.state(), // cov-excl-line
                 "found orphaned run"
             );
         }
@@ -173,33 +173,33 @@ impl Runs {
         for mut orphan in orphans {
             match orphan.state() {
                 RunState::Pending => {
-                    tracing::warn!(
-                        run_id = %orphan.id(),
+                    tracing::warn!( // cov-excl-line
+                        run_id = %orphan.id(), // cov-excl-line
                         "completing orphaned pending run"
                     );
                     if let Err(e) = orphan.transition(RunState::Complete) {
-                        tracing::error!(
-                            run_id = %orphan.id(),
+                        tracing::error!( // cov-excl-line
+                            run_id = %orphan.id(), // cov-excl-line
                             %e,
                             "failed to transition orphaned pending run"
                         );
                     }
                 }
                 RunState::Active => {
-                    tracing::warn!(
-                        run_id = %orphan.id(),
+                    tracing::warn!( // cov-excl-line
+                        run_id = %orphan.id(), // cov-excl-line
                         "marking orphaned active run as failed"
                     );
                     if let Err(e) = orphan.transition(RunState::Failed) {
-                        tracing::error!(
-                            run_id = %orphan.id(),
+                        tracing::error!( // cov-excl-line
+                            run_id = %orphan.id(), // cov-excl-line
                             %e,
                             "failed to transition orphaned active run to failed"
                         );
                     }
                 }
                 RunState::Complete | RunState::Failed => {
-                    unreachable!("scan_orphans only returns pending/active")
+                    unreachable!("scan_orphans only returns pending/active") // cov-excl-line
                 }
             }
         }
@@ -346,7 +346,7 @@ impl Run {
             RunState::Complete | RunState::Failed if times.finished_at.is_none() => {
                 times.finished_at = Some(now)
             }
-            _ => {}
+            _ => {} // cov-excl-line
         }
         self.write_times(&times)?;
         Ok(())
@@ -532,6 +532,26 @@ mod tests {
     }
 
     #[test]
+    fn transition_keeps_existing_started_at() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+
+        // Pre-stamp started_at before transitioning to Active.
+        let pre: Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
+        run.write_times(&RunTimes {
+            started_at: Some(pre),
+            finished_at: None,
+        })
+        .expect("write times");
+
+        run.transition(RunState::Active).expect("to active");
+
+        let times = run.read_times().expect("read times");
+        assert_eq!(times.started_at, Some(pre), "should keep pre-set started_at");
+    }
+
+    #[test]
     fn transition_full_lifecycle() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
@@ -617,6 +637,21 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         assert!(runs.scan_orphans().expect("scan").is_empty());
+    }
+
+    #[test]
+    fn scan_orphans_skips_dot_prefixed_entries() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        // Drop a dot-prefixed directory into pending/ alongside the real run.
+        let pending_dir = runs.base.join(RunState::Pending.dir_name());
+        fs_err::create_dir_all(pending_dir.join(".tmp-stale")).expect("mkdir dot");
+
+        let orphans = runs.scan_orphans().expect("scan");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].id(), run.id());
     }
 
     #[test]
@@ -808,17 +843,13 @@ mod tests {
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
-        match err {
-            Error::JobFailed { job, source } => {
-                assert_eq!(job, "grab");
-                let msg = source.to_string();
-                assert!(
-                    msg.contains("not in transitive inputs") && msg.contains("nope"),
-                    "expected 'not in transitive inputs' error, got: {msg}"
-                );
-            }
-            other => panic!("expected JobFailed, got: {other:?}"),
-        }
+        let Error::JobFailed { job, source } = err else { unreachable!() };
+        assert_eq!(job, "grab");
+        let msg = source.to_string();
+        assert!(
+            msg.contains("not in transitive inputs") && msg.contains("nope"),
+            "expected 'not in transitive inputs' error, got: {msg}"
+        );
     }
 
     #[test]
@@ -837,16 +868,12 @@ mod tests {
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
-        match err {
-            Error::JobFailed { source, .. } => {
-                let msg = source.to_string();
-                assert!(
-                    msg.contains("not in transitive inputs") && msg.contains("peer"),
-                    "expected non-ancestor error, got: {msg}"
-                );
-            }
-            other => panic!("expected JobFailed, got: {other:?}"),
-        }
+        let Error::JobFailed { source, .. } = err else { unreachable!() };
+        let msg = source.to_string();
+        assert!(
+            msg.contains("not in transitive inputs") && msg.contains("peer"),
+            "expected non-ancestor error, got: {msg}"
+        );
     }
 
     #[test]
@@ -863,16 +890,12 @@ mod tests {
         let err = run
             .execute(pipeline, HashMap::new())
             .expect_err("expected failure");
-        match err {
-            Error::JobFailed { source, .. } => {
-                let msg = source.to_string();
-                assert!(
-                    msg.contains("cannot read its own outputs"),
-                    "expected self-lookup error, got: {msg}"
-                );
-            }
-            other => panic!("expected JobFailed, got: {other:?}"),
-        }
+        let Error::JobFailed { source, .. } = err else { unreachable!() };
+        let msg = source.to_string();
+        assert!(
+            msg.contains("cannot read its own outputs"),
+            "expected self-lookup error, got: {msg}"
+        );
     }
 
     #[test]

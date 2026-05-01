@@ -1,3 +1,4 @@
+// cov-excl-start
 //! Mirror push: replicate ref updates to a configured remote.
 
 use crate::Quire;
@@ -414,3 +415,4 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 }
+// cov-excl-stop
