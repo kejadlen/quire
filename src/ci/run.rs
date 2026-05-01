@@ -217,12 +217,6 @@ pub struct Run {
     base: PathBuf,
     state: RunState,
     id: String,
-    /// Per-execution runtime shared with the Lua bridge: holds the
-    /// secrets exposed to the script, tracks the currently-running
-    /// job, and accumulates per-job captured `sh` output. Replaced
-    /// fresh each `execute` call so secrets are scoped to that call.
-    /// `None` before `execute` is called.
-    runtime: Option<Rc<Runtime>>,
 }
 
 impl Run {
@@ -247,12 +241,7 @@ impl Run {
     /// `pending/`, `active/`). Returns an error if `meta.yml` or
     /// `times.yml` are missing or unreadable.
     pub fn open(base: PathBuf, state: RunState, id: String) -> Result<Self> {
-        let run = Self {
-            base,
-            state,
-            id,
-            runtime: None,
-        };
+        let run = Self { base, state, id };
         run.read_meta()?;
         run.read_times()?;
         Ok(run)
@@ -265,9 +254,8 @@ impl Run {
     /// (`:quire/push` from `meta.yml`), and the per-job transitive-input
     /// sets; installs it on the VM, topo-sorts the jobs, transitions
     /// Pending → Active, then invokes each `run_fn` in dependency order
-    /// with the runtime handle as its sole argument. `(sh …)` calls
-    /// record their captured output under the current job — readable via
-    /// [`Run::outputs`] after `execute` returns. The run finishes in
+    /// with the runtime handle as its sole argument. Returns a map of
+    /// job id → captured `(sh …)` outputs. The run finishes in
     /// `Complete` if every job's `run_fn` returned without error,
     /// otherwise `Failed`.
     ///
@@ -277,29 +265,10 @@ impl Run {
         &mut self,
         pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, Vec<ShOutput>>> {
         let meta = self.read_meta()?;
 
-        // Extract execution plan before consuming the pipeline for its VM.
-        let topo: Vec<String> = pipeline
-            .topo_order()
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let transitive = pipeline.transitive_inputs();
-        let run_fns: Vec<(String, mlua::Function)> = topo
-            .iter()
-            .map(|id| {
-                let job = pipeline
-                    .job(id)
-                    .expect("topo_order returned a job id not in pipeline");
-                (job.id.clone(), job.run_fn.clone())
-            })
-            .collect();
-
-        let fennel = pipeline.into_fennel();
-        let runtime = Rc::new(Runtime::new(fennel, secrets, &meta, &transitive));
-        self.runtime = Some(runtime.clone());
+        let runtime = Rc::new(Runtime::new(pipeline, secrets, &meta));
 
         let lua = runtime.lua();
         let rt_value = RuntimeHandle(runtime.clone())
@@ -308,40 +277,31 @@ impl Run {
 
         self.transition(RunState::Active)?;
 
-        for (job_id, run_fn) in &run_fns {
-            self.runtime
-                .as_ref()
-                .expect("runtime installed")
-                .enter_job(job_id);
+        for job_id in runtime.topo_order() {
+            let run_fn = runtime
+                .job(job_id)
+                .expect("topo_order returned a job id not in pipeline")
+                .run_fn
+                .clone();
+
+            runtime.enter_job(job_id);
             let result = run_fn.call::<mlua::Value>(rt_value.clone());
-            self.runtime
-                .as_ref()
-                .expect("runtime installed")
-                .leave_job();
+            runtime.leave_job();
 
             if let Err(e) = result {
                 lua.remove_app_data::<Rc<Runtime>>();
                 self.transition(RunState::Failed)?;
                 return Err(Error::JobFailed {
-                    job: job_id.clone(),
+                    job: job_id.to_string(),
                     source: Box::new(e),
                 });
             }
         }
 
+        let outputs = runtime.take_outputs();
         lua.remove_app_data::<Rc<Runtime>>();
         self.transition(RunState::Complete)?;
-        Ok(())
-    }
-
-    /// Snapshot the `(sh …)` outputs recorded for `job_id` during the
-    /// most recent `execute` call. Empty if the job hasn't run or
-    /// produced no output.
-    pub fn outputs(&self, job_id: &str) -> Vec<ShOutput> {
-        self.runtime
-            .as_ref()
-            .map(|rt| rt.outputs(job_id))
-            .unwrap_or_default()
+        Ok(outputs)
     }
 
     /// Transition the run from its current state to a new state.
@@ -590,7 +550,6 @@ mod tests {
             base: PathBuf::from("/tmp/quire-test-runs/test.git"),
             state: RunState::Pending,
             id: uuid::Uuid::now_v7().to_string(),
-            runtime: None,
         };
 
         let result = run.transition(RunState::Active);
@@ -697,12 +656,12 @@ mod tests {
 (ci.job :b [:a] (fn [{: sh}] (sh ["echo" "from-b"])))"#,
         );
 
-        run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
 
         assert_eq!(run.state(), RunState::Complete);
 
-        let a = run.outputs("a");
-        let b = run.outputs("b");
+        let a = &outputs["a"];
+        let b = &outputs["b"];
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].stdout, "from-a\n");
         assert_eq!(b.len(), 1);
@@ -750,10 +709,6 @@ mod tests {
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
         assert_eq!(run.state(), RunState::Failed);
-        assert!(
-            run.outputs("b").is_empty(),
-            "b should not have run after a failed"
-        );
     }
 
     #[test]
@@ -770,11 +725,11 @@ mod tests {
       (sh ["echo" push.sha push.ref]))))"#,
         );
 
-        run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
 
-        let outputs = run.outputs("grab");
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].stdout, "abc123 refs/heads/main\n");
+        let grab = &outputs["grab"];
+        assert_eq!(grab.len(), 1);
+        assert_eq!(grab[0].stdout, "abc123 refs/heads/main\n");
     }
 
     #[test]
@@ -794,11 +749,11 @@ mod tests {
       (sh ["echo" push.sha]))))"#,
         );
 
-        run.execute(pipeline, HashMap::new()).expect("execute");
+        let outputs = run.execute(pipeline, HashMap::new()).expect("execute");
 
-        let outputs = run.outputs("b");
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].stdout, "abc123\n");
+        let b = &outputs["b"];
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].stdout, "abc123\n");
     }
 
     #[test]

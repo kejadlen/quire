@@ -101,13 +101,9 @@ impl Pipeline {
             .map(|&idx| &self.jobs[self.graph[idx]])
     }
 
-    /// Consume the pipeline and return its Fennel/Lua VM.
-    ///
-    /// The job functions (`run_fn`) are `'static` handles into this VM,
-    /// so they remain callable after extraction as long as the VM stays
-    /// alive.
-    pub(crate) fn into_fennel(self) -> Fennel {
-        self.fennel
+    /// Borrow the underlying Fennel/Lua VM.
+    pub(crate) fn fennel(&self) -> &Fennel {
+        &self.fennel
     }
 
     /// Return job IDs in topological order — dependencies before

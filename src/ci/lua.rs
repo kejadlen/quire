@@ -8,7 +8,7 @@
 //! each `run-fn` at execute time.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{IntoLua, Lua, LuaSerdeExt};
@@ -116,7 +116,7 @@ fn register_job(
 /// `(secret …)` and `(jobs …)` require a runtime — without one, calls
 /// error.
 pub(super) struct Runtime {
-    fennel: Fennel,
+    pipeline: super::pipeline::Pipeline,
     secrets: HashMap<String, SecretString>,
     inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
     current_job: RefCell<Option<String>>,
@@ -124,18 +124,17 @@ pub(super) struct Runtime {
 }
 
 impl Runtime {
-    /// Build a fresh runtime owning `fennel` (the Lua VM).
+    /// Consume `pipeline` and build a runtime ready to execute it.
     ///
-    /// `meta` provides the push data for `:quire/push` source outputs.
-    /// `transitive` maps each job to its set of reachable input names;
-    /// the runtime builds per-job views from this and the source values.
+    /// Takes ownership of the pipeline (including its Lua VM). `meta`
+    /// provides the push data for `:quire/push` source outputs.
     pub(super) fn new(
-        fennel: Fennel,
+        pipeline: super::pipeline::Pipeline,
         secrets: HashMap<String, SecretString>,
         meta: &super::run::RunMeta,
-        transitive: &HashMap<String, HashSet<String>>,
     ) -> Self {
-        let lua = fennel.lua();
+        let transitive = pipeline.transitive_inputs();
+        let lua = pipeline.fennel().lua();
 
         // Build the push outputs as a Lua table.
         let push = lua.create_table().expect("create push table");
@@ -147,7 +146,7 @@ impl Runtime {
 
         // Build per-job input views from transitive reachability.
         let mut inputs = HashMap::new();
-        for (job_id, reachable) in transitive {
+        for (job_id, reachable) in &transitive {
             let mut view = HashMap::new();
             for name in reachable {
                 let value = if name == "quire/push" {
@@ -161,7 +160,7 @@ impl Runtime {
         }
 
         Self {
-            fennel,
+            pipeline,
             secrets,
             inputs,
             current_job: RefCell::new(None),
@@ -171,7 +170,17 @@ impl Runtime {
 
     /// Borrow the underlying Lua VM.
     pub(super) fn lua(&self) -> &Lua {
-        self.fennel.lua()
+        self.pipeline.fennel().lua()
+    }
+
+    /// The topo-sorted job IDs in execution order.
+    pub(super) fn topo_order(&self) -> Vec<&str> {
+        self.pipeline.topo_order()
+    }
+
+    /// Look up a job by id.
+    pub(super) fn job(&self, id: &str) -> Option<&super::pipeline::Job> {
+        self.pipeline.job(id)
     }
 
     /// Mark `id` as the currently executing job. `(sh …)` invocations
@@ -187,19 +196,22 @@ impl Runtime {
         *self.current_job.borrow_mut() = None;
     }
 
-    /// Snapshot the recorded outputs for `id`. Empty if the job
-    /// produced none (or hasn't run).
-    pub(super) fn outputs(&self, id: &str) -> Vec<ShOutput> {
-        self.outputs.borrow().get(id).cloned().unwrap_or_default()
+    /// Drain all recorded outputs, returning them keyed by job id.
+    pub(super) fn take_outputs(&self) -> HashMap<String, Vec<ShOutput>> {
+        std::mem::take(&mut *self.outputs.borrow_mut())
     }
 }
 
 #[cfg(test)]
 impl Runtime {
-    /// Minimal constructor for tests — no inputs, no source outputs.
-    fn for_test(fennel: Fennel, secrets: HashMap<String, SecretString>) -> Self {
+    /// Minimal constructor for tests — no source outputs, just
+    /// secrets and the pipeline's VM.
+    fn for_test(
+        pipeline: super::pipeline::Pipeline,
+        secrets: HashMap<String, SecretString>,
+    ) -> Self {
         Self {
-            fennel,
+            pipeline,
             secrets,
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
@@ -406,14 +418,12 @@ mod tests {
     use super::super::pipeline::Pipeline;
     use super::*;
 
-    /// Extract the first job's `run_fn` from the pipeline, consume the
-    /// pipeline for its VM, build a minimal runtime, and return the
-    /// runtime handle plus the run_fn.
+    /// Consume the pipeline for its VM, build a minimal runtime,
+    /// and return the runtime and first job's run_fn.
     fn rt(source: &str, secrets: HashMap<String, SecretString>) -> (Rc<Runtime>, mlua::Function) {
         let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
         let run_fn = pipeline.jobs()[0].run_fn.clone();
-        let fennel = pipeline.into_fennel();
-        let runtime = Rc::new(Runtime::for_test(fennel, secrets));
+        let runtime = Rc::new(Runtime::for_test(pipeline, secrets));
         let _ = RuntimeHandle(runtime.clone())
             .into_lua(runtime.lua())
             .expect("install runtime");

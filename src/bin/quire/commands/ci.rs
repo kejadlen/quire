@@ -73,29 +73,28 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         pushed_at: jiff::Timestamp::now(),
     };
 
-    let job_ids: Vec<String> = pipeline.jobs().iter().map(|j| j.id.clone()).collect();
-
     let mut run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
     let exec_result = run.execute(pipeline, secrets);
 
-    // Pipeline was consumed by execute. Output display uses run.outputs()
-    for job_id in &job_ids {
-        let outputs = run.outputs(job_id);
-        if outputs.is_empty() {
-            continue;
-        }
-        println!("\n==> {}", job_id);
-        for o in &outputs {
-            if !o.stdout.is_empty() {
-                print!("{}", o.stdout);
+    // Display outputs from completed jobs.
+    if let Ok(ref outputs) = exec_result {
+        for (job_id, job_outputs) in outputs {
+            if job_outputs.is_empty() {
+                continue;
             }
-            if !o.stderr.is_empty() {
-                eprint!("{}", o.stderr);
-            }
-            if o.exit != 0 {
-                println!("(exit {})", o.exit);
+            println!("\n==> {}", job_id);
+            for o in job_outputs {
+                if !o.stdout.is_empty() {
+                    print!("{}", o.stdout);
+                }
+                if !o.stderr.is_empty() {
+                    eprint!("{}", o.stderr);
+                }
+                if o.exit != 0 {
+                    println!("(exit {})", o.exit);
+                }
             }
         }
     }
@@ -111,7 +110,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         }
         (state, result) => {
             println!("\nRun ended in unexpected state: {state:?}");
-            result.into_diagnostic()
+            result.map(|_| ()).into_diagnostic()
         }
     }
 }
