@@ -261,6 +261,10 @@ impl Run {
     ///
     /// Source-ref filtering (e.g. running only `quire/push`-reachable
     /// jobs) is not yet implemented; for now every validated job runs.
+    ///
+    /// Per-job logs are written to `jobs/<job-id>/log` inside the run
+    /// directory before the final state transition, so logs are
+    /// available for both successful and failed runs.
     pub fn execute(
         mut self,
         pipeline: Pipeline,
@@ -277,6 +281,7 @@ impl Run {
 
         self.transition(RunState::Active)?;
 
+        let mut failed_job = None;
         for job_id in runtime.topo_order() {
             let run_fn = runtime
                 .job(job_id)
@@ -289,19 +294,51 @@ impl Run {
             runtime.leave_job();
 
             if let Err(e) = result {
-                lua.remove_app_data::<Rc<Runtime>>();
-                self.transition(RunState::Failed)?;
-                return Err(Error::JobFailed {
-                    job: job_id.to_string(),
-                    source: Box::new(e),
-                });
+                failed_job = Some((job_id.to_string(), e));
+                break;
             }
         }
 
+        // Always drain outputs and write logs, even on failure — the
+        // jobs that did run before the failure are useful context.
         let outputs = runtime.take_outputs();
         lua.remove_app_data::<Rc<Runtime>>();
+
+        self.write_all_logs(&outputs)?;
+
+        if let Some((job, source)) = failed_job {
+            self.transition(RunState::Failed)?;
+            return Err(Error::JobFailed {
+                job,
+                source: Box::new(source),
+            });
+        }
+
         self.transition(RunState::Complete)?;
         Ok(outputs)
+    }
+
+    /// Write per-job log files from the captured `(sh …)` outputs.
+    ///
+    /// Creates `jobs/<job-id>/log` in the run directory for each job
+    /// that has outputs. Each log entry shows the command, exit code,
+    /// and any stdout/stderr output. Called before the final state
+    /// transition so logs are available for both successful and failed
+    /// runs.
+    fn write_all_logs(&self, outputs: &HashMap<String, Vec<ShOutput>>) -> Result<()> {
+        for (job_id, sh_outputs) in outputs {
+            if sh_outputs.is_empty() {
+                continue;
+            }
+            let job_dir = self.path().join("jobs").join(job_id);
+            fs_err::create_dir_all(&job_dir)?;
+            let mut log = String::new();
+            for output in sh_outputs {
+                log.push_str(&format_log_entry(output));
+            }
+            fs_err::write(job_dir.join("log"), &log)?;
+        }
+        Ok(())
     }
 
     /// Transition the run from its current state to a new state.
@@ -381,6 +418,34 @@ pub(crate) fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<
 fn read_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let f = fs_err::File::open(path)?;
     Ok(serde_yaml_ng::from_reader(std::io::BufReader::new(f))?)
+}
+
+/// Format a single `sh` invocation as a readable log entry.
+fn format_log_entry(output: &ShOutput) -> String {
+    let mut s = String::new();
+    s.push_str("$ ");
+    s.push_str(&output.cmd);
+    s.push('\n');
+    s.push_str("exit: ");
+    s.push_str(&output.exit.to_string());
+    s.push('\n');
+    if !output.stdout.is_empty() {
+        s.push('\n');
+        s.push_str(&output.stdout);
+        if !output.stdout.ends_with('\n') {
+            s.push('\n');
+        }
+    }
+    if !output.stderr.is_empty() {
+        s.push('\n');
+        s.push_str("[stderr]\n");
+        s.push_str(&output.stderr);
+        if !output.stderr.ends_with('\n') {
+            s.push('\n');
+        }
+    }
+    s.push_str("---\n");
+    s
 }
 
 #[cfg(test)]
@@ -928,5 +993,69 @@ mod tests {
         let b = &outputs["b"];
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].stdout, "nil\n");
+    }
+
+    #[test]
+    fn execute_writes_job_logs_to_disk() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :greet [:quire/push] (fn [{: sh}] (sh ["echo" "hello"])))"#,
+        );
+
+        let run_id = run.id().to_string();
+        run.execute(pipeline, HashMap::new()).expect("execute");
+
+        let log_path = runs
+            .base
+            .join(RunState::Complete.dir_name())
+            .join(&run_id)
+            .join("jobs")
+            .join("greet")
+            .join("log");
+        assert!(log_path.exists(), "job log file should exist");
+
+        let log = fs_err::read_to_string(&log_path).expect("read log");
+        assert!(
+            log.contains("$ [\"echo\", \"hello\"]"),
+            "log should show command: {log}"
+        );
+        assert!(log.contains("exit: 0"), "log should show exit code: {log}");
+        assert!(log.contains("hello"), "log should show stdout: {log}");
+    }
+
+    #[test]
+    fn execute_writes_logs_for_failed_run() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        // `a` succeeds, `b` fails — log for `a` should still be written.
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :a [:quire/push] (fn [{: sh}] (sh ["echo" "from-a"])))
+(ci.job :b [:a] (fn [_] (error "boom")))"#,
+        );
+
+        let run_id = run.id().to_string();
+        let _ = run.execute(pipeline, HashMap::new());
+
+        let failed_dir = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
+        assert!(failed_dir.exists(), "run should be in failed/");
+
+        let log_path = failed_dir.join("jobs").join("a").join("log");
+        assert!(
+            log_path.exists(),
+            "job 'a' log should exist even though 'b' failed"
+        );
+
+        let log = fs_err::read_to_string(&log_path).expect("read log");
+        assert!(
+            log.contains("from-a"),
+            "log should contain a's output: {log}"
+        );
     }
 }

@@ -321,6 +321,21 @@ enum Cmd {
     Argv { program: String, args: Vec<String> },
 }
 
+impl std::fmt::Display for Cmd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cmd::Shell(s) => write!(f, "{s}"),
+            Cmd::Argv { program, args } => {
+                write!(f, "[\"{program}\"")?;
+                for arg in args {
+                    write!(f, ", \"{arg}\"")?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
 impl From<Cmd> for std::process::Command {
     fn from(cmd: Cmd) -> Self {
         match cmd {
@@ -351,6 +366,7 @@ impl Cmd {
     // and `:stdout` / `:stderr` end up as mojibake with no signal that
     // anything was lost.
     fn run(self, opts: ShOpts) -> std::io::Result<ShOutput> {
+        let cmd_str = format!("{self}");
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
             command.env(k, v);
@@ -365,6 +381,7 @@ impl Cmd {
             exit: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            cmd: cmd_str,
         })
     }
 }
@@ -430,6 +447,9 @@ pub struct ShOutput {
     pub exit: i32,
     pub stdout: String,
     pub stderr: String,
+    /// The command that was run, formatted for display.
+    #[serde(default)]
+    pub cmd: String,
 }
 
 /// Body of `(sh cmd opts?)`. Glue between the Lua call and `Cmd::run`
