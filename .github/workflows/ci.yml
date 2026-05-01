@@ -1,15 +1,13 @@
 name: CI
 
-on:
+on: # zizmor: ignore[dangerous-triggers] -- only triggers on tag pushes from Gitea mirror; no fork PR risk.
   push:
-    branches: [main]
-  pull_request:
+    tags: [v*]
 
 permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -47,7 +45,6 @@ jobs:
   build:
     name: Build
     needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create GitHub release.
@@ -64,14 +61,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: short-sha
-        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value={{date 'YYYYMMDD'}}-${{ steps.short-sha.outputs.sha }}
+            type=match,pattern=v*,group=0
       - uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -82,5 +77,5 @@ jobs:
           cache-to: type=gha,mode=max
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STEPS_META_OUTPUTS_VERSION: ${{ steps.meta.outputs.version }}
-        run: gh release create "${STEPS_META_OUTPUTS_VERSION}" --generate-notes
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes
