@@ -486,7 +486,7 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 ValidationError::Cycle { cycle_jobs, .. } => Some(cycle_jobs),
-            _ => None, // cov-excl-line
+                _ => None, // cov-excl-line
             })
             .collect();
         assert_eq!(
@@ -613,7 +613,8 @@ mod tests {
         );
         let errs = validate(&jobs).unwrap_err();
         assert!(
-            errs.iter().any(|e| matches!(e, ValidationError::Unreachable { .. })),
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::Unreachable { .. })),
             "expected unreachable: {errs:?}"
         );
     }

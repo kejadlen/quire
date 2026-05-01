@@ -205,7 +205,7 @@ fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
 /// Convert a 1-based line number to a byte offset in the source.
 fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
     if line == 0 {
-        return None;
+        return None; // cov-excl-line
     }
     let mut current_line = 1;
     for (i, ch) in source.char_indices() {
@@ -216,7 +216,7 @@ fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
             current_line += 1;
         }
     }
-    None
+    None // cov-excl-line
 }
 
 #[cfg(test)]
@@ -367,13 +367,14 @@ mod tests {
         let source = "\n{:bad {:}";
         let result: Result<MirrorConfig, _> = f.load_string(source, "HEAD:.quire/config.fnl");
         let err = result.unwrap_err();
-        if let FennelError::Eval { label, .. } = &err {
-            assert_eq!(
-                label.offset(),
-                1,
-                "label should point at line 2 despite colons in name"
-            );
-        }
+        let FennelError::Eval { label, .. } = &err else {
+            unreachable!()
+        };
+        assert_eq!(
+            label.offset(),
+            1,
+            "label should point at line 2 despite colons in name"
+        );
     }
 
     #[test]
