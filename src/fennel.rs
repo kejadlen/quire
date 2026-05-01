@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use miette::{Diagnostic, Result, SourceOffset};
+use miette::{Diagnostic, SourceOffset};
 use mlua::{Lua, LuaSerdeExt};
 
 const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
@@ -8,14 +8,11 @@ const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
 /// Error kinds from the Fennel loader.
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum FennelError {
-    #[error("file not found: {0}")]
-    FileNotFound(String),
-
     #[error(transparent)]
     #[diagnostic(code(fennel::io))]
     Io(#[from] std::io::Error),
 
-    #[error("internal fennel error")]
+    #[error("internal fennel error: {0}")]
     #[diagnostic(code(fennel::internal))]
     Internal(#[from] mlua::Error),
 
@@ -26,7 +23,7 @@ pub enum FennelError {
         #[source_code]
         source_code: String,
         #[label("here")]
-        label: SourceOffset,
+        label: Option<SourceOffset>,
         #[source]
         source: Box<mlua::Error>,
     },
@@ -93,7 +90,7 @@ impl Fennel {
         name: &str,
         setup: impl Fn(&Lua) -> mlua::Result<()>,
     ) -> Result<mlua::Value, FennelError> {
-        setup(&self.lua).map_err(|e| FennelError::from_lua(source, name, e))?;
+        setup(&self.lua)?;
 
         let fennel: mlua::Table = self.lua.globals().get("fennel")?;
 
@@ -141,7 +138,7 @@ impl Fennel {
         self.lua
             .from_value(result)
             .map_err(|e| FennelError::TypeMismatch {
-                message: format!("{name}: {e}"),
+                message: name.to_string(),
                 source: Box::new(e),
             })
     }
@@ -152,10 +149,6 @@ impl Fennel {
     where
         T: serde::de::DeserializeOwned,
     {
-        if !path.exists() {
-            return Err(FennelError::FileNotFound(path.display().to_string()));
-        }
-
         let source = fs_err::read_to_string(path)?;
         self.load_string(&source, &path.display().to_string())
     }
@@ -171,14 +164,14 @@ impl FennelError {
         let message = name.to_string();
 
         // Try to extract a line number from the Lua error for a label.
-        let offset = extract_line_offset(&err)
-            .and_then(|line| line_offset(source, line))
-            .unwrap_or(SourceOffset::from(0));
+        // None when the error message doesn't carry a line — miette renders
+        // the source block without an inline pointer in that case.
+        let label = extract_line_offset(&err).and_then(|line| line_offset(source, line));
 
         FennelError::Eval {
             message,
             source_code: source.to_string(),
-            label: offset,
+            label,
             source: Box::new(err),
         }
     }
@@ -357,8 +350,15 @@ mod tests {
     fn load_file_rejects_missing_file() {
         let f = fennel();
         let result: Result<MirrorConfig, _> = f.load_file(Path::new("/no/such/file.fnl"));
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FennelError::FileNotFound(..)));
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, FennelError::Io(e) if e.kind() == std::io::ErrorKind::NotFound),
+            "expected NotFound io error, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("/no/such/file.fnl"),
+            "io error should mention path: {err}"
+        );
     }
 
     #[test]
@@ -371,7 +371,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            label.offset(),
+            label.expect("label should be set when line is extractable").offset(),
             1,
             "label should point at line 2 despite colons in name"
         );

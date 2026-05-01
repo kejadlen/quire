@@ -68,7 +68,9 @@ mod tests {
 
     #[test]
     fn from_fennel_error() {
-        let fennel_err = FennelError::FileNotFound("test.fnl".to_string());
+        let fennel_err = FennelError::Empty {
+            name: "test.fnl".to_string(),
+        };
         let err: Error = fennel_err.into();
         assert!(err.to_string().contains("test.fnl"));
     }

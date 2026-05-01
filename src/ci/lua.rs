@@ -128,6 +128,13 @@ impl Runtime {
     ///
     /// Takes ownership of the pipeline (including its Lua VM). `meta`
     /// provides the push data for `:quire/push` source outputs.
+    ///
+    /// Panics if any of the Lua table operations below fail. They run
+    /// against a freshly initialized VM with `String`/`&str` keys and
+    /// values, so the only realistic failure mode is allocation
+    /// failure — abort is the right answer there. The matching
+    /// `RuntimeHandle::into_lua` call at the executor's call site uses
+    /// the same boundary.
     pub(super) fn new(
         pipeline: super::pipeline::Pipeline,
         secrets: HashMap<String, SecretString>,
@@ -186,7 +193,15 @@ impl Runtime {
     /// Mark `id` as the currently executing job. `(sh …)` invocations
     /// from this job's `run_fn` will record output under `id`, and
     /// `(jobs …)` lookups will resolve against `id`'s view.
+    ///
+    /// Panics if `id` has no inputs view — every job built by
+    /// `Runtime::new` gets one, so a missing view means the executor
+    /// is calling `enter_job` with an id that wasn't in the pipeline.
     pub(super) fn enter_job(&self, id: &str) {
+        assert!(
+            self.inputs.contains_key(id),
+            "enter_job called with unknown job id '{id}'"
+        );
         *self.current_job.borrow_mut() = Some(id.to_string());
     }
 
@@ -248,10 +263,13 @@ fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
     let calling = calling
         .as_ref()
         .ok_or_else(|| mlua::Error::external("(jobs ...) called outside a job's run-fn"))?;
-    let view = rt.inputs.get(calling).ok_or_else(|| {
-        // cov-excl-line
-        mlua::Error::external(format!("no inputs view for calling job '{calling}'")) // cov-excl-line
-    })?; // cov-excl-line
+    // Runtime::new builds a view for every job and enter_job is the only
+    // setter for current_job, so a missing view is a programming error,
+    // not a user-reachable condition.
+    let view = rt
+        .inputs
+        .get(calling)
+        .unwrap_or_else(|| unreachable!("no inputs view for calling job '{calling}'"));
     match view.get(&name) {
         Some(Some(value)) => Ok(value.clone()),
         Some(None) => Ok(mlua::Value::Nil),
@@ -267,6 +285,16 @@ fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
 /// Body of `(secret name)`. Errors as a Lua error if the runtime
 /// isn't installed, the name is undeclared, or the file form fails to
 /// read.
+//
+// Errors here cross the mlua boundary via `Error::external`, which
+// erases them to `Box<dyn Error + Send + Sync>`. The `std::error::Error`
+// source chain is preserved, but miette `Diagnostic` metadata
+// (codes, labels, source spans) does not survive the round trip —
+// the resulting `mlua::Error` becomes the `#[source]` of
+// `Error::JobFailed` at the executor, which only renders the chain
+// as plain `Display`. Don't reach for richer error types here
+// expecting them to render: rephrase the Display string to carry
+// what the user needs to see.
 fn lookup_secret(lua: &Lua, name: String) -> mlua::Result<String> {
     let rt = lua
         .app_data_ref::<Rc<Runtime>>()
@@ -283,11 +311,14 @@ fn lookup_secret(lua: &Lua, name: String) -> mlua::Result<String> {
 
 /// The two valid shapes of `cmd` for `(sh cmd …)`. A bare string
 /// runs under `sh -c`; a sequence runs as argv with no shell.
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
+///
+/// `Argv` splits the program from its arguments at construction so
+/// `From<Cmd> for Command` can't be handed an empty argv. The
+/// non-empty invariant is enforced in [`mlua::FromLua`] before this
+/// type is ever built.
 enum Cmd {
     Shell(String),
-    Argv(Vec<String>),
+    Argv { program: String, args: Vec<String> },
 }
 
 impl From<Cmd> for std::process::Command {
@@ -298,9 +329,9 @@ impl From<Cmd> for std::process::Command {
                 c.arg("-c").arg(s);
                 c
             }
-            Cmd::Argv(argv) => {
-                let mut c = std::process::Command::new(&argv[0]);
-                c.args(&argv[1..]);
+            Cmd::Argv { program, args } => {
+                let mut c = std::process::Command::new(program);
+                c.args(args);
                 c
             }
         }
@@ -315,6 +346,10 @@ impl Cmd {
     // TODO: stream stdout/stderr live instead of buffering. `output()`
     // captures the full child output in memory and only returns at exit,
     // so long-running or chatty jobs show nothing until they finish.
+    // The streaming rewrite should also revisit the `from_utf8_lossy`
+    // calls below — non-UTF-8 bytes are silently replaced with U+FFFD
+    // and `:stdout` / `:stderr` end up as mojibake with no signal that
+    // anything was lost.
     fn run(self, opts: ShOpts) -> std::io::Result<ShOutput> {
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
@@ -336,11 +371,8 @@ impl Cmd {
 
 impl mlua::FromLua for Cmd {
     fn from_lua(value: mlua::Value, lua: &Lua) -> mlua::Result<Self> {
-        // Pre-check the Lua type so wrong-shape inputs get specific
-        // FromLuaConversionError messages — serde's untagged dispatch
-        // would otherwise just say "data did not match any variant".
         match &value {
-            mlua::Value::String(_) => lua.from_value(value),
+            mlua::Value::String(_) => Ok(Cmd::Shell(lua.from_value(value)?)),
             mlua::Value::Table(t) if t.raw_len() == 0 => {
                 // `raw_len() == 0` covers both an empty sequence (`[]`)
                 // and a string-keyed table (`{:env {...}}`) passed in
@@ -353,7 +385,15 @@ impl mlua::FromLua for Cmd {
                     ),
                 })
             }
-            mlua::Value::Table(_) => lua.from_value(value),
+            mlua::Value::Table(_) => {
+                let argv: Vec<String> = lua.from_value(value)?;
+                let mut iter = argv.into_iter();
+                let program = iter.next().expect("raw_len > 0 ensures argv is non-empty");
+                Ok(Cmd::Argv {
+                    program,
+                    args: iter.collect(),
+                })
+            }
             other => Err(mlua::Error::FromLuaConversionError {
                 from: other.type_name(),
                 to: "Cmd".into(),

@@ -888,10 +888,13 @@ mod tests {
         };
 
         let err = repo.config().unwrap_err();
-        let msg = err.to_string();
+        let chain: Vec<String> =
+            std::iter::successors(Some(&err as &dyn std::error::Error), |e| e.source())
+                .map(|e| e.to_string())
+                .collect();
         assert!(
-            msg.contains("credentials"),
-            "expected credential error, got: {msg}"
+            chain.iter().any(|m| m.contains("credentials")),
+            "expected credential error in chain, got: {chain:?}"
         );
     }
 }
