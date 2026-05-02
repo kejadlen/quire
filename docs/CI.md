@@ -4,23 +4,27 @@ How CI works in quire. Slots alongside PLAN.md; will likely fold in once the ope
 
 ## Shape
 
-The runner lives **in-process with `quire serve`**, as a long-lived tokio task in the same binary. It owns a queue of pending runs (in-memory, reconstructed from disk on startup), watches it for new entries, materializes a workspace per run, evaluates `.quire/ci.fnl`, and shells out to execute each job. Jobs are **ephemeral** — fresh sandbox per job, torn down on exit.
+The runner lives **in-process with `quire serve`**, as a long-lived tokio task in the same binary. It owns a queue of pending runs (in-memory, reconstructed from disk on startup), watches it for new entries, materializes a workspace per run, starts a per-run container with the pipeline's declared image, evaluates `.quire/ci.fnl` in the host process, and tunnels each `(sh ...)` call from each job into the run's container via `docker exec`. The container is **per-run** — one started at run start, torn down at run end.
 
-The runner itself is not a container. It's a tokio task. The thing the runner *spawns* is the sandbox.
+The runner itself is not a container. It's a tokio task. The thing the runner *spawns* is the run's sandbox container.
 
 ```
 quire (one process)
   ├── HTTP server (quire serve)
   ├── ci-runner task
-  │     ├── run #1: <sandbox> rust:1.75 ...    (ephemeral)
-  │     ├── run #2: <sandbox> python:3.12 ...  (ephemeral)
+  │     ├── run #1: <sandbox> rust:1.75 ...    (per-run)
+  │     ├── run #2: <sandbox> python:3.12 ...  (per-run)
   │     └── ...
   └── (shared state: run queue, log broadcasts)
 ```
 
-Not the long-lived-per-image runner pool that GitHub Actions and GitLab use. That model amortizes startup at the cost of hermeticity — job N+1 inherits whatever job N left behind in the filesystem, which becomes a permanent class of "fails after the previous job" debugging. The speedup mostly comes from cache reuse, which is achievable with bind-mounted cache directories without taking on the statefulness debt. Personal forge doing dozens of runs/week, not thousands/day; container-per-job is strictly better here.
+Not the long-lived-per-image runner pool that GitHub Actions and GitLab use. That model amortizes startup at the cost of hermeticity — run N+1 inherits whatever run N left behind in the filesystem, which becomes a permanent class of "fails after the previous run" debugging. The speedup mostly comes from cache reuse, which is achievable with bind-mounted cache directories without taking on the statefulness debt. Personal forge doing dozens of runs/week, not thousands/day.
 
-The runner doesn't get its own process because **it doesn't execute user code in its address space**. With container-per-job, the runner reads files, builds a `docker run` argv, spawns it, copies stdout to a log file, reads exit code. None of those steps run user code in-process. A bug in `cargo test` can't crash the runner because it's running in a different container with its own kernel namespace. Process isolation between web and runner would buy nothing here — the docker boundary is doing that work. Don't pay twice for it.
+Per-run (vs per-job) is the simplest granularity for v1: one container start per run, jobs share workspace and toolchain caches naturally, and multi-job (when it lands) becomes concurrent `docker exec` into the same container. Per-job container differentiation can be added later if pipelines actually need it.
+
+The runner doesn't get its own process because **it doesn't execute user code in its address space**. The runner reads files, builds a `docker run` argv to start the per-run container, then issues `docker exec` calls for each `(sh ...)` from each job, streams stdout/stderr from each exec into per-job log files, captures exit codes, records container ID for cancellation. None of these steps run user code in-process. A bug in `cargo test` can't crash the runner because it's running in a different container with its own kernel namespace. Process isolation between web and runner would buy nothing here — the docker boundary is doing that work. Don't pay twice for it.
+
+Within the host process, `(sh ...)` is the only sanctioned host-effect primitive in the Lua VM. See "Sandbox the in-process VM" below — the compile-then-execute split removes `io`/`os`/`debug` from the execute VM so a buggy or hostile ci.fnl can't bypass the chokepoint.
 
 ## Communication: filesystem as state of record, channels as optimization
 
@@ -67,7 +71,7 @@ Within a run, **jobs form a DAG** (see next section), but the executor schedules
 When a new push arrives for a ref that already has work in flight or queued for the same `(repo, ref)`:
 
 * **Queued, not yet started:** new push replaces the queued one. Old run marked `superseded`. If you pushed twice in 30 seconds, you almost certainly only care about the second result.
-* **Currently running:** kill the in-flight sandbox (`docker kill <id>`), mark the run `superseded`, enqueue the new one.
+* **Currently running:** kill the in-flight run container (`docker kill <id>`), mark the run `superseded`, enqueue the new one.
 * **Different ref of same repo:** unaffected. Pushing to `feature-branch` should not kill a running build of `main`.
 
 Cheap to get right *if* the run record stores the ref it's building from the start, and queue lookups are "any pending or active runs for `<repo>:<ref>`?" Both are one-line conditions.
@@ -124,11 +128,13 @@ Code, not data, means matrix builds, helpers, and conditionals fall out for free
     :run "cargo test"})}
 ```
 
-### Eval runs in-process, unsandboxed by default
+### Eval runs in-process; the execute VM is sandboxed
 
-Eval happens inside `quire serve`, in the same Fennel host that loads `config.fnl`. No subprocess, no wallclock cap, no memory limit. Every `ci.fnl` is code the operator wrote; the threat model that would justify a sandbox doesn't exist.
+Eval happens inside `quire serve`, in the same Lua/Fennel host that loads `config.fnl`. No subprocess, no wallclock cap, no memory limit. Every `ci.fnl` is code the operator wrote; the untrusted-code threat model that would justify external isolation doesn't exist.
 
-The cost: a buggy `ci.fnl` (infinite loop, runaway allocation, `string.rep "x" 2^30`) can hang or OOM the server. Mitigation is "don't write that"; for the personal-forge case this is acceptable. If a `ci.fnl` does hang the server, the operator notices because they wrote the bad `ci.fnl` and pushed it themselves.
+A separate concern is in-process VM hardening: keeping a buggy or careless ci.fnl from bypassing the `(sh ...)` chokepoint by reaching for `os.execute` or `io.open` directly. The plan is a compile-then-execute VM split — the compile VM runs Lua 5.4 with full `debug` (Fennel's macroexpand and traceback need it); the execute VM is `Lua::new()` with `io`/`os`/`debug` removed and only `{sh, secret, jobs, string, table, math}` exposed. This makes `sh` the documented chokepoint and the JSONL persistence path unbypassable. See backlog `lsqluktu`. A subsequent task (`rzsonvsx`) layers Luau on the execute VM for bytecode-load validation and a tighter `debug` API as defense in depth.
+
+The cost of in-process eval remains: a `ci.fnl` with an infinite loop or runaway allocation (`string.rep "x" 2^30`) can hang or OOM the server. Mitigation is "don't write that"; for the personal-forge case this is acceptable.
 
 ### Sandboxed eval — opt-in, future
 
@@ -143,28 +149,31 @@ The reason this is the chosen path rather than "subprocess + rlimit, no bwrap" �
 1. **`post-receive` hook** sends a push event (one JSON line: `{type, repo, pushed_at, refs: [{ref, old_sha, new_sha}, ...]}`) over `/var/quire/server.sock` and exits. The listener task in `quire serve` parses the event, allocates a run-id per ref, writes `runs/<repo>/<run-id>/{meta.json, state.json}`, and signals the runner via mpsc. No CI work runs in the hook itself.
 2. **Runner picks up** the entry from the queue. Atomic rename `pending/<id>` → `active/<id>` for state-machine clarity.
 3. **Materialize workspace.** `git --git-dir=repos/foo.git archive <sha> | tar -x -C workspace/`. No worktree, no checkout state on the bare repo. Workspace is throwaway; deleted at end of run.
-4. **Evaluate `.quire/ci.fnl`** in-process (see above). Result is the job DAG.
-5. **Per ready job:** spawn the sandbox with workspace + caches mounted, stream stdout/stderr to `jobs/<job-id>/log` (and broadcast for live web tailing), capture exit code, record container ID for cancellation.
-6. **Aggregate.** Write final status to the run directory. Move `active/<id>` → `complete/<id>` (or `failed/<id>`).
+4. **Evaluate `.quire/ci.fnl`** in the host process (see above). Pipeline image is read from the `(ci.image ...)` registration; jobs are registered via `(ci.job ...)`; the run-fns are not yet invoked.
+5. **Start the run container.** `docker run -d --rm --mount type=bind,src=<run-dir>,dst=/work -w /work <image> sleep infinity`. Container ID stowed on the runtime. The run's container hosts every `(sh ...)` call from every job in the run.
+6. **Per ready job:** invoke its run-fn in topological order. Each `(sh ...)` call inside the run-fn issues `docker exec` (no TTY) into the run container, streams stdout/stderr into `jobs/<job-id>/log.jsonl` as JSONL events (one per `sh-start`, `stdout`/`stderr`, `sh-exit`), and returns `{exit, stdout, stderr, cmd}` to Lua. Container-level events (`container-start`, `container-died`, `container-end`) go into the run's own `<run-dir>/log.jsonl`.
+7. **Tear down the run container.** `docker stop` + `docker rm`. Even on error paths — no orphaned containers if a run-fn errors.
+8. **Aggregate.** Write final status to the run directory. Move `active/<id>` → `complete/<id>` (or `failed/<id>`).
 
 ## Run record schema
 
 ```
 runs/<repo>/<run-id>/
   meta.json        # immutable: sha, ref, pusher, pushed_at
-  state.json       # mutable: status, started_at, finished_at, runner_pid, sandbox_id
+  state.json       # mutable: status, started_at, finished_at, runner_pid, container_id
+  log.jsonl        # per-run events: container-start, container-died, container-end
   jobs/
     <job-id>/
-      spec.json    # immutable: image, cmds, env, needs (extracted from ci.fnl)
-      state.json   # mutable: status, started_at, finished_at, exit_code, sandbox_id
-      log          # append-only stdout+stderr
+      spec.json    # immutable: inputs, registration source location
+      state.json   # mutable: status, started_at, finished_at, outputs
+      log.jsonl    # per-job events: sh-start, stdout, stderr, sh-exit
   cancel           # touch-file; runner checks before each job
 ```
 
 Two principles fall out:
 
 * **Immutable vs. mutable files are separate.** `meta.json` is written once and never touched. Readers (the web UI) can cache `meta.json` indefinitely and only re-read `state.json`.
-* **Append-only logs.** Web UI tails the log file; runner appends; no coordination needed. Live tailing also goes through a `tokio::sync::broadcast` channel for sub-second latency, but the file is the source of truth.
+* **Append-only JSONL.** Each `log.jsonl` is one structured event per line, written as bytes arrive. The web UI tails the file directly — no extra protocol needed for streaming. Crash-safe: if `quire serve` dies mid-run, the file is valid JSONL up to the last complete line. Non-UTF-8 stdout/stderr bytes are recorded with `encoding: "base64"` rather than silently substituted with U+FFFD. Live tailing can still go through a `tokio::sync::broadcast` channel for sub-second latency, but the file is the source of truth.
 
 ## Sandbox backend — the real fork in the road
 
@@ -172,7 +181,7 @@ Polyglot toolchains rule out "just bind-mount host `/`" — that path requires e
 
 ### Path A: Docker (DooD)
 
-`docker run --rm -v <ws>:/workspace -w /workspace --cpus=N --memory=M <image> sh -c '<cmds>'` per job. Shared image cache, well-trodden, every CI system on earth has done this.
+`docker run -d --rm --mount type=bind,src=<ws>,dst=/work -w /work --cpus=N --memory=M <image> sleep infinity` per run, then `docker exec` (no TTY) for each `(sh ...)` call from every job in the run. Shared image cache, well-trodden, every CI system on earth has done this.
 
 Quire stays containerized. The container talks to the host's docker daemon via bind-mounted `/var/run/docker.sock`. Anyone with that socket effectively has root on the host — fine here since quire and the operator account already share the box.
 
@@ -182,7 +191,7 @@ Cost: socket mount, the path-pinning rule, daemon-talking-to-daemon, quire stays
 
 ### Path B: OCI + bubblewrap
 
-`skopeo copy docker://rust:1.75-slim oci:images/rust-1.75:latest`, then `umoci unpack`, then bwrap binds the rootfs and runs the job:
+`skopeo copy docker://rust:1.75-slim oci:images/rust-1.75:latest`, then `umoci unpack`, then bwrap binds the rootfs and runs the run container. `docker exec`'s role is filled by spawning into the persistent bwrap namespace (or relaunching bwrap per `(sh ...)` if persistent processes prove painful — measure):
 
 ```
 bwrap --bind rootfs/rust-1.75 / \
@@ -238,7 +247,9 @@ Punt on cache invalidation until it actually annoys. "Delete the cache dir" is a
 
 * **Runner is in-process** with `quire serve` as a tokio task; not a separate process. Filesystem is the state of record; channels are the wakeup optimization.
 * **No SQLite in v1.** If it enters later, it's a secondary index over the filesystem, never primary. `rm quire.db && quire reindex` must always recover.
-* **Container-per-job**, not long-lived runners.
+* **Per-run container**, not per-job and not long-lived runners. One `docker run` at run start, `docker exec` per `(sh ...)` call from each job, `docker stop` at run end. Per-job container differentiation is a deferred extension.
+* **`(sh ...)` is the only host-effect primitive in the Lua VM.** No `(container ...)` primitive. The execute VM is hardened (no `io`/`os`/`debug`) so `sh` becomes the documented chokepoint — every effect is auditable, persistable, redactable in one place.
+* **Pipeline-level image declaration via `(ci.image ...)`.** Single image per pipeline; per-job override deferred until pipelines actually need heterogeneity.
 * **DooD for v1**; OCI+bwrap as planned migration path.
 * **Workspace materialized via `git archive`**, not worktree.
 * **Max concurrency 1** across the whole forge. Escape valve is `max_concurrent_runs` config + per-repo cache file lock; not building it now.
@@ -246,6 +257,6 @@ Punt on cache invalidation until it actually annoys. "Delete the cache dir" is a
 * **`:allow-failure`** flag exists from v1.
 * **Supersede on same `(repo, ref)`**: replace queued, kill running.
 * **`.quire/ci.fnl` is executed**, returns the DAG.
-* **Eval runs in-process, unsandboxed by default.** Trusted code; the operator wrote it. Sandboxed eval (bwrap, with filesystem/network/wallclock/memory limits) is an opt-in for repos that run `ci.fnl` from someone other than the operator. Not built; not v1.
+* **Eval runs in-process; the execute VM is sandboxed.** Compile VM keeps full Lua 5.4 (Fennel macroexpand/traceback need `debug`); execute VM removes `io`/`os`/`debug` and exposes only `{sh, secret, jobs, string, table, math}`. Trusted-code threat model — no external isolation. Bwrap-based eval sandbox stays available as an opt-in for the day quire runs `ci.fnl` from someone other than the operator. Not built; not v1.
 * **Hook is a transport, not a writer.** `post-receive` sends a push event over `/var/quire/server.sock`; `quire serve` writes the run record. Hook never touches `runs/`. Tradeoff: zero-loss-on-server-down is dropped in v1 (push lands but no run is created). Fallback to direct disk write is a deferred follow-up.
 * **Caches** are bind-mounted directories under `/var/quire/cache/<repo>/`.

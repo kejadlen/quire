@@ -17,6 +17,16 @@ The mental model: **jobs are functions from inputs to outputs; sources are reser
 
 This is closer to Concourse's resources-and-jobs model than to GitHub Actions' triggers-and-jobs model. More elegant, less familiar. Worth being deliberate about.
 
+## Pipeline-level container image
+
+```
+(ci.image "rust:1.76")
+```
+
+Top-level form, called once before any `(ci.job ...)`. Declares the image used to start the run's container; every `(sh ...)` call from every job in the run is `docker exec`'d into this container. Pipelines that need heterogeneous images per job will get a per-job override later — for now, one image per pipeline keeps the model simple.
+
+A pipeline that registers a job but never declares an image errors at validation, not at runtime. Calling `ci.image` more than once errors with the same shape as other duplicate-registration errors.
+
 ## The `job` primitive
 
 ```
@@ -29,9 +39,9 @@ Three positional arguments:
 * **`inputs`** — list of names. Each is a job id or a source ref. Must be non-empty. v1: strings/keywords only (see "Future: input args" below).
 * **`run`** — function from inputs to outputs (a table) or `nil` (skipped).
 
-That's the entire surface. Image selection, conditional firing, output extraction — all done inside `run` using runtime primitives. Fennel-as-code means there's no need for config-language conveniences when a function will do.
+That's the entire surface. Conditional firing, output extraction, follow-up commands — all done inside `run` using runtime primitives. Image lives at the pipeline level (see above), not on individual jobs. Fennel-as-code means there's no need for config-language conveniences when a function will do.
 
-If a fourth concept ever genuinely needs to be expressible at the job level (per-job timeout, retry policy, secret scoping), that's the moment to introduce a map-form variant — `(job id {:inputs ... :run ... :timeout ...})`. Migration would be mechanical. Until then, the positional form is shorter and reads better for the actual surface.
+If a fourth concept ever genuinely needs to be expressible at the job level (per-job image override, timeout, retry policy, secret scoping), that's the moment to introduce a map-form variant — `(job id {:inputs ... :run ... :image ...})`. Migration would be mechanical. Until then, the positional form is shorter and reads better for the actual surface.
 
 ## Inputs
 
@@ -130,51 +140,50 @@ A bad `ci.fnl` push gets a CI run that fails immediately with the parse error, s
 
 ## `run` — the only primitive
 
-`run` is a host-side Fennel function (the container can't run Fennel) called when the job is about to execute. It receives the runtime handle and returns either:
+`run` is a host-side Fennel function called when the job is about to execute. It receives the runtime handle and returns either:
 
 * **A table** — the job's outputs. Available to dependent jobs through `(jobs <this-job>)`.
 * **`nil`** — the job is skipped. Dependents see `(jobs <this-job>)` return `nil`.
 
 That's the whole contract. No sugar layer, no introspection, no defaulting. The runner records what was returned.
 
-Inside `run`, the function uses **runtime primitives** bound on the handle. The most important is `(container {...})`, which runs a container and returns a result table:
+Inside `run`, the function uses **runtime primitives** bound on the handle. The most important is `(sh cmd opts?)`, which `docker exec`'s a command into the run's container and returns a result table:
 
 ```
 (job :test [:quire/push]
-  (fn [{: container : jobs}]
+  (fn [{: sh : jobs}]
     (let [push (jobs :quire/push)]
-      (container {:image "rust:1.75"
-                  :cmd (.. "git checkout " push.sha " && cargo test")}))))
+      (sh ["git" "checkout" push.sha])
+      (sh "cargo test"))))
 ```
 
-`(container ...)` returns `{:exit :stdout :stderr :duration}`. That's what `run` returns. The runner records it as the outputs.
-
-For more complex jobs, the function does its own orchestration: multiple containers, host-side work between them, computed outputs derived from intermediate results:
+`(sh ...)` returns `{:exit :stdout :stderr :cmd}`. The run-fn can branch on that — checking exit, parsing stdout, deciding whether to issue follow-up commands. That dynamism is the whole reason ci.fnl is Fennel and not YAML:
 
 ```
 (job :test-and-package [:quire/push]
-  (fn [{: container : jobs}]
-    (let [push (jobs :quire/push)
-          test (container {:image "rust:1.75"
-                           :cmd ["git checkout" push.sha "&&" "cargo test"]})]
-      (when (= 0 test.exit)
-        (let [pkg (container {:image "alpine"
-                              :cmd "tar czf out.tar.gz target/release"})]
-          {:exit pkg.exit
-           :artifacts ["out.tar.gz"]
-           :test-stdout test.stdout})))))
+  (fn [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (sh ["git" "checkout" push.sha])
+      (let [test (sh "cargo test")]
+        (when (= 0 test.exit)
+          (let [pkg (sh "tar czf out.tar.gz target/release")]
+            {:exit pkg.exit
+             :artifacts ["out.tar.gz"]
+             :test-stdout test.stdout}))))))
 ```
 
 If the test fails, the outer `(when ...)` returns nil → job skipped. If it passes, the package step runs and the function returns a custom output table. One mechanism, scales from "run a command" to "orchestrate a multi-step pipeline."
+
+`sh` is the only host-effect primitive. There is no `(container ...)` form — the run's container is started by the runner before the run-fn is invoked, and every `sh` call tunnels into it via `docker exec`. Making `sh` the chokepoint is what lets the in-process VM sandbox (`io`/`os`/`debug` removed from the execute VM) actually mean something — the script can't quietly bypass logging or persistence by reaching for `os.execute`.
 
 ### Why `run` is "just a function"
 
 Earlier drafts of this design had three return shapes (string, list of strings, table) plus an `:outputs` field for declarative output extension plus a `:when` field for conditional firing plus an `:image` field for the default container image. All gone. They were paying for conveniences that aren't conveniences in a code-first config:
 
-* **String sugar.** `:run "cargo test"` saves about ten characters over `(fn [_] (container {:image "rust:1.75" :cmd "cargo test"}))`. Not worth a second mental model.
-* **`:outputs` declarative extension.** "Read coverage.json after the container exits" is a Fennel one-liner inside `run`: `(let [r (container {...})] {:exit r.exit :coverage (read-json "coverage.json")})`. Helpers compose to clean up repetition.
+* **String sugar.** `:run "cargo test"` saves about ten characters over `(fn [_] (sh "cargo test"))`. Not worth a second mental model.
+* **`:outputs` declarative extension.** "Read coverage.json after the command exits" is a Fennel one-liner inside `run`: `(let [r (sh "...")] {:exit r.exit :coverage (read-json "coverage.json")})`. Helpers compose to clean up repetition.
 * **`:when`.** Returning `nil` from `run` already means "skip." Filtering and work end up in the same expression, which makes the intent more visible, not less.
-* **`:image`.** Image lives on the `(container ...)` call where it's actually used. Lets a single job legitimately use multiple images.
+* **`:image`.** Image is declared once at the pipeline level via `(ci.image ...)`. Per-job override can be added as a map-form opts arg if a pipeline ever needs heterogeneity.
 
 The residual things that *aren't* "just functions" — the inputs list and the id — are the ones that genuinely need to be language-level. They define the graph and the identity. Everything else is user-space.
 
@@ -183,75 +192,67 @@ The residual things that *aren't* "just functions" — the inputs list and the i
 Bound on the runtime handle passed into each `run` function. Destructure what you need: `(fn [{: sh : secret : jobs}] ...)`.
 
 * `(jobs name)` — return outputs for `name` (a transitive ancestor of the calling job, or a source ref). Errors if `name` is not in the calling job's transitive inputs.
-* `(container {opts})` — run a container, return `{:exit :stdout :stderr :duration}`. Opts: `:image`, `:cmd` (string or list), `:env`, `:cwd`, `:cache` (cache dir mount, defaults to job's image-keyed cache).
-* `(sh cmd)` — run a command on the host, no container. For cheap utility work. Returns the same shape as `container`.
+* `(sh cmd opts?)` — `docker exec` a command into the run's container, return `{:exit :stdout :stderr :cmd}`. `cmd` is either a string (run under `sh -c` inside the container) or a non-empty sequence of strings (argv, no shell). `opts` accepts `:env` (table of overrides) and `:cwd` (path inside `/work`).
 * `(secret name)` — resolve a named secret from the operator's config. Errors if the name isn't declared.
 * `(read-file path)`, `(read-json path)`, `(write-file path content)` — workspace I/O. Paths relative to the workspace.
 * `(log msg)` — append to the job's log file. Visible in the web UI.
 * `(env name)` — read an environment variable from the runner's environment.
 
-Each of these blocks the Fennel function until it returns. Multi-container parallelism inside one job is a v2 want; the v1 model is "the function runs sequentially, calling primitives that block."
+Each of these blocks the Fennel function until it returns. Multi-`sh`-call parallelism inside one job is a v2 want; the v1 model is "the function runs sequentially, calling primitives that block."
 
-> **v0 status:** `sh`, `secret`, and `jobs` are bound today. `container`, `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
+`sh` is the only host-effect channel. There is no `(container ...)` primitive — the run's container is started by the runner before any run-fn executes (with the image declared via `(ci.image ...)` at the pipeline level), and every `sh` call execs into it via `docker exec`. Stdout and stderr stay separated (no TTY); ordering is approximate but each chunk has its own timestamp in the JSONL log.
 
-Eval is unsandboxed by default (see CI.md). A `run` function that loops forever or allocates without bound will hang or OOM `quire serve`. The mitigation is the same as for any Fennel hang: write `ci.fnl` thoughtfully. The bwrap opt-in (also see CI.md) covers eval and primitive calls together when it lands.
+> **v0 status:** `sh`, `secret`, and `jobs` are bound today. `sh` currently shells out on the host; the per-run container + `docker exec` tunneling is planned (see backlog `lpmoszxo`, `knmkqkvx`). `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
+
+The execute VM is sandboxed (no `io`/`os`/`debug`), so `sh` is the documented chokepoint for any host effect — `os.execute` and `io.open` are not available alternates. See CI.md for the full sandbox shape and the bwrap opt-in for the untrusted-code threat model.
 
 ## A worked example
 
 ```
-;; Helper: a parameterized test job
-(fn rust-test [version]
-  (job (.. "test-" version) [:quire/push]
-    (fn [{: container : jobs}]
-      (let [push (jobs :quire/push)]
-        (when (= "main" push.branch)
-          (container {:image (.. "rust:" version)
-                      :cmd [(.. "git checkout " push.sha)
-                            "cargo test --all-features"]}))))))
+(local ci (require :quire.ci))
 
-;; Matrix testing on every push to main
-(each [_ v (ipairs [:1.75 :1.76 :stable])]
-  (rust-test v))
+(ci.image "rust:1.76")  ; one image for the whole pipeline
 
-;; Build only if all tests passed
-(job :build [:test-1.75 :test-1.76 :test-stable :quire/push]
-  (fn [{: container : jobs}]
+;; Test on every push to main
+(ci.job :test [:quire/push]
+  (fn [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (when (= "main" push.branch)
+        (sh ["git" "checkout" push.sha])
+        (sh "cargo test --all-features")))))
+
+;; Build only if test passed
+(ci.job :build [:test :quire/push]
+  (fn [{: sh : jobs}]
     (let [push (jobs :quire/push)
-          t-175 (jobs :test-1.75)
-          t-176 (jobs :test-1.76)
-          t-stb (jobs :test-stable)]
-      (when (and t-175 t-176 t-stb
-                 (= 0 t-175.exit)
-                 (= 0 t-176.exit)
-                 (= 0 t-stb.exit))
-        (let [r (container {:image "rust:1.75"
-                            :cmd [(.. "git checkout " push.sha)
-                                  "cargo build --release"]})]
+          test (jobs :test)]
+      (when (and test (= 0 test.exit))
+        (sh ["git" "checkout" push.sha])
+        (let [r (sh "cargo build --release")]
           {:exit r.exit
            :artifacts ["target/release/quire"]})))))
 
 ;; Deploy on push to main only
-(job :deploy [:build]
-  (fn [{: container : jobs}]
+(ci.job :deploy [:build]
+  (fn [{: sh : jobs}]
     (when (jobs :build)
-      (container {:image "alpine"
-                  :cmd "scp target/release/quire host:/usr/local/bin/"}))))
+      (sh "scp target/release/quire host:/usr/local/bin/"))))
 
 ;; Tagged release: publish to a registry
-(job :publish [:quire/push]
-  (fn [{: container : jobs}]
+(ci.job :publish [:quire/push]
+  (fn [{: sh : jobs}]
     (let [push (jobs :quire/push)]
       (when (and push.tag (string.match push.tag "^v"))
-        (container {:image "rust:1.75"
-                    :cmd [(.. "git checkout " push.tag)
-                          "cargo publish"]})))))
+        (sh ["git" "checkout" push.tag])
+        (sh "cargo publish")))))
 ```
 
 What this expresses:
 
-* Every push fires a run. Test jobs check `push.branch` and return nil for non-main pushes; build/deploy chain skips with them (their inputs are nil, their `(when ...)` checks see nil).
+* Every push fires a run. The test job checks `push.branch` and returns nil for non-main pushes; the build/deploy chain skips with it (their inputs are nil, their `(when ...)` checks see nil).
 * Tagged pushes additionally fire `:publish`, which has its own predicate.
-* The "all tests passed" check in `:build` is now visible in code rather than implicit. More verbose than a `:when` field, but the verbosity is honest about what's happening — and a helper (`(all-passed test-1.75 test-1.76 test-stable)`) would clean it up if the pattern repeats.
+* The "test passed" check in `:build` is visible in code rather than implicit. More verbose than a `:when` field, but the verbosity is honest about what's happening.
+* All jobs run inside the same per-run container started from `rust:1.76`. `cargo`, `git`, and `scp` are expected to be present in the image (or installed by an earlier `sh` in the run); pipelines that need different toolchains today should pick an image that has all of them, or wait for per-job image override.
 
 ## Evaluation timing
 
@@ -268,9 +269,9 @@ The three-context model means **`ci.fnl` is re-evaluated more than you might exp
 ## Open questions
 
 * **Source events with no matching jobs.** If `ci.fnl` has no jobs whose transitive inputs include `:quire/push`, do pushes still create empty runs? Probably no — skip silently. But worth being explicit.
-* **What's the exact set of runtime primitives?** `container`, `sh`, `read-file` are obvious. Less obvious: do we expose `tcp-connect`, `http-get`? They'd enable real "jobs as observers" patterns, but they're a long road into "Fennel is a real programming environment." Probably no, defer.
-* **Artifacts as inputs.** Job B with `[:build]` as inputs — does B's workspace start with build's artifacts already in place? Probably yes; otherwise the `:artifacts` output is data-only and you can't use them in subsequent containers. Implementation: artifacts unpacked into B's workspace before B's container starts.
-* **Image pre-pull discoverability.** Without a top-level `:image` field, the runner can't statically know what images a job uses — it has to actually run the function (or analyze it, which is fragile). Probably acceptable for v1: pull-on-demand from `(container ...)` calls works fine, just with a one-time latency per new image. A `quire ci pull <image>` command lets users warm explicitly.
+* **What's the exact set of runtime primitives?** `sh`, `read-file` are obvious. Less obvious: do we expose `tcp-connect`, `http-get`? They'd enable real "jobs as observers" patterns, but they're a long road into "Fennel is a real programming environment." Probably no, defer.
+* **Artifacts as inputs.** Job B with `[:build]` as inputs — does B's workspace start with build's artifacts already in place? Under per-run container, `/work` is shared across jobs already; artifacts written by job A are visible to job B by default. The open question is whether *outputs* declared from a job carry artifact paths the runner should pin for retention beyond the run.
+* **Image pre-pull.** With a single pipeline-level `(ci.image ...)` declaration, the runner knows the image up front and can pull before starting the run container. Pull-on-demand at `docker run` time works too. A `quire ci pull <image>` command lets users warm explicitly if they want to avoid first-push latency.
 * **Error semantics inside `run`.** What if it throws? Job marked failed, exception text into the log. What if it returns a malformed value (not nil, not a table)? Mark failed, log a schema warning.
 * **Push payload size.** `:quire/push.files-changed` could be huge for a large merge. Do we cap it? Stream it differently? Defer to first time it bites.
 * **Composition across files.** A `quire/stdlib.fnl` of common helpers, or per-repo Fennel modules. Real want eventually; not v1.
@@ -286,11 +287,12 @@ The three-context model means **`ci.fnl` is re-evaluated more than you might exp
 * **Builtins live under `quire/`**; user job ids cannot contain `/`.
 * **For v1, the only source is `:quire/push`.** Cron, webhook, manual deferred.
 * **Filtering happens inside `run`** by returning `nil`. Every push starts a run; jobs that return nil from `run` are skipped.
-* **Runtime handle as the run-fn argument.** The function receives a single table `{: sh : secret : jobs : container ...}` and destructures the primitives it uses. Slash-containing source names are read via the `jobs` accessor — `(jobs :quire/push)` — never via dot access.
+* **Runtime handle as the run-fn argument.** The function receives a single table `{: sh : secret : jobs ...}` and destructures the primitives it uses. Slash-containing source names are read via the `jobs` accessor — `(jobs :quire/push)` — never via dot access.
 * **`(jobs name)` is the only accessor for upstream outputs**, covering both source refs and job outputs. Transitive ancestors are visible; non-ancestors and unknown names raise a Lua error.
 * **Dependency graph derived from the inputs list**, not declared separately. No `:needs`.
 * **Four structural validations**: acyclic (registration eval), non-empty inputs (registration eval), reachability from a source (registration eval), no `/` in user job ids (parse time). All fail-closed with named-target error messages.
 * **`run` is a function** `(fn [{: jobs ...}] ...)`. Returns a table (the outputs) or `nil` (skipped). No sugar.
-* **`(container {opts})` is the primary primitive** for running containers. Opts include `:image`, so a single job can use multiple images by making multiple container calls.
+* **`(sh cmd opts?)` is the only host-effect primitive.** `docker exec`s into the run's container; returns `{:exit :stdout :stderr :cmd}`. There is no `(container ...)` form. The execute VM is sandboxed (no `io`/`os`/`debug`) so `sh` is the documented chokepoint.
+* **`(ci.image <name>)` declares the image** at the pipeline level. One image per pipeline. Per-job override deferred until pipelines actually need heterogeneity; would arrive as a map-form `(ci.job ...)` opts arg.
 * **Three eval contexts** — registration, run start, per job — all in-process inside `quire serve`. Sandboxing model and threat model are described in CI.md.
 * **Source registration sourced from the default branch only** (relevant once registration becomes meaningful — for v1 it's a no-op since `:quire/push` needs no registration).
