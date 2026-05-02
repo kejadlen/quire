@@ -87,6 +87,8 @@ pub struct Pipeline {
     /// Job id → node index in `graph`, for O(1) lookup.
     node_index: HashMap<String, NodeIndex>,
     fennel: Fennel,
+    /// Container image declared via `(ci.image "...")`, if any.
+    image: Option<String>,
 }
 
 impl Pipeline {
@@ -104,6 +106,13 @@ impl Pipeline {
     /// Borrow the underlying Fennel/Lua VM.
     pub(crate) fn fennel(&self) -> &Fennel {
         &self.fennel
+    }
+
+    /// The container image declared via `(ci.image ...)`, if any.
+    /// The executor resolves the final image at run time:
+    /// declared image → `.quire/Dockerfile` → default.
+    pub fn image(&self) -> Option<&str> {
+        self.image.as_deref()
     }
 
     /// Return job IDs in topological order — dependencies before
@@ -159,16 +168,17 @@ impl Pipeline {
     /// for miette to render with inline labels.
     pub(crate) fn load(source: &str, name: &str) -> Result<Pipeline> {
         let fennel = Fennel::new()?;
-        let results = lua::parse(&fennel, source, name)?;
+        let output = lua::parse(&fennel, source, name)?;
 
         let mut errors = Vec::new();
         let mut jobs = Vec::new();
-        for r in results {
+        for r in output.jobs {
             match r {
                 Ok(j) => jobs.push(j),
                 Err(e) => errors.push(e),
             }
         }
+        let image = output.image;
 
         let (graph, node_index) = build_graph(&jobs);
 
@@ -182,6 +192,7 @@ impl Pipeline {
                 graph,
                 node_index,
                 fennel,
+                image,
             })
         } else {
             Err(LoadError {
@@ -216,7 +227,7 @@ fn build_graph(jobs: &[Job]) -> (JobGraph, HashMap<String, NodeIndex>) {
 
 /// Compute a span covering the given 1-indexed line in `source`.
 /// Returns an empty span at offset 0 when the line is unknown.
-fn span_for_line(source: &str, line: u32) -> SourceSpan {
+pub(super) fn span_for_line(source: &str, line: u32) -> SourceSpan {
     if line == 0 {
         return SourceSpan::from((0, 0)); // cov-excl-line
     }
@@ -430,7 +441,9 @@ mod tests {
     /// but the returned `Job`s only need their non-VM fields here.
     fn parse_results(source: &str) -> Vec<std::result::Result<Job, ValidationError>> {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        lua::parse(&f, source, "ci.fnl").expect("parse should succeed")
+        lua::parse(&f, source, "ci.fnl")
+            .expect("parse should succeed")
+            .jobs
     }
 
     /// Discard parse errors and return only the successfully registered
@@ -672,6 +685,23 @@ mod tests {
     }
 
     #[test]
+    fn load_registers_pipeline_image() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.image "alpine")
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        assert_eq!(pipeline.image(), Some("alpine"));
+    }
+
+    #[test]
+    fn load_succeeds_without_image() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        assert_eq!(pipeline.image(), None);
+    }
+
+    #[test]
     fn duplicate_image_variant_exists() {
         let err = ValidationError::DuplicateImage {
             span: SourceSpan::from((0, 0)),
@@ -689,6 +719,22 @@ mod tests {
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
             "ci.fnl",
         );
+        let Err(e) = result else { unreachable!() };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("CI validation failed"),
+            "expected validation error: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_errors_on_duplicate_image() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.image "alpine")
+(ci.image "ubuntu")
+(ci.job :build [:quire/push] (fn [_] nil))"#;
+        let result = Pipeline::load(source, "ci.fnl");
+        assert!(result.is_err(), "duplicate image should fail");
         let Err(e) = result else { unreachable!() };
         let msg = e.to_string();
         assert!(

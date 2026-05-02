@@ -18,16 +18,20 @@ use crate::Result;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
 
+/// Output of [`parse`]: registered jobs and the pipeline image (if
+/// declared).
+pub(super) struct ParseOutput {
+    pub(super) jobs: Vec<std::result::Result<Job, ValidationError>>,
+    pub(super) image: Option<String>,
+}
+
 /// Evaluate `source` with the registration module bound and collect
 /// the registration results — one `Result` per `(ci.job …)` call.
 /// Pre-graph rules run inside the callback, so a single bad job does
 /// not abort the rest of the script.
-pub(super) fn parse(
-    fennel: &Fennel,
-    source: &str,
-    name: &str,
-) -> Result<Vec<std::result::Result<Job, ValidationError>>> {
+pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOutput> {
     let jobs = Rc::new(RefCell::new(Vec::new()));
+    let image = Rc::new(RefCell::new(None));
     let src = Rc::new(source.to_string());
 
     fennel.eval_raw(source, name, |lua| {
@@ -35,12 +39,22 @@ pub(super) fn parse(
             "quire.ci",
             Registration {
                 jobs: jobs.clone(),
+                image: image.clone(),
                 source: src.clone(),
             },
         )
     })?;
 
-    Ok(jobs.take())
+    // Remove the Registration app data so `ci.image`/`ci.job` calls at
+    // runtime (inside run-fns) hit "registration not installed" instead of
+    // silently pushing into the already-consumed sinks.
+    fennel.lua().remove_app_data::<Registration>();
+
+    let image_name = image.borrow().as_ref().map(|i| i.name.clone());
+    Ok(ParseOutput {
+        jobs: jobs.take(),
+        image: image_name,
+    })
 }
 
 /// The registration-time module exposed to Fennel scripts via
@@ -60,6 +74,7 @@ pub(super) fn parse(
 /// ```
 struct Registration {
     jobs: Rc<RefCell<Vec<std::result::Result<Job, ValidationError>>>>,
+    image: Rc<RefCell<Option<ImageRegistration>>>,
     source: Rc<String>,
 }
 
@@ -68,8 +83,41 @@ impl IntoLua for Registration {
         lua.set_app_data(self);
         let table = lua.create_table()?;
         table.set("job", lua.create_function(register_job)?)?;
+        table.set("image", lua.create_function(register_image)?)?;
         table.into_lua(lua)
     }
+}
+
+/// A pending image registration extracted from the Lua callback.
+struct ImageRegistration {
+    name: String,
+    _line: u32,
+}
+
+/// Body of `(ci.image name)`. Records the image on the first call;
+/// pushes a `DuplicateImage` error on subsequent calls.
+fn register_image(lua: &Lua, (name,): (String,)) -> mlua::Result<()> {
+    let r = lua
+        .app_data_ref::<Registration>()
+        .ok_or_else(|| mlua::Error::external("quire.ci registration not installed on Lua VM"))?;
+    let line = lua
+        .inspect_stack(1, |d| d.current_line())
+        .flatten()
+        .map(|l| l as u32)
+        .unwrap_or(0);
+    let mut img = r.image.borrow_mut();
+    match &*img {
+        Some(_) => {
+            let span = super::pipeline::span_for_line(&r.source, line);
+            r.jobs
+                .borrow_mut()
+                .push(Err(ValidationError::DuplicateImage { span }));
+        }
+        None => {
+            *img = Some(ImageRegistration { name, _line: line });
+        }
+    }
+    Ok(())
 }
 
 /// Body of `(ci.job id inputs run-fn)`. Captures the call-site line

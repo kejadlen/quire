@@ -1079,4 +1079,32 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].stdout, "from-a\n");
     }
+
+    #[test]
+    fn execute_errors_when_image_called_in_run_fn() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.image "alpine")
+(ci.job :bad [:quire/push]
+  (fn [_]
+    (ci.image "sneaky")))"#,
+        );
+
+        let err = run
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect_err("expected failure");
+        let Error::JobFailed { job, source } = err else {
+            panic!("expected JobFailed, got: {err:?}")
+        };
+        assert_eq!(job, "bad");
+        let msg = source.to_string();
+        assert!(
+            msg.contains("registration not installed"),
+            "expected registration error, got: {msg}"
+        );
+    }
 }
