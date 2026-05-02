@@ -22,4 +22,5 @@
                   :push
                   :--porcelain
                   mirror-url
+                  :refs/heads/main
                   (.. :refs/tags/ tag)] git-opts))))))

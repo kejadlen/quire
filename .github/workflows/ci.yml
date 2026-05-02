@@ -1,7 +1,8 @@
 name: CI
 
-on: # zizmor: ignore[dangerous-triggers] -- only triggers on tag pushes from Gitea mirror; no fork PR risk.
+on:
   push:
+    branches: [main]
     tags: [v*]
 
 permissions: {}
@@ -42,9 +43,10 @@ jobs:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e # v0.5.3
 
-  build:
-    name: Build
+  release:
+    name: Release
     needs: test
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create GitHub release.
