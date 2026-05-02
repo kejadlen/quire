@@ -269,6 +269,12 @@ pub enum ValidationError {
         #[label("declared here")]
         span: SourceSpan,
     },
+
+    #[error("Pipeline image declared more than once.")]
+    DuplicateImage {
+        #[label("duplicate image declaration")]
+        span: SourceSpan,
+    },
 }
 
 /// All validation errors produced while loading a ci.fnl, paired with
@@ -663,6 +669,14 @@ mod tests {
 
         let map = pipeline.transitive_inputs();
         assert!(!map["only"].contains("only"), "self should not be in set");
+    }
+
+    #[test]
+    fn duplicate_image_variant_exists() {
+        let err = ValidationError::DuplicateImage {
+            span: SourceSpan::from((0, 0)),
+        };
+        assert!(err.to_string().contains("image"));
     }
 
     #[test]
