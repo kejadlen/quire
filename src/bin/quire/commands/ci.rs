@@ -6,7 +6,7 @@ use quire::ci::{Ci, CommitRef, RunMeta, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
-/// `Ci::load` parses the Fennel source and validates the resulting
+/// `Ci::pipeline` parses the Fennel source and validates the resulting
 /// job graph; this command surfaces the registered jobs and any
 /// validation errors via the standard miette diagnostic path.
 pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
@@ -14,7 +14,7 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path);
 
-    let Some(pipeline) = ci.load(&commit)? else {
+    let Some(pipeline) = ci.pipeline(&commit)? else {
         println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };
@@ -48,7 +48,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
 
     // Pull secrets from the global config; absence is fine for local
     // testing. A broken-but-present config is a real error. Secrets
-    // are passed to `Run::execute` rather than `Ci::load` since they
+    // are passed to `Run::execute` rather than `Ci::pipeline` since they
     // only matter when the run-fns actually fire.
     let secrets = match quire.global_config() {
         Ok(c) => c.secrets,
@@ -56,7 +56,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         Err(e) => return Err(e).into_diagnostic(),
     };
 
-    let Some(pipeline) = ci.load(&commit)? else {
+    let Some(pipeline) = ci.pipeline(&commit)? else {
         println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };

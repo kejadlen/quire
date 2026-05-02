@@ -1,6 +1,6 @@
 use miette::Diagnostic;
 
-use crate::ci::{LoadError, RunState};
+use crate::ci::{PipelineError, RunState};
 use crate::fennel::FennelError;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
@@ -25,7 +25,7 @@ pub enum Error {
 
     #[error(transparent)]
     #[diagnostic(transparent)]
-    Validation(Box<LoadError>),
+    Pipeline(Box<PipelineError>),
 
     #[error("invalid run transition: {from:?} -> {to:?}")]
     InvalidTransition { from: RunState, to: RunState },
@@ -55,9 +55,9 @@ impl From<FennelError> for Error {
     }
 }
 
-impl From<LoadError> for Error {
-    fn from(err: LoadError) -> Self {
-        Error::Validation(Box::new(err))
+impl From<PipelineError> for Error {
+    fn from(err: PipelineError) -> Self {
+        Error::Pipeline(Box::new(err))
     }
 }
 
@@ -76,16 +76,18 @@ mod tests {
     }
 
     #[test]
-    fn from_load_error() {
+    fn from_pipeline_error() {
         let source = "(ci.job :a [] (fn [_] nil))";
-        let load_err = LoadError {
+        let pipeline_err = PipelineError {
             src: miette::NamedSource::new("ci.fnl", source.to_string()),
-            errors: vec![crate::ci::ValidationError::EmptyInputs {
-                job_id: "a".to_string(),
-                span: miette::SourceSpan::from((0, 0)),
-            }],
+            diagnostics: vec![crate::ci::Diagnostic::Definition(
+                crate::ci::DefinitionError::EmptyInputs {
+                    job_id: "a".to_string(),
+                    span: miette::SourceSpan::from((0, 0)),
+                },
+            )],
         };
-        let err: Error = load_err.into();
-        assert!(err.to_string().contains("CI validation failed"));
+        let err: Error = pipeline_err.into();
+        assert!(err.to_string().contains("ci.fnl has errors"));
     }
 }

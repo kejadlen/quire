@@ -786,7 +786,7 @@ mod tests {
     }
 
     fn load(source: &str) -> Pipeline {
-        super::super::pipeline::Pipeline::load(source, "ci.fnl").expect("load should succeed")
+        super::super::pipeline::compile(source, "ci.fnl").expect("compile should succeed")
     }
 
     #[test]

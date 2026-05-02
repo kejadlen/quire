@@ -1,5 +1,5 @@
-//! CI job graph: validation rules and the `load` entry point that
-//! parses a `ci.fnl` source string into a `Pipeline`.
+//! CI job graph: validation rules and the [`compile`] entry point
+//! that turns a `ci.fnl` source string into a [`Pipeline`].
 //!
 //! Lua/Fennel evaluation lives in the sibling [`super::lua`] module;
 //! this module owns the domain types and the structural rules.
@@ -14,6 +14,66 @@ use petgraph::visit::{Bfs, Reversed};
 use super::lua;
 use crate::Result;
 use crate::fennel::Fennel;
+
+/// A registration-time error caught while individual `(ci.job …)` and
+/// `(ci.image …)` calls are being processed.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum DefinitionError {
+    #[error(
+        "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it."
+    )]
+    EmptyInputs {
+        job_id: String,
+        #[label("declared here")]
+        span: SourceSpan,
+    },
+
+    #[error("Job id '{job_id}' contains '/', which is reserved for the 'quire/' source namespace.")]
+    ReservedSlash {
+        job_id: String,
+        #[label("declared here")]
+        span: SourceSpan,
+    },
+
+    #[error("Pipeline image declared more than once.")]
+    DuplicateImage {
+        #[label("duplicate image declaration")]
+        span: SourceSpan,
+    },
+}
+
+/// A post-graph structural error found after all jobs have been
+/// registered and the dependency graph is built.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum StructureError {
+    #[error("Cycle detected among jobs: {}", cycle_jobs.join(", "))]
+    Cycle {
+        cycle_jobs: Vec<String>,
+        #[label(collection, "in cycle")]
+        spans: Vec<SourceSpan>,
+    },
+
+    #[error("Job '{job_id}' is not reachable from any source ref (e.g. :quire/push).")]
+    Unreachable {
+        job_id: String,
+        #[label("declared here")]
+        span: SourceSpan,
+    },
+}
+
+/// A single diagnostic from pipeline compilation. Wraps the two
+/// error categories — definition-time and structure-time — so miette
+/// can iterate them via `#[related]`.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum Diagnostic {
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Definition(#[from] DefinitionError),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Structure(#[from] StructureError),
+}
 
 /// Edges point from dependency to dependent. Node weights are indices
 /// into `Pipeline::jobs`; source refs (e.g. `quire/push`) are not nodes.
@@ -52,15 +112,15 @@ impl Job {
         run_fn: mlua::Function,
         line: u32,
         source: &str,
-    ) -> std::result::Result<Self, ValidationError> {
+    ) -> std::result::Result<Self, DefinitionError> {
         let span = span_for_line(source, line);
 
         if id.contains('/') {
-            return Err(ValidationError::ReservedSlash { job_id: id, span });
+            return Err(DefinitionError::ReservedSlash { job_id: id, span });
         }
 
         if inputs.is_empty() {
-            return Err(ValidationError::EmptyInputs { job_id: id, span });
+            return Err(DefinitionError::EmptyInputs { job_id: id, span });
         }
 
         Ok(Self {
@@ -75,12 +135,12 @@ impl Job {
 /// A validated CI pipeline — a job graph that has passed all
 /// structural rules.
 ///
-/// Obtain via [`Pipeline::load`], which parses the Fennel source and
+/// Obtain via [`compile`], which evaluates the Fennel source and
 /// validates the result. Holding a `Pipeline` is proof that the graph
 /// is sound.
 ///
 /// Owns the Fennel/Lua VM so the registered `run_fn`s remain callable
-/// after `load` returns.
+/// after `compile` returns.
 pub struct Pipeline {
     jobs: Vec<Job>,
     graph: JobGraph,
@@ -159,43 +219,6 @@ impl Pipeline {
         }
         result
     }
-
-    /// Parse and validate a ci.fnl source string into a `Pipeline`.
-    ///
-    /// Delegates evaluation to [`lua::parse`] for the Fennel-side work,
-    /// then runs the post-graph rules over the surviving jobs. Any errors
-    /// found are gathered into a single `LoadError` carrying the source
-    /// for miette to render with inline labels.
-    pub(crate) fn load(source: &str, name: &str) -> Result<Pipeline> {
-        let fennel = Fennel::new()?;
-        let parsed = lua::parse(&fennel, source, name)?;
-
-        let mut errors = parsed.errors;
-        let jobs = parsed.jobs;
-        let image = parsed.image;
-
-        let (graph, node_index) = build_graph(&jobs);
-
-        if let Err(post) = validate_post_graph(&jobs, &graph) {
-            errors.extend(post);
-        }
-
-        if errors.is_empty() {
-            Ok(Self {
-                jobs,
-                graph,
-                node_index,
-                fennel,
-                image,
-            })
-        } else {
-            Err(LoadError {
-                src: NamedSource::new(name, source.to_string()),
-                errors,
-            }
-            .into())
-        }
-    }
 }
 
 /// Build the dependency graph for `jobs`. Inputs that don't match a
@@ -242,71 +265,71 @@ pub(super) fn span_for_line(source: &str, line: u32) -> SourceSpan {
     SourceSpan::from((source.len(), 0)) // cov-excl-line
 }
 
-/// A validation error found in the job graph.
+/// All diagnostics produced while compiling a ci.fnl, paired with
+/// the source so miette can render inline labels for each diagnostic.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
-pub enum ValidationError {
-    #[error("Cycle detected among jobs: {}", cycle_jobs.join(", "))]
-    Cycle {
-        cycle_jobs: Vec<String>,
-        #[label(collection, "in cycle")]
-        spans: Vec<SourceSpan>,
-    },
-
-    #[error(
-        "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it."
-    )]
-    EmptyInputs {
-        job_id: String,
-        #[label("declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("Job '{job_id}' is not reachable from any source ref (e.g. :quire/push).")]
-    Unreachable {
-        job_id: String,
-        #[label("declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("Job id '{job_id}' contains '/', which is reserved for the 'quire/' source namespace.")]
-    ReservedSlash {
-        job_id: String,
-        #[label("declared here")]
-        span: SourceSpan,
-    },
-
-    #[error("Pipeline image declared more than once.")]
-    DuplicateImage {
-        #[label("duplicate image declaration")]
-        span: SourceSpan,
-    },
-}
-
-/// All validation errors produced while loading a ci.fnl, paired with
-/// the source so miette can render inline labels for each per-job
-/// error.
-#[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error("CI validation failed")]
-pub struct LoadError {
+#[error("ci.fnl has errors")]
+pub struct PipelineError {
     // Named `src` rather than `source` so thiserror doesn't auto-treat
     // it as the error chain.
     #[source_code]
     pub src: NamedSource<String>,
 
     #[related]
-    pub errors: Vec<ValidationError>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Parse and validate a ci.fnl source string into a [`Pipeline`].
+///
+/// Delegates evaluation to [`lua::register`] for the Fennel-side work,
+/// then runs the post-graph rules over the surviving jobs. Any errors
+/// found are gathered into a single [`PipelineError`] carrying the
+/// source for miette to render with inline labels.
+pub(crate) fn compile(source: &str, name: &str) -> Result<Pipeline> {
+    let fennel = Fennel::new()?;
+    let registrations = lua::register(&fennel, source, name)?;
+
+    let mut diagnostics: Vec<Diagnostic> = registrations
+        .errors
+        .into_iter()
+        .map(Diagnostic::Definition)
+        .collect();
+    let jobs = registrations.jobs;
+    let image = registrations.image;
+
+    let (graph, node_index) = build_graph(&jobs);
+
+    if let Err(post) = validate_post_graph(&jobs, &graph) {
+        diagnostics.extend(post.into_iter().map(Diagnostic::Structure));
+    }
+
+    if diagnostics.is_empty() {
+        Ok(Pipeline {
+            jobs,
+            graph,
+            node_index,
+            fennel,
+            image,
+        })
+    } else {
+        Err(PipelineError {
+            src: NamedSource::new(name, source.to_string()),
+            diagnostics,
+        }
+        .into())
+    }
 }
 
 /// Run the post-graph validation rules — cycle detection and source
-/// reachability — over the surviving jobs from parsing.
+/// reachability — over the surviving jobs from registration.
 ///
 /// Per-job pre-graph rules (slash-in-id, empty inputs) run inside the
-/// `(ci.job …)` callback during `lua::parse`, so they are not re-checked
-/// here.
+/// `(ci.job …)` callback during `lua::register`, so they are not
+/// re-checked here.
 fn validate_post_graph(
     jobs: &[Job],
     graph: &JobGraph,
-) -> std::result::Result<(), Vec<ValidationError>> {
+) -> std::result::Result<(), Vec<StructureError>> {
     let mut errors = Vec::new();
     let mut cycle_members: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
@@ -325,7 +348,7 @@ fn validate_post_graph(
         }
         let cycle_jobs = members.iter().map(|j| j.id.clone()).collect();
         let spans = members.iter().map(|j| j.span).collect();
-        errors.push(ValidationError::Cycle { cycle_jobs, spans });
+        errors.push(StructureError::Cycle { cycle_jobs, spans });
     }
 
     // Rule 3: reachability — every job's transitive inputs must include a source ref.
@@ -361,7 +384,7 @@ fn validate_post_graph(
         }
 
         if !found_source {
-            errors.push(ValidationError::Unreachable {
+            errors.push(StructureError::Unreachable {
                 job_id: job.id.clone(),
                 span: job.span,
             });
@@ -380,10 +403,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_registers_a_job() {
+    fn compile_registers_a_job() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :test [:quire/push] (fn [_] nil))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, "test");
@@ -391,13 +414,13 @@ mod tests {
     }
 
     #[test]
-    fn load_registers_multiple_jobs() {
+    fn compile_registers_multiple_jobs() {
         let source = r#"
 (local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [_] nil))
 (ci.job :test [:build] (fn [_] nil))
 "#;
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "build");
@@ -407,14 +430,14 @@ mod tests {
     }
 
     #[test]
-    fn load_captures_source_line() {
+    fn compile_captures_source_line() {
         let source = "(local ci (require :quire.ci))
 (ci.job :first [:quire/push] (fn [_] nil))
 (ci.job :second [:quire/push] (fn [_] nil))
 
 
 (ci.job :sixth [:quire/push] (fn [_] nil))";
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
             .iter()
@@ -424,36 +447,36 @@ mod tests {
     }
 
     #[test]
-    fn load_errors_on_bad_fennel() {
-        let result = Pipeline::load("{:bad {:}", "ci.fnl");
+    fn compile_errors_on_bad_fennel() {
+        let result = compile("{:bad {:}", "ci.fnl");
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
-    /// Parse a Fennel source into jobs and errors. The local Fennel is
-    /// dropped on return, but the returned `Job`s only need their
-    /// non-VM fields here.
-    fn parse_jobs(source: &str) -> (Vec<Job>, Vec<ValidationError>) {
+    /// Register a Fennel source, returning the jobs and any
+    /// definition-time errors. The local Fennel is dropped on return,
+    /// but the returned `Job`s only need their non-VM fields here.
+    fn register_jobs(source: &str) -> (Vec<Job>, Vec<DefinitionError>) {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        let output = lua::parse(&f, source, "ci.fnl").expect("parse should succeed");
+        let output = lua::register(&f, source, "ci.fnl").expect("register should succeed");
         (output.jobs, output.errors)
     }
 
-    /// Discard parse errors and return only the successfully registered
-    /// jobs — for tests that exercise post-graph rules.
-    fn parsed_jobs(source: &str) -> Vec<Job> {
-        parse_jobs(source).0
+    /// Discard registration errors and return only the successfully
+    /// registered jobs — for tests that exercise post-graph rules.
+    fn registered_jobs(source: &str) -> Vec<Job> {
+        register_jobs(source).0
     }
 
     /// Run post-graph validation against `jobs`, building the dependency
-    /// graph the same way `load` does.
-    fn validate(jobs: &[Job]) -> std::result::Result<(), Vec<ValidationError>> {
+    /// graph the same way `compile` does.
+    fn validate(jobs: &[Job]) -> std::result::Result<(), Vec<StructureError>> {
         let (graph, _) = build_graph(jobs);
         validate_post_graph(jobs, &graph)
     }
 
     #[test]
     fn validate_accepts_valid_config() {
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [_] nil))
@@ -465,7 +488,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_cycle() {
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :a [:b] (fn [_] nil))
@@ -474,14 +497,14 @@ mod tests {
         );
         let errs = validate(&jobs).unwrap_err();
         assert!(
-            errs.iter().any(|e| matches!(e, ValidationError::Cycle { cycle_jobs, .. } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
+            errs.iter().any(|e| matches!(e, StructureError::Cycle { cycle_jobs, .. } if cycle_jobs.contains(&"a".to_string()) && cycle_jobs.contains(&"b".to_string()))),
             "should report a cycle involving a and b: {errs:?}"
         );
     }
 
     #[test]
     fn validate_cycle_only_reports_cycle_members() {
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :a [:b :quire/push] (fn [_] nil))
@@ -493,7 +516,7 @@ mod tests {
         let cycle_errs: Vec<&Vec<String>> = errs
             .iter()
             .filter_map(|e| match e {
-                ValidationError::Cycle { cycle_jobs, .. } => Some(cycle_jobs),
+                StructureError::Cycle { cycle_jobs, .. } => Some(cycle_jobs),
                 _ => None, // cov-excl-line
             })
             .collect();
@@ -507,7 +530,7 @@ mod tests {
 
     #[test]
     fn validate_reports_disjoint_cycles_separately() {
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :a [:b :quire/push] (fn [_] nil))
@@ -519,34 +542,34 @@ mod tests {
         let errs = validate(&jobs).unwrap_err();
         let cycle_count = errs
             .iter()
-            .filter(|e| matches!(e, ValidationError::Cycle { .. }))
+            .filter(|e| matches!(e, StructureError::Cycle { .. }))
             .count();
         assert_eq!(cycle_count, 2, "expected two cycle errors: {errs:?}");
     }
 
     #[test]
-    fn parse_rejects_empty_inputs() {
-        let (_, errors) = parse_jobs(
+    fn register_rejects_empty_inputs() {
+        let (_, errors) = register_jobs(
             r#"(local ci (require :quire.ci))
 (ci.job :setup [] (fn [_] nil))"#,
         );
         assert!(
             errors.iter().any(
-                |e| matches!(e, ValidationError::EmptyInputs { job_id, .. } if job_id == "setup")
+                |e| matches!(e, DefinitionError::EmptyInputs { job_id, .. } if job_id == "setup")
             ),
             "should report empty inputs for 'setup': {errors:?}"
         );
     }
 
     #[test]
-    fn parse_rejects_slash_in_job_id() {
-        let (_, errors) = parse_jobs(
+    fn register_rejects_slash_in_job_id() {
+        let (_, errors) = register_jobs(
             r#"(local ci (require :quire.ci))
 (ci.job :foo/bar [:quire/push] (fn [_] nil))"#,
         );
         assert!(
             errors.iter().any(
-                |e| matches!(e, ValidationError::ReservedSlash { job_id, .. } if job_id == "foo/bar")
+                |e| matches!(e, DefinitionError::ReservedSlash { job_id, .. } if job_id == "foo/bar")
             ),
             "should report slash in job id: {errors:?}"
         );
@@ -556,7 +579,7 @@ mod tests {
     fn validate_does_not_double_report_cycle_as_unreachable() {
         // Jobs in a cycle are technically also unreachable from any
         // source ref, but reporting both is noise. Cycle alone is enough.
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :a [:b] (fn [_] nil))
@@ -566,7 +589,7 @@ mod tests {
         let errs = validate(&jobs).unwrap_err();
         let unreachable_count = errs
             .iter()
-            .filter(|e| matches!(e, ValidationError::Unreachable { .. }))
+            .filter(|e| matches!(e, StructureError::Unreachable { .. }))
             .count();
         assert_eq!(
             unreachable_count, 0,
@@ -579,14 +602,14 @@ mod tests {
         // A job whose only input names a non-existent job passes
         // pre-graph rules (inputs is non-empty, id has no slash) and
         // reaches the post-graph reachability check.
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"(local ci (require :quire.ci))
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
         );
         let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter().any(
-                |e| matches!(e, ValidationError::Unreachable { job_id, .. } if job_id == "orphan")
+                |e| matches!(e, StructureError::Unreachable { job_id, .. } if job_id == "orphan")
             ),
             "should report unreachable job 'orphan': {errs:?}"
         );
@@ -597,7 +620,7 @@ mod tests {
         // Diamond: push -> a -> b -> d, push -> a -> c -> d.
         // `d` is reachable and `a` is visited multiple times
         // through different paths.
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :a [:quire/push] (fn [_] nil))
@@ -614,7 +637,7 @@ mod tests {
         // stack ["a", "a"], pop a (visit), push nothing (a isn't a job),
         // stack ["a"], pop a → already visited → continue.
         // The dedup fires because `a` isn't a job and isn't a source.
-        let jobs = parsed_jobs(
+        let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
 (ci.job :orphan [:a :a] (fn [_] nil))"#,
@@ -622,21 +645,21 @@ mod tests {
         let errs = validate(&jobs).unwrap_err();
         assert!(
             errs.iter()
-                .any(|e| matches!(e, ValidationError::Unreachable { .. })),
+                .any(|e| matches!(e, StructureError::Unreachable { .. })),
             "expected unreachable: {errs:?}"
         );
     }
 
     #[test]
     fn transitive_inputs_collects_direct_and_indirect() {
-        let pipeline = Pipeline::load(
+        let pipeline = compile(
             r#"(local ci (require :quire.ci))
 (ci.job :setup [:quire/push] (fn [_] nil))
 (ci.job :build [:setup] (fn [_] nil))
 (ci.job :test [:build :setup] (fn [_] nil))"#,
             "ci.fnl",
         )
-        .expect("load should succeed");
+        .expect("compile should succeed");
 
         let map = pipeline.transitive_inputs();
 
@@ -662,47 +685,47 @@ mod tests {
 
     #[test]
     fn transitive_inputs_excludes_self() {
-        let pipeline = Pipeline::load(
+        let pipeline = compile(
             r#"(local ci (require :quire.ci))
 (ci.job :only [:quire/push] (fn [_] nil))"#,
             "ci.fnl",
         )
-        .expect("load should succeed");
+        .expect("compile should succeed");
 
         let map = pipeline.transitive_inputs();
         assert!(!map["only"].contains("only"), "self should not be in set");
     }
 
     #[test]
-    fn load_registers_pipeline_image() {
+    fn compile_registers_pipeline_image() {
         let source = r#"(local ci (require :quire.ci))
 (ci.image "alpine")
 (ci.job :build [:quire/push] (fn [_] nil))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         assert_eq!(pipeline.image(), Some("alpine"));
     }
 
     #[test]
-    fn load_succeeds_without_image() {
+    fn compile_succeeds_without_image() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [_] nil))"#;
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         assert_eq!(pipeline.image(), None);
     }
 
     #[test]
     fn duplicate_image_variant_exists() {
-        let err = ValidationError::DuplicateImage {
+        let err = DefinitionError::DuplicateImage {
             span: SourceSpan::from((0, 0)),
         };
         assert!(err.to_string().contains("image"));
     }
 
     #[test]
-    fn load_reports_both_parse_and_post_graph_errors() {
+    fn compile_reports_both_definition_and_structure_errors() {
         // `setup` has empty inputs (pre-graph error) and `orphan` is unreachable
         // (post-graph error). Both should be reported.
-        let result = Pipeline::load(
+        let result = compile(
             r#"(local ci (require :quire.ci))
 (ci.job :setup [] (fn [_] nil))
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
@@ -711,24 +734,24 @@ mod tests {
         let Err(e) = result else { unreachable!() };
         let msg = e.to_string();
         assert!(
-            msg.contains("CI validation failed"),
-            "expected validation error: {msg}"
+            msg.contains("ci.fnl has errors"),
+            "expected pipeline error: {msg}"
         );
     }
 
     #[test]
-    fn load_errors_on_duplicate_image() {
+    fn compile_errors_on_duplicate_image() {
         let source = r#"(local ci (require :quire.ci))
 (ci.image "alpine")
 (ci.image "ubuntu")
 (ci.job :build [:quire/push] (fn [_] nil))"#;
-        let result = Pipeline::load(source, "ci.fnl");
+        let result = compile(source, "ci.fnl");
         assert!(result.is_err(), "duplicate image should fail");
         let Err(e) = result else { unreachable!() };
         let msg = e.to_string();
         assert!(
-            msg.contains("CI validation failed"),
-            "expected validation error: {msg}"
+            msg.contains("ci.fnl has errors"),
+            "expected pipeline error: {msg}"
         );
     }
 }

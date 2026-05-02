@@ -6,7 +6,7 @@ mod lua;
 mod pipeline;
 mod run;
 
-pub use pipeline::{Job, LoadError, Pipeline, ValidationError};
+pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
 
 /// A resolved commit reference.
@@ -31,9 +31,9 @@ pub const CI_FNL: &str = ".quire/ci.fnl";
 
 /// Access to CI operations for a single repo.
 ///
-/// Provides load and validation methods scoped to a bare repo.
-/// Obtain one via `Repo::ci()`. Run lifecycle is on `Runs`, obtainable
-/// via `Repo::runs()`.
+/// Provides pipeline compilation and validation scoped to a bare
+/// repo. Obtain one via `Repo::ci()`. Run lifecycle is on `Runs`,
+/// obtainable via `Repo::runs()`.
 pub struct Ci {
     repo_path: PathBuf,
 }
@@ -48,21 +48,22 @@ impl Ci {
         Runs::new(runs_base)
     }
 
-    /// Load ci.fnl at a given SHA and return the validated pipeline.
+    /// Read and compile ci.fnl at a given SHA, returning the validated
+    /// pipeline.
     ///
-    /// Pure parse and structural validation. Secrets are not needed
+    /// Pure compilation and structural validation. Secrets are not needed
     /// here — they are passed to `Run::execute` since they only matter
     /// when the run-fns actually fire.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
     /// Errors if the Fennel source fails to parse/evaluate or if the
     /// resulting job graph violates any structural rule.
-    pub fn load(&self, commit: &CommitRef) -> Result<Option<Pipeline>> {
+    pub fn pipeline(&self, commit: &CommitRef) -> Result<Option<Pipeline>> {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
         let name = CI_FNL.to_string();
-        let pipeline = Pipeline::load(&source, &name)?;
+        let pipeline = pipeline::compile(&source, &name)?;
         Ok(Some(pipeline))
     }
 
@@ -161,7 +162,7 @@ fn trigger_ref(
         "created CI run"
     );
 
-    let pipeline = match Pipeline::load(&source, CI_FNL) {
+    let pipeline = match pipeline::compile(&source, CI_FNL) {
         Ok(p) => p,
         Err(e) => {
             run.transition(RunState::Active)?;
@@ -265,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_load_returns_none_when_no_ci_fnl() {
+    fn ci_pipeline_returns_none_when_no_ci_fnl() {
         let (_dir, quire, name) = bare_repo_without_ci();
         let repo = quire.repo(&name).expect("repo");
         let ci = repo.ci();
@@ -274,12 +275,12 @@ mod tests {
             sha: sha.clone(),
             display: sha,
         };
-        let result = ci.load(&commit).expect("load should not error");
+        let result = ci.pipeline(&commit).expect("pipeline should not error");
         assert!(result.is_none(), "no ci.fnl should return None");
     }
 
     #[test]
-    fn ci_load_returns_pipeline_when_ci_fnl_present() {
+    fn ci_pipeline_returns_pipeline_when_ci_fnl_present() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [_] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
@@ -291,15 +292,15 @@ mod tests {
             display: sha,
         };
         let pipeline = ci
-            .load(&commit)
-            .expect("load should succeed")
+            .pipeline(&commit)
+            .expect("pipeline should succeed")
             .expect("should have pipeline");
         assert_eq!(pipeline.jobs().len(), 1);
         assert_eq!(pipeline.jobs()[0].id, "build");
     }
 
     #[test]
-    fn ci_load_errors_on_invalid_fennel() {
+    fn ci_pipeline_errors_on_invalid_fennel() {
         let source = "{:bad {:}";
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
@@ -309,7 +310,7 @@ mod tests {
             sha: sha.clone(),
             display: sha,
         };
-        let result = ci.load(&commit);
+        let result = ci.pipeline(&commit);
         assert!(result.is_err(), "bad Fennel should fail");
     }
 

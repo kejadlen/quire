@@ -3,7 +3,7 @@
 //! into each job's `run-fn`.
 //!
 //! All mlua/Fennel interaction lives here. The pipeline module calls
-//! [`parse`] to evaluate a script and collect the registered jobs;
+//! [`register`] to evaluate a script and collect the registered jobs;
 //! the run module installs a [`Runtime`] and threads its handle into
 //! each `run-fn` at execute time.
 
@@ -13,24 +13,24 @@ use std::rc::Rc;
 
 use mlua::{IntoLua, Lua, LuaSerdeExt};
 
-use super::pipeline::{Job, ValidationError};
+use super::pipeline::{DefinitionError, Job};
 use crate::Result;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
 
-/// Output of [`parse`]: registered jobs and the pipeline image (if
-/// declared).
-pub(super) struct ParseOutput {
+/// Output of [`register`]: registered jobs, definition-time errors,
+/// and the pipeline image (if declared).
+pub(super) struct Registrations {
     pub(super) jobs: Vec<Job>,
-    pub(super) errors: Vec<ValidationError>,
+    pub(super) errors: Vec<DefinitionError>,
     pub(super) image: Option<String>,
 }
 
 /// Evaluate `source` with the registration module bound and collect
-/// the registration results — one `Result` per `(ci.job …)` call.
+/// the registered jobs, image, and any definition-time errors.
 /// Pre-graph rules run inside the callback, so a single bad job does
 /// not abort the rest of the script.
-pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOutput> {
+pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> Result<Registrations> {
     let jobs: Rc<RefCell<Vec<Job>>> = Rc::new(RefCell::new(Vec::new()));
     let image = Rc::new(RefCell::new(None));
     let src = Rc::new(source.to_string());
@@ -55,7 +55,7 @@ pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOu
     fennel.lua().remove_app_data::<Registration>();
 
     let image_name = image.borrow().as_ref().map(|i| i.name.clone());
-    Ok(ParseOutput {
+    Ok(Registrations {
         jobs: jobs.take(),
         errors: errors.take(),
         image: image_name,
@@ -79,7 +79,7 @@ pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOu
 /// ```
 struct Registration {
     jobs: Rc<RefCell<Vec<Job>>>,
-    errors: Rc<RefCell<Vec<ValidationError>>>,
+    errors: Rc<RefCell<Vec<DefinitionError>>>,
     image: Rc<RefCell<Option<ImageRegistration>>>,
     source: Rc<String>,
 }
@@ -117,7 +117,7 @@ fn register_image(lua: &Lua, (name,): (String,)) -> mlua::Result<()> {
             let span = super::pipeline::span_for_line(&r.source, line);
             r.errors
                 .borrow_mut()
-                .push(ValidationError::DuplicateImage { span });
+                .push(DefinitionError::DuplicateImage { span });
         }
         None => {
             *img = Some(ImageRegistration { name, _line: line });
@@ -539,13 +539,13 @@ fn run_sh(lua: &Lua, (cmd, opts): (Cmd, Option<ShOpts>)) -> mlua::Result<mlua::V
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::Pipeline;
     use super::*;
 
     /// Consume the pipeline for its VM, build a minimal runtime,
     /// and return the runtime and first job's run_fn.
     fn rt(source: &str, secrets: HashMap<String, SecretString>) -> (Rc<Runtime>, mlua::Function) {
-        let pipeline = Pipeline::load(source, "ci.fnl").expect("load should succeed");
+        let pipeline =
+            super::super::pipeline::compile(source, "ci.fnl").expect("compile should succeed");
         let run_fn = pipeline.jobs()[0].run_fn.clone();
         let runtime = Rc::new(Runtime::for_test(pipeline, secrets));
         let _ = RuntimeHandle(runtime.clone())
