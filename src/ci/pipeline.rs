@@ -168,17 +168,11 @@ impl Pipeline {
     /// for miette to render with inline labels.
     pub(crate) fn load(source: &str, name: &str) -> Result<Pipeline> {
         let fennel = Fennel::new()?;
-        let output = lua::parse(&fennel, source, name)?;
+        let parsed = lua::parse(&fennel, source, name)?;
 
-        let mut errors = Vec::new();
-        let mut jobs = Vec::new();
-        for r in output.jobs {
-            match r {
-                Ok(j) => jobs.push(j),
-                Err(e) => errors.push(e),
-            }
-        }
-        let image = output.image;
+        let mut errors = parsed.errors;
+        let jobs = parsed.jobs;
+        let image = parsed.image;
 
         let (graph, node_index) = build_graph(&jobs);
 
@@ -435,24 +429,19 @@ mod tests {
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
-    /// Parse a Fennel source into per-job results. Pre-graph rules
-    /// run during parsing, so each entry is `Ok(Job)` or
-    /// `Err(ValidationError)`. The local Fennel is dropped on return,
-    /// but the returned `Job`s only need their non-VM fields here.
-    fn parse_results(source: &str) -> Vec<std::result::Result<Job, ValidationError>> {
+    /// Parse a Fennel source into jobs and errors. The local Fennel is
+    /// dropped on return, but the returned `Job`s only need their
+    /// non-VM fields here.
+    fn parse_jobs(source: &str) -> (Vec<Job>, Vec<ValidationError>) {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        lua::parse(&f, source, "ci.fnl")
-            .expect("parse should succeed")
-            .jobs
+        let output = lua::parse(&f, source, "ci.fnl").expect("parse should succeed");
+        (output.jobs, output.errors)
     }
 
     /// Discard parse errors and return only the successfully registered
     /// jobs — for tests that exercise post-graph rules.
     fn parsed_jobs(source: &str) -> Vec<Job> {
-        parse_results(source)
-            .into_iter()
-            .filter_map(|r| r.ok())
-            .collect()
+        parse_jobs(source).0
     }
 
     /// Run post-graph validation against `jobs`, building the dependency
@@ -537,29 +526,29 @@ mod tests {
 
     #[test]
     fn parse_rejects_empty_inputs() {
-        let results = parse_results(
+        let (_, errors) = parse_jobs(
             r#"(local ci (require :quire.ci))
 (ci.job :setup [] (fn [_] nil))"#,
         );
         assert!(
-            results.iter().any(
-                |r| matches!(r, Err(ValidationError::EmptyInputs { job_id, .. }) if job_id == "setup")
+            errors.iter().any(
+                |e| matches!(e, ValidationError::EmptyInputs { job_id, .. } if job_id == "setup")
             ),
-            "should report empty inputs for 'setup': {results:?}"
+            "should report empty inputs for 'setup': {errors:?}"
         );
     }
 
     #[test]
     fn parse_rejects_slash_in_job_id() {
-        let results = parse_results(
+        let (_, errors) = parse_jobs(
             r#"(local ci (require :quire.ci))
 (ci.job :foo/bar [:quire/push] (fn [_] nil))"#,
         );
         assert!(
-            results.iter().any(
-                |r| matches!(r, Err(ValidationError::ReservedSlash { job_id, .. }) if job_id == "foo/bar")
+            errors.iter().any(
+                |e| matches!(e, ValidationError::ReservedSlash { job_id, .. } if job_id == "foo/bar")
             ),
-            "should report slash in job id: {results:?}"
+            "should report slash in job id: {errors:?}"
         );
     }
 

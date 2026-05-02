@@ -21,7 +21,8 @@ use crate::secret::SecretString;
 /// Output of [`parse`]: registered jobs and the pipeline image (if
 /// declared).
 pub(super) struct ParseOutput {
-    pub(super) jobs: Vec<std::result::Result<Job, ValidationError>>,
+    pub(super) jobs: Vec<Job>,
+    pub(super) errors: Vec<ValidationError>,
     pub(super) image: Option<String>,
 }
 
@@ -30,15 +31,18 @@ pub(super) struct ParseOutput {
 /// Pre-graph rules run inside the callback, so a single bad job does
 /// not abort the rest of the script.
 pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOutput> {
-    let jobs = Rc::new(RefCell::new(Vec::new()));
+    let jobs: Rc<RefCell<Vec<Job>>> = Rc::new(RefCell::new(Vec::new()));
     let image = Rc::new(RefCell::new(None));
     let src = Rc::new(source.to_string());
+
+    let errors = Rc::new(RefCell::new(Vec::new()));
 
     fennel.eval_raw(source, name, |lua| {
         lua.register_module(
             "quire.ci",
             Registration {
                 jobs: jobs.clone(),
+                errors: errors.clone(),
                 image: image.clone(),
                 source: src.clone(),
             },
@@ -53,6 +57,7 @@ pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOu
     let image_name = image.borrow().as_ref().map(|i| i.name.clone());
     Ok(ParseOutput {
         jobs: jobs.take(),
+        errors: errors.take(),
         image: image_name,
     })
 }
@@ -73,7 +78,8 @@ pub(super) fn parse(fennel: &Fennel, source: &str, name: &str) -> Result<ParseOu
 ///     (sh ["echo" (secret :github_token)])))
 /// ```
 struct Registration {
-    jobs: Rc<RefCell<Vec<std::result::Result<Job, ValidationError>>>>,
+    jobs: Rc<RefCell<Vec<Job>>>,
+    errors: Rc<RefCell<Vec<ValidationError>>>,
     image: Rc<RefCell<Option<ImageRegistration>>>,
     source: Rc<String>,
 }
@@ -109,9 +115,9 @@ fn register_image(lua: &Lua, (name,): (String,)) -> mlua::Result<()> {
     match &*img {
         Some(_) => {
             let span = super::pipeline::span_for_line(&r.source, line);
-            r.jobs
+            r.errors
                 .borrow_mut()
-                .push(Err(ValidationError::DuplicateImage { span }));
+                .push(ValidationError::DuplicateImage { span });
         }
         None => {
             *img = Some(ImageRegistration { name, _line: line });
@@ -135,9 +141,10 @@ fn register_job(
         .flatten()
         .map(|l| l as u32)
         .unwrap_or(0);
-    r.jobs
-        .borrow_mut()
-        .push(Job::new(id, inputs, run_fn, line, &r.source));
+    match Job::new(id, inputs, run_fn, line, &r.source) {
+        Ok(job) => r.jobs.borrow_mut().push(job),
+        Err(e) => r.errors.borrow_mut().push(e),
+    }
     Ok(())
 }
 
