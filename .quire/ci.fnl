@@ -9,7 +9,7 @@
            (let [date (-> (sh "date --utc +%Y-%m-%d")
                           (. :stdout)
                           (: :gsub "\n$" ""))
-                 tag (.. :v date "+" (sha:sub 1 8))
+                 tag (.. :v date "-" (sha:sub 1 8))
                  encoded (-> (sh "printf '%s' \"$T\" | base64 --wrap=0"
                                  {:env {:T (.. "x-access-token:" token)}})
                              (. :stdout))
