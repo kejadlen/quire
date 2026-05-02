@@ -11,7 +11,7 @@ use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, Reversed};
 
-use super::lua;
+use super::lua::{self, Registrations};
 use crate::Result;
 use crate::fennel::Fennel;
 
@@ -279,45 +279,34 @@ pub struct PipelineError {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Parse and validate a ci.fnl source string into a [`Pipeline`].
+/// Compile a ci.fnl source string into a validated [`Pipeline`].
 ///
-/// Delegates evaluation to [`lua::register`] for the Fennel-side work,
-/// then runs the post-graph rules over the surviving jobs. Any errors
-/// found are gathered into a single [`PipelineError`] carrying the
-/// source for miette to render with inline labels.
+/// Two phases, fail-fast between them: [`lua::register`] evaluates
+/// the script and reports any definition-time errors, then
+/// [`validate_post_graph`] checks the dependency graph. Errors from a
+/// phase are wrapped in a [`PipelineError`] for miette to render with
+/// inline labels.
 pub(crate) fn compile(source: &str, name: &str) -> Result<Pipeline> {
     let fennel = Fennel::new()?;
-    let registrations = lua::register(&fennel, source, name)?;
-
-    let mut diagnostics: Vec<Diagnostic> = registrations
-        .errors
-        .into_iter()
-        .map(Diagnostic::Definition)
-        .collect();
-    let jobs = registrations.jobs;
-    let image = registrations.image;
+    let Registrations { jobs, image } = lua::register(&fennel, source, name)?;
 
     let (graph, node_index) = build_graph(&jobs);
 
-    if let Err(post) = validate_post_graph(&jobs, &graph) {
-        diagnostics.extend(post.into_iter().map(Diagnostic::Structure));
+    if let Err(errors) = validate_post_graph(&jobs, &graph) {
+        return Err(PipelineError {
+            src: NamedSource::new(name, source.to_string()),
+            diagnostics: errors.into_iter().map(Diagnostic::Structure).collect(),
+        }
+        .into());
     }
 
-    if diagnostics.is_empty() {
-        Ok(Pipeline {
-            jobs,
-            graph,
-            node_index,
-            fennel,
-            image,
-        })
-    } else {
-        Err(PipelineError {
-            src: NamedSource::new(name, source.to_string()),
-            diagnostics,
-        }
-        .into())
-    }
+    Ok(Pipeline {
+        jobs,
+        graph,
+        node_index,
+        fennel,
+        image,
+    })
 }
 
 /// Run the post-graph validation rules — cycle detection and source
@@ -452,19 +441,32 @@ mod tests {
         assert!(result.is_err(), "malformed Fennel should fail");
     }
 
-    /// Register a Fennel source, returning the jobs and any
-    /// definition-time errors. The local Fennel is dropped on return,
-    /// but the returned `Job`s only need their non-VM fields here.
-    fn register_jobs(source: &str) -> (Vec<Job>, Vec<DefinitionError>) {
+    /// Register a Fennel source for tests that exercise post-graph
+    /// rules. Panics if registration produced any errors. The local
+    /// Fennel is dropped on return, but the returned `Job`s only need
+    /// their non-VM fields here.
+    fn registered_jobs(source: &str) -> Vec<Job> {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        let output = lua::register(&f, source, "ci.fnl").expect("register should succeed");
-        (output.jobs, output.errors)
+        lua::register(&f, source, "ci.fnl")
+            .expect("register should succeed")
+            .jobs
     }
 
-    /// Discard registration errors and return only the successfully
-    /// registered jobs — for tests that exercise post-graph rules.
-    fn registered_jobs(source: &str) -> Vec<Job> {
-        register_jobs(source).0
+    /// Run registration on a source expected to fail and return the
+    /// definition errors it produced.
+    fn registration_errors(source: &str) -> Vec<DefinitionError> {
+        let f = Fennel::new().expect("Fennel::new() should succeed");
+        let err = lua::register(&f, source, "ci.fnl").expect_err("expected registration errors");
+        let crate::Error::Pipeline(pe) = err else {
+            panic!("expected PipelineError, got {err:?}")
+        };
+        pe.diagnostics
+            .into_iter()
+            .map(|d| match d {
+                Diagnostic::Definition(e) => e,
+                Diagnostic::Structure(_) => panic!("expected only definition errors"),
+            })
+            .collect()
     }
 
     /// Run post-graph validation against `jobs`, building the dependency
@@ -549,7 +551,7 @@ mod tests {
 
     #[test]
     fn register_rejects_empty_inputs() {
-        let (_, errors) = register_jobs(
+        let errors = registration_errors(
             r#"(local ci (require :quire.ci))
 (ci.job :setup [] (fn [_] nil))"#,
         );
@@ -563,7 +565,7 @@ mod tests {
 
     #[test]
     fn register_rejects_slash_in_job_id() {
-        let (_, errors) = register_jobs(
+        let errors = registration_errors(
             r#"(local ci (require :quire.ci))
 (ci.job :foo/bar [:quire/push] (fn [_] nil))"#,
         );
@@ -722,20 +724,33 @@ mod tests {
     }
 
     #[test]
-    fn compile_reports_both_definition_and_structure_errors() {
-        // `setup` has empty inputs (pre-graph error) and `orphan` is unreachable
-        // (post-graph error). Both should be reported.
+    fn compile_short_circuits_on_definition_errors() {
+        // `setup` has empty inputs (a definition error). `orphan`
+        // would be unreachable (a structure error) if compile reached
+        // the post-graph phase — but it shouldn't, because definition
+        // errors short-circuit before structure checks run.
         let result = compile(
             r#"(local ci (require :quire.ci))
 (ci.job :setup [] (fn [_] nil))
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
             "ci.fnl",
         );
-        let Err(e) = result else { unreachable!() };
-        let msg = e.to_string();
+        let Err(crate::Error::Pipeline(pe)) = result else {
+            panic!("expected PipelineError")
+        };
+        for d in &pe.diagnostics {
+            assert!(
+                matches!(d, Diagnostic::Definition(_)),
+                "structure errors should not be reported when registration fails: {d:?}"
+            );
+        }
         assert!(
-            msg.contains("ci.fnl has errors"),
-            "expected pipeline error: {msg}"
+            pe.diagnostics.iter().any(|d| matches!(
+                d,
+                Diagnostic::Definition(DefinitionError::EmptyInputs { .. })
+            )),
+            "expected EmptyInputs in: {:?}",
+            pe.diagnostics
         );
     }
 

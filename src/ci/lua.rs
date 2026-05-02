@@ -13,23 +13,29 @@ use std::rc::Rc;
 
 use mlua::{IntoLua, Lua, LuaSerdeExt};
 
-use super::pipeline::{DefinitionError, Job};
+use miette::NamedSource;
+
+use super::pipeline::{DefinitionError, Diagnostic, Job, PipelineError};
 use crate::Result;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
 
-/// Output of [`register`]: registered jobs, definition-time errors,
-/// and the pipeline image (if declared).
+/// Output of [`register`]: jobs and image successfully registered
+/// from the script. Definition-time errors are returned via the `Err`
+/// arm, not collected here.
+#[derive(Debug)]
 pub(super) struct Registrations {
     pub(super) jobs: Vec<Job>,
-    pub(super) errors: Vec<DefinitionError>,
     pub(super) image: Option<String>,
 }
 
 /// Evaluate `source` with the registration module bound and collect
-/// the registered jobs, image, and any definition-time errors.
+/// what got registered.
+///
 /// Pre-graph rules run inside the callback, so a single bad job does
-/// not abort the rest of the script.
+/// not abort the rest of the script — but if any rule fired, the
+/// whole batch is returned as a `PipelineError` instead of partial
+/// registrations.
 pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> Result<Registrations> {
     let jobs: Rc<RefCell<Vec<Job>>> = Rc::new(RefCell::new(Vec::new()));
     let image = Rc::new(RefCell::new(None));
@@ -54,10 +60,18 @@ pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> Result<Regi
     // silently pushing into the already-consumed sinks.
     fennel.lua().remove_app_data::<Registration>();
 
+    let errors = errors.take();
+    if !errors.is_empty() {
+        return Err(PipelineError {
+            src: NamedSource::new(name, source.to_string()),
+            diagnostics: errors.into_iter().map(Diagnostic::Definition).collect(),
+        }
+        .into());
+    }
+
     let image_name = image.borrow().as_ref().map(|i| i.name.clone());
     Ok(Registrations {
         jobs: jobs.take(),
-        errors: errors.take(),
         image: image_name,
     })
 }
