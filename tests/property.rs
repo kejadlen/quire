@@ -1,8 +1,7 @@
 use hegel::TestCase;
-use hegel::generators::{from_regex, integers, just, sampled_from, text, vecs};
+use hegel::generators::{integers, just, text, vecs};
 use hegel::one_of;
 use quire::event::{PushEvent, PushRef};
-use quire::quire::MirrorConfig;
 use quire::secret::SecretString;
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
@@ -86,38 +85,4 @@ fn secret_string_from_file_strips_one_trailing_newline(tc: TestCase) {
         .to_string();
     let expected = content.strip_suffix('\n').unwrap_or(&content).to_string();
     assert_eq!(revealed, expected);
-}
-
-fn deserialize_mirror(url: &str) -> Result<MirrorConfig, serde_json::Error> {
-    serde_json::from_value(serde_json::json!({ "url": url }))
-}
-
-#[hegel::test]
-fn mirror_url_rejects_embedded_credentials(tc: TestCase) {
-    // Build `scheme://user@host/path`: the deserializer must reject because the
-    // `@` sits before any `/` in the authority section.
-    let scheme = tc.draw(sampled_from(&["https", "http", "ssh", "git"]));
-    let user = tc.draw(from_regex(r"\A[A-Za-z0-9_:.-]+\Z"));
-    let host = tc.draw(from_regex(r"\A[A-Za-z0-9.-]+\Z"));
-    let path = tc.draw(from_regex(r"\A[A-Za-z0-9/_.-]*\Z"));
-    let url = format!("{scheme}://{user}@{host}/{path}");
-
-    let err = deserialize_mirror(&url).expect_err(&format!("must reject {url}"));
-    assert!(
-        err.to_string().contains("must not embed credentials"),
-        "wrong rejection reason for {url}: {err}",
-    );
-}
-
-#[hegel::test]
-fn mirror_url_accepts_at_in_path(tc: TestCase) {
-    // `@` after the first `/` is in the path, not the authority — must accept.
-    let scheme = tc.draw(sampled_from(&["https", "http", "ssh", "git"]));
-    let host = tc.draw(from_regex(r"\A[A-Za-z0-9.-]+\Z"));
-    let before_at = tc.draw(from_regex(r"\A[A-Za-z0-9/_.-]*\Z"));
-    let after_at = tc.draw(from_regex(r"\A[A-Za-z0-9/_.-]*\Z"));
-    let url = format!("{scheme}://{host}/{before_at}@{after_at}");
-
-    let cfg = deserialize_mirror(&url).expect("must accept");
-    assert_eq!(cfg.url, url);
 }

@@ -26,12 +26,11 @@ DSL. PLAN.md sketches `(notifications :to [...] :on [...])` which reads
 as a function call, but a DSL adds parser machinery for no v1 win. Move
 to a DSL when CI lands and there's a real reason.
 
-A representative per-repo config:
+A representative per-repo config (reserved for future use):
 
 ```fennel
-{:mirror {:url "https://github.com/owner/repo.git"}
- :notifications {:to ["alpha@example.com"]
-                 :on [:ci-failed :mirror-failed]}}
+{:notifications {:to ["alpha@example.com"]
+                 :on [:ci-failed]}}
 ```
 
 Today each call site (`Quire::global_config`, `Repo::config`)
@@ -71,9 +70,7 @@ Errors: file-not-found, parse error, eval error, type mismatch — all
 
 - `src/secret.rs` — `SecretString` wraps Fennel-loaded strings that
   resolve from a file or shell command on access.
-- `src/quire.rs` — `Repo::config` reads per-repo Fennel via `git show
-  HEAD:.quire/config.fnl`; `Quire::global_config` reads the global
-  config from disk. Both define the schema structs they parse into.
+- `src/quire.rs` — `Quire::global_config` reads global config from disk.
 
 ## Test plan
 

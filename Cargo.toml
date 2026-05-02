@@ -9,7 +9,6 @@ path = "src/bin/quire/main.rs"
 
 [dependencies]
 axum = "*"
-base64 = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
 fs-err = "*"

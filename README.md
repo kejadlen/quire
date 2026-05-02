@@ -10,9 +10,8 @@ A Rust binary that runs in a Docker container, fronted by the host's sshd and a 
 
 - **Git hosting over SSH**, via the host's sshd dispatching into the container. Explicit repo creation (`ssh git@host quire repo new <name>`).
 - **A read-only web view** for browsing README, tree, history, blame, diffs, and refs.
-- **Automatic mirroring to GitHub** on push, when configured per-repo. The post-receive hook sends a push event over a Unix domain socket to `quire serve`, which looks up mirror config and runs the push in-process. A single GitHub PAT lives in global config and rides on the push as an `http.extraHeader` — no per-repo deploy keys, no agent socket plumbing. Mirror failures surface in server logs, not the pusher's terminal.
-- **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Unsandboxed by default since every pipeline is code I've written; a bubblewrap-based opt-in is available for the day quire ever runs code I haven't.
-- **Email notifications** for CI failures, recoveries, and mirror-push failures. SMTP via `msmtp`; plain text; per-repo config for what to send and to whom.
+- **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Mirroring to GitHub is expressed as an ordinary CI job that shells out `git push` with a token from the global secrets map. Unsandboxed by default since every pipeline is code I've written; a bubblewrap-based opt-in is available for the day quire ever runs code I haven't.
+- **Email notifications** for CI failures and recoveries. SMTP via `msmtp`; plain text; per-repo config for what to send and to whom.
 
 No issues, no PRs, no user management, no webhooks. Use the GitHub mirror for the social stuff; quire is your forge.
 
@@ -28,7 +27,7 @@ Quire holds to a few principles:
 - **Git's filesystem is the source of truth.** Bare repos under `/var/quire/repos/` are the primary artifact. CI run history is directories on disk, not a database. A database comes back only if the filesystem approach visibly fails.
 - **Built for jj.** The primary client is Jujutsu, which means routine force-pushes, short-lived refs, and unstable SHAs. No git-flow-shaped assumptions in the UI or CI.
 - **Push should fail fast, loudly, and correctly.** No silent drift between quire and GitHub. No accepted-but-unreplicated state.
-- **Config is code.** Global config and per-repo config are Fennel. CI pipelines are Fennel. If you're going to have a scripting language, have one.
+- **Config is code.** Global config is Fennel. CI pipelines are Fennel. If you're going to have a scripting language, have one.
 
 ## Layout
 

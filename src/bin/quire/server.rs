@@ -8,7 +8,6 @@ use quire::Quire;
 use quire::ci;
 use quire::display_chain;
 use quire::event::PushEvent;
-use quire::mirror;
 
 async fn health() -> &'static str {
     "ok"
@@ -111,6 +110,5 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         return;
     }
 
-    mirror::push(&quire, &event).await;
     ci::trigger(&quire, &event);
 }
