@@ -2,6 +2,7 @@
 //! Mirror push: replicate ref updates to a configured remote.
 
 use crate::Quire;
+use crate::display_chain;
 use crate::event::PushEvent;
 use crate::quire::{MirrorConfig, Repo};
 
@@ -18,7 +19,7 @@ pub async fn push(quire: &Quire, event: &PushEvent) {
             return;
         }
         Err(e) => {
-            tracing::error!(repo = %event.repo, %e, "invalid repo name in event");
+            tracing::error!(repo = %event.repo, error = format!("{e:#}"), "invalid repo name in event");
             return;
         }
     };
@@ -26,7 +27,7 @@ pub async fn push(quire: &Quire, event: &PushEvent) {
     let config = match repo.config() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(repo = %event.repo, %e, "failed to load repo config");
+            tracing::error!(repo = %event.repo, error = %display_chain(&e), "failed to load repo config");
             return;
         }
     };
@@ -39,7 +40,7 @@ pub async fn push(quire: &Quire, event: &PushEvent) {
     let global_config = match quire.global_config() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(%e, "failed to load global config for mirror push");
+            tracing::error!(error = %display_chain(&e), "failed to load global config for mirror push");
             return;
         }
     };
@@ -47,7 +48,7 @@ pub async fn push(quire: &Quire, event: &PushEvent) {
     let token = match global_config.github.token.reveal() {
         Ok(t) => t.to_string(),
         Err(e) => {
-            tracing::error!(%e, "failed to resolve GitHub token");
+            tracing::error!(error = %display_chain(&e), "failed to resolve GitHub token");
             return;
         }
     };
@@ -70,8 +71,12 @@ pub async fn push(quire: &Quire, event: &PushEvent) {
 
     match result {
         Ok(Ok(())) => tracing::info!(url = %mirror_url, "mirror push complete"),
-        Ok(Err(e)) => tracing::error!(url = %mirror_url, %e, "mirror push failed"),
-        Err(e) => tracing::error!(url = %mirror_url, %e, "mirror push task panicked"),
+        Ok(Err(e)) => {
+            tracing::error!(url = %mirror_url, error = %display_chain(&e), "mirror push failed")
+        }
+        Err(e) => {
+            tracing::error!(url = %mirror_url, error = %display_chain(&e), "mirror push task panicked")
+        }
     }
 }
 

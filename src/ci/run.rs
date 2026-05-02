@@ -14,6 +14,7 @@ use mlua::IntoLua;
 
 use super::lua::{Runtime, RuntimeHandle, ShOutput};
 use super::pipeline::Pipeline;
+use crate::display_chain;
 use crate::secret::SecretString;
 use crate::{Error, Result};
 
@@ -136,7 +137,7 @@ impl Runs {
                         tracing::warn!(
                             state = ?state,
                             run_id = %name,
-                            %e,
+                            error = %display_chain(&e),
                             "quarantining unreadable run to failed/"
                         );
                         self.quarantine(&state_path.join(&name), &name)?;
@@ -183,7 +184,7 @@ impl Runs {
                     if let Err(e) = orphan.transition(RunState::Complete) {
                         tracing::error!(
                             run_id = %orphan.id(), // cov-excl-line
-                            %e,
+                            error = %display_chain(&e),
                             "failed to transition orphaned pending run"
                         );
                     }
@@ -196,7 +197,7 @@ impl Runs {
                     if let Err(e) = orphan.transition(RunState::Failed) {
                         tracing::error!(
                             run_id = %orphan.id(), // cov-excl-line
-                            %e,
+                            error = %display_chain(&e),
                             "failed to transition orphaned active run to failed"
                         );
                     }
