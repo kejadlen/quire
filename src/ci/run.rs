@@ -12,7 +12,7 @@ use std::rc::Rc;
 use jiff::Timestamp;
 use mlua::IntoLua;
 
-use super::lua::{Runtime, RuntimeHandle, ShOutput};
+use super::runtime::{Runtime, RuntimeHandle, ShOutput};
 use super::pipeline::{Pipeline, RunFn};
 use crate::display_chain;
 use crate::secret::SecretString;

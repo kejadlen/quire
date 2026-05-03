@@ -12,8 +12,9 @@ use std::rc::Rc;
 
 use mlua::{Lua, LuaSerdeExt};
 
-use super::lua::{Cmd, Registration, Runtime, ShOpts, ShOutput};
 use super::pipeline::{self, DefinitionError, Job, RunFn};
+use super::registration::Registration;
+use super::runtime::{Cmd, Runtime, ShOpts, ShOutput};
 use crate::Result;
 use crate::error::Error;
 
@@ -273,9 +274,9 @@ mod tests {
     use super::*;
     use mlua::IntoLua;
 
-    use crate::ci::lua::RuntimeHandle;
     use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
     use crate::ci::run::RunMeta;
+    use crate::ci::runtime::RuntimeHandle;
     use crate::secret::SecretString;
 
     /// Set up a bare git repo with one commit. Returns the tempdir,

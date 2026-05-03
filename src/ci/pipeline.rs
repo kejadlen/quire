@@ -1,8 +1,8 @@
 //! CI job graph: validation rules and the [`compile`] entry point
 //! that turns a `ci.fnl` source string into a [`Pipeline`].
 //!
-//! Lua/Fennel evaluation lives in the sibling [`super::lua`] module;
-//! this module owns the domain types and the structural rules.
+//! Lua/Fennel evaluation lives in the sibling [`super::registration`]
+//! module; this module owns the domain types and the structural rules.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,7 +11,7 @@ use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, Reversed};
 
-use super::lua::{self, Registrations};
+use super::registration::{self, Registrations};
 use crate::Result;
 use crate::fennel::Fennel;
 
@@ -111,7 +111,7 @@ pub struct Job {
 
 /// A Rust-side run-fn: a closure invoked synchronously by the
 /// executor with the runtime in scope.
-pub(super) type RustRunFn = std::rc::Rc<dyn Fn(&super::lua::Runtime) -> Result<()>>;
+pub(super) type RustRunFn = std::rc::Rc<dyn Fn(&super::runtime::Runtime) -> Result<()>>;
 
 /// How a job runs at execute time.
 ///
@@ -152,8 +152,8 @@ impl Job {
     /// legitimately register jobs at `quire/<name>` and skip that
     /// rule.
     ///
-    /// Visible to the sibling `lua` module which constructs jobs from
-    /// the registration callbacks.
+    /// Visible to the sibling `registration` module which constructs
+    /// jobs from the registration callbacks.
     pub(super) fn new(
         id: String,
         inputs: Vec<String>,
@@ -337,14 +337,14 @@ pub struct PipelineError {
 
 /// Compile a ci.fnl source string into a validated [`Pipeline`].
 ///
-/// Two phases, fail-fast between them: [`lua::register`] evaluates
-/// the script and reports any definition-time errors, then
+/// Two phases, fail-fast between them: [`registration::register`]
+/// evaluates the script and reports any definition-time errors, then
 /// [`validate_post_graph`] checks the dependency graph. Errors from a
 /// phase are wrapped in a [`PipelineError`] for miette to render with
 /// inline labels.
 pub(crate) fn compile(source: &str, name: &str) -> Result<Pipeline> {
     let fennel = Fennel::new()?;
-    let Registrations { jobs, image } = lua::register(&fennel, source, name)?;
+    let Registrations { jobs, image } = registration::register(&fennel, source, name)?;
 
     let (graph, node_index) = build_graph(&jobs);
 
@@ -369,8 +369,8 @@ pub(crate) fn compile(source: &str, name: &str) -> Result<Pipeline> {
 /// reachability — over the surviving jobs from registration.
 ///
 /// Per-job pre-graph rules (slash-in-id, empty inputs) run inside the
-/// `(ci.job …)` callback during `lua::register`, so they are not
-/// re-checked here.
+/// `(ci.job …)` callback during `registration::register`, so they are
+/// not re-checked here.
 fn validate_post_graph(
     jobs: &[Job],
     graph: &JobGraph,
@@ -503,7 +503,7 @@ mod tests {
     /// their non-VM fields here.
     fn registered_jobs(source: &str) -> Vec<Job> {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        lua::register(&f, source, "ci.fnl")
+        registration::register(&f, source, "ci.fnl")
             .expect("register should succeed")
             .jobs
     }
@@ -512,7 +512,7 @@ mod tests {
     /// definition errors it produced.
     fn registration_errors(source: &str) -> Vec<DefinitionError> {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        let err = lua::register(&f, source, "ci.fnl").expect_err("expected registration errors");
+        let err = registration::register(&f, source, "ci.fnl").expect_err("expected registration errors");
         let crate::Error::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}")
         };

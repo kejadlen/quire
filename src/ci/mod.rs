@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
-mod lua;
 mod mirror;
 mod pipeline;
+mod registration;
 mod run;
+mod runtime;
 
 pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
 pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
