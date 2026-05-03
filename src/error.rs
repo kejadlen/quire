@@ -30,16 +30,14 @@ pub enum Error {
     #[error("invalid run transition: {from:?} -> {to:?}")]
     InvalidTransition { from: RunState, to: RunState },
 
+    #[error(transparent)]
+    Lua(Box<mlua::Error>),
+
     #[error("job '{job}' failed")]
     JobFailed {
         job: String,
-        // Boxed `dyn Error` rather than a concrete type so both Lua
-        // and Rust run-fns can land here without an extra wrapper —
-        // an mlua::Error from `RunFn::Lua`, a crate::Error from
-        // `RunFn::Rust`, both walk through `display_chain` the same
-        // way.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+        source: Box<Error>,
     },
 
     #[error("git error: {0}")]

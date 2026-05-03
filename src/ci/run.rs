@@ -286,8 +286,7 @@ impl Run {
 
         self.transition(RunState::Active)?;
 
-        let mut failed_job: Option<(String, Box<dyn std::error::Error + Send + Sync + 'static>)> =
-            None;
+        let mut failed_job: Option<(String, Error)> = None;
         for job_id in runtime.topo_order() {
             let run_fn = runtime
                 .job(job_id)
@@ -296,15 +295,12 @@ impl Run {
                 .clone();
 
             runtime.enter_job(job_id);
-            let result: std::result::Result<
-                (),
-                Box<dyn std::error::Error + Send + Sync + 'static>,
-            > = match run_fn {
+            let result: Result<()> = match run_fn {
                 RunFn::Lua(f) => f
                     .call::<mlua::Value>(rt_value.clone())
                     .map(|_| ())
-                    .map_err(|e| Box::new(e) as _),
-                RunFn::Rust(f) => f(&runtime).map_err(|e| Box::new(e) as _),
+                    .map_err(|e| Error::Lua(Box::new(e))),
+                RunFn::Rust(f) => f(&runtime),
             };
             runtime.leave_job();
 
@@ -323,7 +319,10 @@ impl Run {
 
         if let Some((job, source)) = failed_job {
             self.transition(RunState::Failed)?;
-            return Err(Error::JobFailed { job, source });
+            return Err(Error::JobFailed {
+                job,
+                source: Box::new(source),
+            });
         }
 
         self.transition(RunState::Complete)?;
