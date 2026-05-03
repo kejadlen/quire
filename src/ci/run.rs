@@ -295,13 +295,13 @@ impl Run {
                 .clone();
 
             runtime.enter_job(job_id);
-            let result: Result<()> = match run_fn {
-                RunFn::Lua(f) => f
-                    .call::<mlua::Value>(rt_value.clone())
-                    .map(|_| ())
-                    .map_err(|e| Error::Lua(Box::new(e))),
+            let result: Result<()> = (|| match run_fn {
+                RunFn::Lua(f) => {
+                    let _: mlua::Value = f.call(rt_value.clone())?;
+                    Ok(())
+                }
                 RunFn::Rust(f) => f(&runtime),
-            };
+            })();
             runtime.leave_job();
 
             if let Err(e) = result {

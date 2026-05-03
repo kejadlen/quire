@@ -97,6 +97,12 @@ impl From<PipelineError> for Error {
     }
 }
 
+impl From<mlua::Error> for Error {
+    fn from(err: mlua::Error) -> Self {
+        Error::Lua(Box::new(err))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

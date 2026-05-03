@@ -40,6 +40,19 @@ pub enum DefinitionError {
         #[label("duplicate image declaration")]
         span: SourceSpan,
     },
+
+    #[error("Pipeline mirror declared more than once.")]
+    DuplicateMirror {
+        #[label("duplicate mirror declaration")]
+        span: SourceSpan,
+    },
+
+    #[error("ci.mirror: {message}")]
+    InvalidMirrorCall {
+        message: String,
+        #[label("here")]
+        span: SourceSpan,
+    },
 }
 
 /// A post-graph structural error found after all jobs have been
@@ -128,13 +141,19 @@ impl std::fmt::Debug for RunFn {
 }
 
 impl Job {
-    /// Build a `Job` from the raw `(ci.job …)` arguments, applying the
-    /// per-job validation rules. `line` is the 1-indexed source line of
-    /// the call site; `source` is the full Fennel source string used to
-    /// compute the diagnostic span.
+    /// Build a `Job`, applying the rules that apply to every job
+    /// regardless of how it was registered. `line` is the 1-indexed
+    /// source line of the call site; `source` is the full Fennel
+    /// source string used to compute the diagnostic span.
+    ///
+    /// The `quire/`-namespace check is the caller's responsibility —
+    /// user-facing `(ci.job …)` calls must reject slashes (see
+    /// `register_job`), but internal helpers (e.g. `register_mirror`)
+    /// legitimately register jobs at `quire/<name>` and skip that
+    /// rule.
     ///
     /// Visible to the sibling `lua` module which constructs jobs from
-    /// the registration callback.
+    /// the registration callbacks.
     pub(super) fn new(
         id: String,
         inputs: Vec<String>,
@@ -143,10 +162,6 @@ impl Job {
         source: &str,
     ) -> std::result::Result<Self, DefinitionError> {
         let span = span_for_line(source, line);
-
-        if id.contains('/') {
-            return Err(DefinitionError::ReservedSlash { job_id: id, span });
-        }
 
         if inputs.is_empty() {
             return Err(DefinitionError::EmptyInputs { job_id: id, span });
