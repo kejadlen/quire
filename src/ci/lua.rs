@@ -15,7 +15,7 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use miette::NamedSource;
 
-use super::pipeline::{DefinitionError, Diagnostic, Job, PipelineError};
+use super::pipeline::{DefinitionError, Diagnostic, Job, PipelineError, RunFn};
 use crate::Result;
 use crate::fennel::Fennel;
 use crate::secret::SecretString;
@@ -155,7 +155,7 @@ fn register_job(
         .flatten()
         .map(|l| l as u32)
         .unwrap_or(0);
-    match Job::new(id, inputs, run_fn, line, &r.source) {
+    match Job::new(id, inputs, RunFn::Lua(run_fn), line, &r.source) {
         Ok(job) => r.jobs.borrow_mut().push(job),
         Err(e) => r.errors.borrow_mut().push(e),
     }
@@ -556,11 +556,16 @@ mod tests {
     use super::*;
 
     /// Consume the pipeline for its VM, build a minimal runtime,
-    /// and return the runtime and first job's run_fn.
+    /// and return the runtime and first job's Lua run_fn. Tests in
+    /// this module exercise the `RunFn::Lua` path; if the first job
+    /// turns out to be a `Rust` variant the test setup is wrong.
     fn rt(source: &str, secrets: HashMap<String, SecretString>) -> (Rc<Runtime>, mlua::Function) {
         let pipeline =
             super::super::pipeline::compile(source, "ci.fnl").expect("compile should succeed");
-        let run_fn = pipeline.jobs()[0].run_fn.clone();
+        let run_fn = match pipeline.jobs()[0].run_fn.clone() {
+            RunFn::Lua(f) => f,
+            RunFn::Rust(_) => panic!("expected RunFn::Lua for test setup"),
+        };
         let runtime = Rc::new(Runtime::for_test(pipeline, secrets));
         let _ = RuntimeHandle(runtime.clone())
             .into_lua(runtime.lua())

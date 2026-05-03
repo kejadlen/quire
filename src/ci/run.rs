@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use mlua::IntoLua;
 
 use super::lua::{Runtime, RuntimeHandle, ShOutput};
-use super::pipeline::Pipeline;
+use super::pipeline::{Pipeline, RunFn};
 use crate::display_chain;
 use crate::secret::SecretString;
 use crate::{Error, Result};
@@ -286,7 +286,8 @@ impl Run {
 
         self.transition(RunState::Active)?;
 
-        let mut failed_job = None;
+        let mut failed_job: Option<(String, Box<dyn std::error::Error + Send + Sync + 'static>)> =
+            None;
         for job_id in runtime.topo_order() {
             let run_fn = runtime
                 .job(job_id)
@@ -295,7 +296,16 @@ impl Run {
                 .clone();
 
             runtime.enter_job(job_id);
-            let result = run_fn.call::<mlua::Value>(rt_value.clone());
+            let result: std::result::Result<
+                (),
+                Box<dyn std::error::Error + Send + Sync + 'static>,
+            > = match run_fn {
+                RunFn::Lua(f) => f
+                    .call::<mlua::Value>(rt_value.clone())
+                    .map(|_| ())
+                    .map_err(|e| Box::new(e) as _),
+                RunFn::Rust(f) => f(&runtime).map_err(|e| Box::new(e) as _),
+            };
             runtime.leave_job();
 
             if let Err(e) = result {
@@ -313,10 +323,7 @@ impl Run {
 
         if let Some((job, source)) = failed_job {
             self.transition(RunState::Failed)?;
-            return Err(Error::JobFailed {
-                job,
-                source: Box::new(source),
-            });
+            return Err(Error::JobFailed { job, source });
         }
 
         self.transition(RunState::Complete)?;
@@ -1106,6 +1113,59 @@ mod tests {
         assert!(
             msg.contains("registration not installed"),
             "expected registration error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rust_run_fn_is_invoked_by_executor() {
+        use std::cell::Cell;
+
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        let mut pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :only [:quire/push] (fn [_] nil))"#,
+        );
+
+        let called = Rc::new(Cell::new(false));
+        let called_clone = called.clone();
+        pipeline.replace_first_run_fn(RunFn::Rust(Rc::new(move |_rt| {
+            called_clone.set(true);
+            Ok(())
+        })));
+
+        run.execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect("execute should succeed");
+        assert!(called.get(), "rust run-fn should have been called");
+    }
+
+    #[test]
+    fn rust_run_fn_errors_surface_as_job_failed() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        let mut pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :boom [:quire/push] (fn [_] nil))"#,
+        );
+
+        pipeline.replace_first_run_fn(RunFn::Rust(Rc::new(|_rt| {
+            Err(crate::Error::Git("simulated rust failure".into()))
+        })));
+
+        let err = run
+            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .expect_err("expected failure");
+        let Error::JobFailed { job, source } = err else {
+            panic!("expected JobFailed, got: {err:?}");
+        };
+        assert_eq!(job, "boom");
+        assert!(
+            source.to_string().contains("simulated rust failure"),
+            "expected source to surface rust error, got: {source}"
         );
     }
 }

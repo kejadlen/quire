@@ -92,10 +92,39 @@ pub struct Job {
     /// Span covering the `(ci.job …)` call site. Used as the label
     /// location for both per-job and post-graph diagnostics.
     pub(crate) span: SourceSpan,
-    /// The job's run function from the Lua VM.
-    /// Currently exercised only from tests until the runtime executor lands.
-    #[allow(dead_code)]
-    pub(crate) run_fn: mlua::Function,
+    /// What to run when the executor reaches this job.
+    pub(super) run_fn: RunFn,
+}
+
+/// A Rust-side run-fn: a closure invoked synchronously by the
+/// executor with the runtime in scope.
+pub(super) type RustRunFn = std::rc::Rc<dyn Fn(&super::lua::Runtime) -> Result<()>>;
+
+/// How a job runs at execute time.
+///
+/// `Lua` is the user case: a Fennel function the executor calls
+/// through the Lua VM, passing the runtime handle table. `Rust` is
+/// the built-in case: a closure that receives the runtime directly,
+/// used by helpers (e.g. `(ci.mirror …)`) that do their work in
+/// plain Rust without round-tripping through Lua.
+///
+/// Both variants are `Clone` so the executor can take an owned copy
+/// before invoking — `mlua::Function` is cheap to clone (a registry
+/// handle); the `Rc` makes the `Rust` variant cheap too.
+#[derive(Clone)]
+pub(super) enum RunFn {
+    Lua(mlua::Function),
+    #[allow(dead_code)] // Wired up by `(ci.mirror …)` and friends.
+    Rust(RustRunFn),
+}
+
+impl std::fmt::Debug for RunFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunFn::Lua(_) => f.debug_tuple("Lua").field(&"<lua function>").finish(),
+            RunFn::Rust(_) => f.debug_tuple("Rust").field(&"<rust closure>").finish(),
+        }
+    }
 }
 
 impl Job {
@@ -109,7 +138,7 @@ impl Job {
     pub(super) fn new(
         id: String,
         inputs: Vec<String>,
-        run_fn: mlua::Function,
+        run_fn: RunFn,
         line: u32,
         source: &str,
     ) -> std::result::Result<Self, DefinitionError> {
@@ -218,6 +247,18 @@ impl Pipeline {
             result.insert(job.id.clone(), reachable);
         }
         result
+    }
+}
+
+#[cfg(test)]
+impl Pipeline {
+    /// Replace the first job's run-fn — for tests that need to
+    /// exercise a `RunFn::Rust` execution path without building the
+    /// full helper machinery (which doesn't exist yet).
+    pub(super) fn replace_first_run_fn(&mut self, run_fn: RunFn) {
+        if let Some(job) = self.jobs.first_mut() {
+            job.run_fn = run_fn;
+        }
     }
 }
 
