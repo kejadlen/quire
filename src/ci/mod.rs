@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 mod lua;
+mod mirror;
 mod pipeline;
 mod run;
 
