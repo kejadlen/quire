@@ -34,10 +34,9 @@ use crate::secret::SecretString;
 /// required because the orphan rule forbids `impl IntoLua` directly
 /// on `Rc<Runtime>`.
 ///
-/// Outside a run, no runtime is installed; in that case `(sh …)`
-/// runs the command but doesn't record (the cursor lookup misses).
-/// `(secret …)` and `(jobs …)` require a runtime — without one, calls
-/// error.
+/// All three handle primitives — `(sh …)`, `(secret …)`, and
+/// `(jobs …)` — require a runtime to be installed on the VM. Calls
+/// from a VM without one error.
 pub(super) struct Runtime {
     pipeline: Pipeline,
     pub(super) secrets: HashMap<String, SecretString>,
@@ -202,17 +201,23 @@ impl IntoLua for RuntimeHandle {
     // expecting them to render: rephrase the Display string to carry
     // what the user needs to see.
     fn into_lua(self, lua: &Lua) -> mlua::Result<mlua::Value> {
+        // Pull the installed runtime out of `lua`'s app data, or
+        // surface a Lua error. Every adapter below needs this.
+        fn runtime(lua: &Lua) -> mlua::Result<mlua::AppDataRef<'_, Rc<Runtime>>> {
+            lua.app_data_ref::<Rc<Runtime>>()
+                .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))
+        }
+
         lua.set_app_data(self.0);
         let table = lua.create_table()?;
 
         table.set(
             "sh",
             lua.create_function(|lua, (cmd, opts): (Cmd, Option<ShOpts>)| {
-                let opts = opts.unwrap_or_default();
-                let output = match lua.app_data_ref::<Rc<Runtime>>() {
-                    Some(rt) => rt.sh(cmd, opts).map_err(mlua::Error::external)?,
-                    None => cmd.run(opts).map_err(mlua::Error::external)?,
-                };
+                let rt = runtime(lua)?;
+                let output = rt
+                    .sh(cmd, opts.unwrap_or_default())
+                    .map_err(mlua::Error::external)?;
                 lua.to_value(&output)
             })?,
         )?;
@@ -220,9 +225,7 @@ impl IntoLua for RuntimeHandle {
         table.set(
             "secret",
             lua.create_function(|lua, name: String| {
-                let rt = lua
-                    .app_data_ref::<Rc<Runtime>>()
-                    .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
+                let rt = runtime(lua)?;
                 rt.secret(&name).map_err(mlua::Error::external)
             })?,
         )?;
@@ -230,9 +233,7 @@ impl IntoLua for RuntimeHandle {
         table.set(
             "jobs",
             lua.create_function(|lua, name: String| {
-                let rt = lua
-                    .app_data_ref::<Rc<Runtime>>()
-                    .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
+                let rt = runtime(lua)?;
                 let calling = rt.current_job.borrow();
                 let calling = calling.as_ref().ok_or_else(|| {
                     mlua::Error::external("(jobs ...) called outside a job's run-fn")
