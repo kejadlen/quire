@@ -103,7 +103,7 @@ impl IntoLua for Registration {
         let table = lua.create_table()?;
         table.set("job", lua.create_function(register_job)?)?;
         table.set("image", lua.create_function(register_image)?)?;
-        table.set("mirror", lua.create_function(mirror::register_mirror)?)?;
+        table.set("mirror", lua.create_function(mirror::MirrorJob::register)?)?;
         table.into_lua(lua)
     }
 }

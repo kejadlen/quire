@@ -20,7 +20,7 @@ use crate::error::Error;
 
 /// Closure state for the `quire/mirror` job's run-fn: everything the
 /// tag-and-push needs at execute time, captured once at registration.
-struct MirrorJob {
+pub(super) struct MirrorJob {
     url: String,
     secret: String,
     /// Refs to push to the remote. Empty means "push whatever ref
@@ -123,114 +123,111 @@ impl MirrorJob {
 
         Ok(())
     }
-}
 
-/// Parse `(ci.mirror url opts)` into the runtime job and the `:after`
-/// list. `:after` only affects sequencing (extra inputs on the
-/// registered job), so it stays out of the closure state.
-///
-/// `:tag` is extracted manually since `mlua::Function` isn't
-/// serde-deserializable; the rest go through `lua.from_value` with
-/// `deny_unknown_fields` so typos surface as registration errors.
-///
-/// Errors are returned as `mlua::Error::external` so callers can
-/// render them via `Display` into a `DefinitionError::InvalidMirrorCall`
-/// at the call site.
-fn parse_mirror_call(
-    lua: &Lua,
-    url: String,
-    opts: mlua::Table,
-) -> mlua::Result<(MirrorJob, Vec<String>)> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Fields {
-        secret: String,
-        #[serde(default)]
-        refs: Vec<String>,
-        #[serde(default)]
-        after: Vec<String>,
+    /// Parse `(ci.mirror url opts)` into a `MirrorJob` and the
+    /// `:after` list. `:after` only affects sequencing (extra inputs
+    /// on the registered job), so it stays out of the closure state.
+    ///
+    /// `:tag` is extracted manually since `mlua::Function` isn't
+    /// serde-deserializable; the rest go through `lua.from_value`
+    /// with `deny_unknown_fields` so typos surface as registration
+    /// errors.
+    ///
+    /// Errors are returned as `mlua::Error::external` so callers can
+    /// render them via `Display` into a
+    /// `DefinitionError::InvalidMirrorCall` at the call site.
+    fn parse(lua: &Lua, url: String, opts: mlua::Table) -> mlua::Result<(Self, Vec<String>)> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            secret: String,
+            #[serde(default)]
+            refs: Vec<String>,
+            #[serde(default)]
+            after: Vec<String>,
+        }
+
+        // Pull :tag separately — it's a Lua function, not deserializable.
+        let tag: mlua::Function = match opts.get::<mlua::Value>("tag")? {
+            mlua::Value::Function(f) => f,
+            mlua::Value::Nil => {
+                return Err(mlua::Error::external(
+                    ":tag is required (a function returning the tag name)",
+                ));
+            }
+            other => {
+                return Err(mlua::Error::external(format!(
+                    ":tag must be a function, got {}",
+                    other.type_name()
+                )));
+            }
+        };
+
+        // Build a copy of the opts table without :tag so
+        // `deny_unknown_fields` doesn't trip on it.
+        let stripped = lua.create_table()?;
+        for pair in opts.pairs::<String, mlua::Value>() {
+            let (k, v) = pair?;
+            if k != "tag" {
+                stripped.set(k, v)?;
+            }
+        }
+
+        let fields: Fields = lua.from_value(mlua::Value::Table(stripped))?;
+
+        Ok((
+            Self {
+                url,
+                secret: fields.secret,
+                refs: fields.refs,
+                tag,
+            },
+            fields.after,
+        ))
     }
 
-    // Pull :tag separately — it's a Lua function, not deserializable.
-    let tag: mlua::Function = match opts.get::<mlua::Value>("tag")? {
-        mlua::Value::Function(f) => f,
-        mlua::Value::Nil => {
-            return Err(mlua::Error::external(
-                ":tag is required (a function returning the tag name)",
-            ));
-        }
-        other => {
-            return Err(mlua::Error::external(format!(
-                ":tag must be a function, got {}",
-                other.type_name()
-            )));
-        }
-    };
+    /// Body of `(ci.mirror url opts)`. Parses opts and registers an
+    /// internal job at `quire/mirror` whose run-fn performs the
+    /// tag-and-push at execute time. Singleton-ness is enforced by
+    /// generic id uniqueness in `Registration::add_job` — a second
+    /// `(ci.mirror …)` collides on the `quire/mirror` id.
+    pub(super) fn register(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
+        let r = lua.app_data_ref::<Registration>().ok_or_else(|| {
+            mlua::Error::external("quire.ci registration not installed on Lua VM")
+        })?;
+        let line = lua
+            .inspect_stack(1, |d| d.current_line())
+            .flatten()
+            .map(|l| l as u32)
+            .unwrap_or(0);
 
-    // Build a copy of the opts table without :tag so
-    // `deny_unknown_fields` doesn't trip on it.
-    let stripped = lua.create_table()?;
-    for pair in opts.pairs::<String, mlua::Value>() {
-        let (k, v) = pair?;
-        if k != "tag" {
-            stripped.set(k, v)?;
+        let (job, after) = match Self::parse(lua, url, opts) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                let span = pipeline::span_for_line(&r.source, line);
+                r.errors
+                    .borrow_mut()
+                    .push(DefinitionError::InvalidMirrorCall {
+                        message: e.to_string(),
+                        span,
+                    });
+                return Ok(());
+            }
+        };
+
+        let run_fn = RunFn::Rust(Rc::new(move |rt: &Runtime| job.execute(rt)));
+
+        // Inputs: always quire/push first (the push data source), then
+        // any extra dependencies from :after for sequencing.
+        let mut inputs = vec!["quire/push".to_string()];
+        inputs.extend(after);
+
+        match Job::new("quire/mirror".to_string(), inputs, run_fn, line, &r.source) {
+            Ok(job) => r.add_job(job, line),
+            Err(e) => r.errors.borrow_mut().push(e),
         }
+        Ok(())
     }
-
-    let fields: Fields = lua.from_value(mlua::Value::Table(stripped))?;
-
-    Ok((
-        MirrorJob {
-            url,
-            secret: fields.secret,
-            refs: fields.refs,
-            tag,
-        },
-        fields.after,
-    ))
-}
-
-/// Body of `(ci.mirror url opts)`. Parses opts and registers an
-/// internal job at `quire/mirror` whose run-fn performs the
-/// tag-and-push at execute time. Singleton-ness is enforced by
-/// generic id uniqueness in `Registration::add_job` — a second
-/// `(ci.mirror …)` collides on the `quire/mirror` id.
-pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
-    let r = lua
-        .app_data_ref::<Registration>()
-        .ok_or_else(|| mlua::Error::external("quire.ci registration not installed on Lua VM"))?;
-    let line = lua
-        .inspect_stack(1, |d| d.current_line())
-        .flatten()
-        .map(|l| l as u32)
-        .unwrap_or(0);
-
-    let (job, after) = match parse_mirror_call(lua, url, opts) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            let span = pipeline::span_for_line(&r.source, line);
-            r.errors
-                .borrow_mut()
-                .push(DefinitionError::InvalidMirrorCall {
-                    message: e.to_string(),
-                    span,
-                });
-            return Ok(());
-        }
-    };
-
-    let run_fn = RunFn::Rust(Rc::new(move |rt: &Runtime| job.execute(rt)));
-
-    // Inputs: always quire/push first (the push data source), then
-    // any extra dependencies from :after for sequencing.
-    let mut inputs = vec!["quire/push".to_string()];
-    inputs.extend(after);
-
-    match Job::new("quire/mirror".to_string(), inputs, run_fn, line, &r.source) {
-        Ok(job) => r.add_job(job, line),
-        Err(e) => r.errors.borrow_mut().push(e),
-    }
-    Ok(())
 }
 
 #[cfg(test)]
