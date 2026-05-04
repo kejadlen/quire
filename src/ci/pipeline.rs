@@ -330,10 +330,10 @@ pub struct PipelineError {
     // Named `src` rather than `source` so thiserror doesn't auto-treat
     // it as the error chain.
     #[source_code]
-    pub src: NamedSource<String>,
+    pub(crate) src: NamedSource<String>,
 
     #[related]
-    pub diagnostics: Vec<Diagnostic>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 /// Compile a ci.fnl source string into a validated [`Pipeline`].
