@@ -18,14 +18,6 @@ use super::runtime::{Cmd, Runtime, ShOpts, ShOutput};
 use crate::Result;
 use crate::error::Error;
 
-/// Marker that `(ci.mirror …)` was called. Held only so a second
-/// call can produce `DuplicateMirror`; the resulting job is built
-/// inline in `register_mirror` and pushed onto `Registration::jobs`
-/// like any other.
-pub(super) struct MirrorRegistration {
-    _line: u32,
-}
-
 /// Parsed options from `(ci.mirror url opts)`. Captured at
 /// registration time and moved into the run-fn closure.
 struct MirrorOpts {
@@ -97,9 +89,11 @@ fn parse_mirror_opts(lua: &Lua, opts: mlua::Table) -> mlua::Result<MirrorOpts> {
     })
 }
 
-/// Body of `(ci.mirror url opts)`. Validates singleton, parses opts,
-/// and registers a single internal job at `quire/mirror` whose run-fn
-/// performs the tag-and-push at execute time.
+/// Body of `(ci.mirror url opts)`. Parses opts and registers an
+/// internal job at `quire/mirror` whose run-fn performs the
+/// tag-and-push at execute time. Singleton-ness is enforced by
+/// generic id uniqueness in `Registration::add_job` — a second
+/// `(ci.mirror …)` collides on the `quire/mirror` id.
 pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
     let r = lua
         .app_data_ref::<Registration>()
@@ -110,27 +104,16 @@ pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> 
         .map(|l| l as u32)
         .unwrap_or(0);
 
-    // Singleton check.
-    {
-        let mut m = r.mirror.borrow_mut();
-        if m.is_some() {
-            let span = pipeline::span_for_line(&r.source, line);
-            r.errors
-                .borrow_mut()
-                .push(DefinitionError::DuplicateMirror { span });
-            return Ok(());
-        }
-        *m = Some(MirrorRegistration { _line: line });
-    }
-
     let parsed = match parse_mirror_opts(lua, opts) {
         Ok(p) => p,
         Err(e) => {
             let span = pipeline::span_for_line(&r.source, line);
-            r.errors.borrow_mut().push(DefinitionError::InvalidMirrorCall {
-                message: e.to_string(),
-                span,
-            });
+            r.errors
+                .borrow_mut()
+                .push(DefinitionError::InvalidMirrorCall {
+                    message: e.to_string(),
+                    span,
+                });
             return Ok(());
         }
     };
@@ -153,7 +136,7 @@ pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> 
     inputs.extend(parsed.after);
 
     match Job::new("quire/mirror".to_string(), inputs, run_fn, line, &r.source) {
-        Ok(job) => r.jobs.borrow_mut().push(job),
+        Ok(job) => r.add_job(job, line),
         Err(e) => r.errors.borrow_mut().push(e),
     }
     Ok(())
@@ -228,12 +211,11 @@ fn execute_mirror(
     // of the argv (visible in `ps`); piping via $T is the smallest
     // stdin-free alternative.
     let token_pair = format!("x-access-token:{secret}");
-    let encoded_output = Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(
-        ShOpts {
+    let encoded_output =
+        Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(ShOpts {
             env: HashMap::from([("T".to_string(), token_pair)]),
             cwd: None,
-        },
-    )?;
+        })?;
     let auth_header = format!("Authorization: Basic {}", encoded_output.stdout.trim());
 
     // Push the configured refs (or the trigger ref, if none) plus the tag.
@@ -366,17 +348,14 @@ mod tests {
 (ci.mirror "https://github.com/example/repo.git"
   {:secret :github_token :tag (fn [_] "v1") :after [:build]})"#;
         let inputs = mirror_job_inputs(source);
-        assert_eq!(
-            inputs,
-            vec!["quire/push".to_string(), "build".to_string()]
-        );
+        assert_eq!(inputs, vec!["quire/push".to_string(), "build".to_string()]);
     }
 
     #[test]
-    fn mirror_duplicate_call_errors() {
+    fn mirror_duplicate_call_errors_via_id_collision() {
         let source = r#"(local ci (require :quire.ci))
-(ci.mirror "https://github.com/example/repo.git" {:secret :a})
-(ci.mirror "https://github.com/example/other.git" {:secret :b})"#;
+(ci.mirror "https://github.com/example/repo.git" {:secret :a :tag (fn [_] "v1")})
+(ci.mirror "https://github.com/example/other.git" {:secret :b :tag (fn [_] "v1")})"#;
         let Err(err) = compile(source, "ci.fnl") else {
             panic!("expected error");
         };
@@ -386,9 +365,10 @@ mod tests {
         assert!(
             pe.diagnostics.iter().any(|d| matches!(
                 d,
-                Diagnostic::Definition(DefinitionError::DuplicateMirror { .. })
+                Diagnostic::Definition(DefinitionError::DuplicateJob { job_id, .. })
+                    if job_id == "quire/mirror"
             )),
-            "expected DuplicateMirror in: {:?}",
+            "expected DuplicateJob('quire/mirror') in: {:?}",
             pe.diagnostics
         );
     }

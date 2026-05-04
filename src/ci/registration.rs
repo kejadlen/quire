@@ -38,7 +38,6 @@ pub(super) struct Registrations {
 pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> Result<Registrations> {
     let jobs: Rc<RefCell<Vec<Job>>> = Rc::new(RefCell::new(Vec::new()));
     let image = Rc::new(RefCell::new(None));
-    let mirror_cell = Rc::new(RefCell::new(None));
     let src = Rc::new(source.to_string());
 
     let errors = Rc::new(RefCell::new(Vec::new()));
@@ -50,7 +49,6 @@ pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> Result<Regi
                 jobs: jobs.clone(),
                 errors: errors.clone(),
                 image: image.clone(),
-                mirror: mirror_cell.clone(),
                 source: src.clone(),
             },
         )
@@ -96,7 +94,6 @@ pub(super) struct Registration {
     pub(super) jobs: Rc<RefCell<Vec<Job>>>,
     pub(super) errors: Rc<RefCell<Vec<DefinitionError>>>,
     image: Rc<RefCell<Option<ImageRegistration>>>,
-    pub(super) mirror: Rc<RefCell<Option<mirror::MirrorRegistration>>>,
     pub(super) source: Rc<String>,
 }
 
@@ -108,6 +105,26 @@ impl IntoLua for Registration {
         table.set("image", lua.create_function(register_image)?)?;
         table.set("mirror", lua.create_function(mirror::register_mirror)?)?;
         table.into_lua(lua)
+    }
+}
+
+impl Registration {
+    /// Push a registered job after enforcing id uniqueness. On
+    /// collision, records `DuplicateJob` against the caller's source
+    /// line and drops the new job; the first registration wins.
+    pub(super) fn add_job(&self, job: Job, line: u32) {
+        let mut jobs = self.jobs.borrow_mut();
+        if jobs.iter().any(|j| j.id == job.id) {
+            let span = pipeline::span_for_line(&self.source, line);
+            self.errors
+                .borrow_mut()
+                .push(DefinitionError::DuplicateJob {
+                    job_id: job.id,
+                    span,
+                });
+            return;
+        }
+        jobs.push(job);
     }
 }
 
@@ -170,7 +187,7 @@ fn register_job(
     }
 
     match Job::new(id, inputs, RunFn::Lua(run_fn), line, &r.source) {
-        Ok(job) => r.jobs.borrow_mut().push(job),
+        Ok(job) => r.add_job(job, line),
         Err(e) => r.errors.borrow_mut().push(e),
     }
     Ok(())

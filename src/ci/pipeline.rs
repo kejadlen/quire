@@ -41,9 +41,10 @@ pub enum DefinitionError {
         span: SourceSpan,
     },
 
-    #[error("Pipeline mirror declared more than once.")]
-    DuplicateMirror {
-        #[label("duplicate mirror declaration")]
+    #[error("Job '{job_id}' is registered more than once.")]
+    DuplicateJob {
+        job_id: String,
+        #[label("duplicate registration")]
         span: SourceSpan,
     },
 
@@ -512,7 +513,8 @@ mod tests {
     /// definition errors it produced.
     fn registration_errors(source: &str) -> Vec<DefinitionError> {
         let f = Fennel::new().expect("Fennel::new() should succeed");
-        let err = registration::register(&f, source, "ci.fnl").expect_err("expected registration errors");
+        let err =
+            registration::register(&f, source, "ci.fnl").expect_err("expected registration errors");
         let crate::Error::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}")
         };
@@ -630,6 +632,21 @@ mod tests {
                 |e| matches!(e, DefinitionError::ReservedSlash { job_id, .. } if job_id == "foo/bar")
             ),
             "should report slash in job id: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn register_rejects_duplicate_job_id() {
+        let errors = registration_errors(
+            r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [_] nil))
+(ci.job :build [:quire/push] (fn [_] nil))"#,
+        );
+        assert!(
+            errors.iter().any(
+                |e| matches!(e, DefinitionError::DuplicateJob { job_id, .. } if job_id == "build")
+            ),
+            "should report duplicate job id 'build': {errors:?}"
         );
     }
 

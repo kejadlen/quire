@@ -12,8 +12,8 @@ use std::rc::Rc;
 use jiff::Timestamp;
 use mlua::IntoLua;
 
-use super::runtime::{Runtime, RuntimeHandle, ShOutput};
 use super::pipeline::{Pipeline, RunFn};
+use super::runtime::{Runtime, RuntimeHandle, ShOutput};
 use crate::display_chain;
 use crate::secret::SecretString;
 use crate::{Error, Result};
