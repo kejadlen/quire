@@ -9,7 +9,7 @@ mod run;
 mod runtime;
 
 pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
-pub use run::{Run, RunMeta, RunState, RunTimes, Runs};
+pub use run::{Executor, Run, RunMeta, RunState, RunTimes, Runs};
 
 /// A resolved commit reference.
 ///
@@ -174,7 +174,15 @@ fn trigger_ref(
         }
     };
 
-    run.execute(pipeline, secrets.clone(), &repo.path())?;
+    let workspace = run.path().join("workspace");
+    fs_err::create_dir_all(&workspace)?;
+    run.execute(
+        pipeline,
+        secrets.clone(),
+        &repo.path(),
+        &workspace,
+        run::Executor::Host,
+    )?;
     Ok(())
 }
 

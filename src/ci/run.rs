@@ -18,6 +18,14 @@ use crate::display_chain;
 use crate::secret::SecretString;
 use crate::{Error, Result};
 
+/// The execution mode for a run. Host runs `sh` directly on the host.
+/// Docker materializes a container and routes `sh` through `docker exec`.
+#[derive(Debug, Clone)]
+pub enum Executor {
+    Host,
+    // Docker variant added in Task 5.
+}
+
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
@@ -274,7 +282,12 @@ impl Run {
         pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
         git_dir: &std::path::Path,
+        workspace: &std::path::Path,
+        executor: Executor,
     ) -> Result<HashMap<String, Vec<ShOutput>>> {
+        // `workspace` and `executor` are not yet read; later tasks
+        // wire them into the runtime and per-run container lifecycle.
+        let _ = (workspace, executor);
         let meta = self.read_meta()?;
 
         let runtime = Rc::new(Runtime::new(pipeline, secrets, &meta, git_dir));
@@ -453,6 +466,14 @@ mod tests {
 
     fn test_runs(quire: &Quire) -> Runs {
         Runs::new(quire.base_dir().join("runs").join("test.git"))
+    }
+
+    /// Materialize a workspace directory under the test Quire's base dir.
+    /// Used by `Run::execute` call sites to satisfy the workspace param.
+    fn test_workspace(quire: &Quire) -> PathBuf {
+        let workspace = quire.base_dir().join("ws");
+        fs_err::create_dir_all(&workspace).expect("mkdir workspace");
+        workspace
     }
 
     fn test_meta() -> RunMeta {
@@ -810,7 +831,13 @@ mod tests {
 
         let run_id = run.id().to_string();
         let outputs = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect("execute");
 
         // Verify the run landed in complete/ on disk.
@@ -843,8 +870,14 @@ mod tests {
         );
         let pipeline = load(&source);
 
-        run.execute(pipeline, HashMap::new(), std::path::Path::new("."))
-            .expect("execute");
+        run.execute(
+            pipeline,
+            HashMap::new(),
+            std::path::Path::new("."),
+            &test_workspace(&quire),
+            Executor::Host,
+        )
+        .expect("execute");
 
         let contents = fs_err::read_to_string(&log).expect("read log");
         assert_eq!(contents, "a\nb\n");
@@ -864,7 +897,13 @@ mod tests {
 
         let run_id = run.id().to_string();
         let err = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
 
@@ -888,7 +927,13 @@ mod tests {
         );
 
         let outputs = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect("execute");
 
         let grab = &outputs["grab"];
@@ -914,7 +959,13 @@ mod tests {
         );
 
         let outputs = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect("execute");
 
         let b = &outputs["b"];
@@ -934,7 +985,13 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
             unreachable!()
@@ -961,7 +1018,13 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect_err("expected failure");
         let Error::JobFailed { source, .. } = err else {
             unreachable!()
@@ -985,7 +1048,13 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect_err("expected failure");
         let Error::JobFailed { source, .. } = err else {
             unreachable!()
@@ -1014,7 +1083,13 @@ mod tests {
         );
 
         let outputs = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect("execute");
         let b = &outputs["b"];
         assert_eq!(b.len(), 1);
@@ -1033,8 +1108,14 @@ mod tests {
         );
 
         let run_id = run.id().to_string();
-        run.execute(pipeline, HashMap::new(), std::path::Path::new("."))
-            .expect("execute");
+        run.execute(
+            pipeline,
+            HashMap::new(),
+            std::path::Path::new("."),
+            &test_workspace(&quire),
+            Executor::Host,
+        )
+        .expect("execute");
 
         let log_path = runs
             .base
@@ -1069,7 +1150,13 @@ mod tests {
         );
 
         let run_id = run.id().to_string();
-        let _ = run.execute(pipeline, HashMap::new(), std::path::Path::new("."));
+        let _ = run.execute(
+            pipeline,
+            HashMap::new(),
+            std::path::Path::new("."),
+            &test_workspace(&quire),
+            Executor::Host,
+        );
 
         let failed_dir = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
         assert!(failed_dir.exists(), "run should be in failed/");
@@ -1102,7 +1189,13 @@ mod tests {
         );
 
         let err = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
             panic!("expected JobFailed, got: {err:?}")
@@ -1135,8 +1228,14 @@ mod tests {
             Ok(())
         })));
 
-        run.execute(pipeline, HashMap::new(), std::path::Path::new("."))
-            .expect("execute should succeed");
+        run.execute(
+            pipeline,
+            HashMap::new(),
+            std::path::Path::new("."),
+            &test_workspace(&quire),
+            Executor::Host,
+        )
+        .expect("execute should succeed");
         assert!(called.get(), "rust run-fn should have been called");
     }
 
@@ -1156,7 +1255,13 @@ mod tests {
         })));
 
         let err = run
-            .execute(pipeline, HashMap::new(), std::path::Path::new("."))
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &test_workspace(&quire),
+                Executor::Host,
+            )
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
             panic!("expected JobFailed, got: {err:?}");

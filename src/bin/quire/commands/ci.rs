@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 use quire::Quire;
-use quire::ci::{Ci, CommitRef, RunMeta, Runs};
+use quire::ci::{Ci, CommitRef, Executor, RunMeta, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -76,7 +76,15 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let run = runs.create(&meta)?;
     println!("Run {}: executing at {}", run.id(), commit.display);
 
-    let exec_result = run.execute(pipeline, secrets, &repo_path.join(".git"));
+    let workspace = tmp.path().join("workspace");
+    fs_err::create_dir_all(&workspace).into_diagnostic()?;
+    let exec_result = run.execute(
+        pipeline,
+        secrets,
+        &repo_path.join(".git"),
+        &workspace,
+        Executor::Host,
+    );
 
     match exec_result {
         Ok(outputs) => {
