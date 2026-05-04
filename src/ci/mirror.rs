@@ -14,7 +14,7 @@ use mlua::{Lua, LuaSerdeExt};
 
 use super::pipeline::{self, DefinitionError, Job, RunFn};
 use super::registration::Registration;
-use super::runtime::{Cmd, Runtime, ShOpts, ShOutput};
+use super::runtime::{Cmd, Runtime, ShOpts};
 use crate::Result;
 use crate::error::Error;
 
@@ -62,36 +62,35 @@ impl MirrorJob {
         let pushed_ref: String = push_table.get("ref")?;
         let git_dir: String = push_table.get("git-dir")?;
 
-        // Resolve the access token.
-        let secret = rt
-            .secrets
-            .get(&self.secret)
-            .ok_or_else(|| Error::UnknownSecret(self.secret.clone()))?
-            .reveal()?
-            .to_string();
+        let secret = rt.secret(&self.secret)?;
 
         let git_opts = ShOpts {
-            env: HashMap::from([("GIT_DIR".to_string(), git_dir.clone())]),
+            env: HashMap::from([("GIT_DIR".to_string(), git_dir)]),
             cwd: None,
         };
 
         // Tag step.
         let tag_name: String = self.tag.call(push_table.clone())?;
-        let tag_cmd = Cmd::Argv {
-            program: "git".to_string(),
-            args: vec!["tag".to_string(), tag_name.clone(), sha.clone()],
-        };
-        let tag_result = tag_cmd.run(git_opts.clone())?;
-        let tag_failed = tag_result.exit != 0;
-        let tag_stderr = tag_result.stderr.clone();
-        record_output(rt, calling, tag_result);
-        if tag_failed {
-            return Err(Error::Git(format!("git tag failed: {}", tag_stderr.trim())));
+        let tag_result = rt.sh(
+            Cmd::Argv {
+                program: "git".to_string(),
+                args: vec!["tag".to_string(), tag_name.clone(), sha],
+            },
+            git_opts.clone(),
+        )?;
+        if tag_result.exit != 0 {
+            return Err(Error::Git(format!(
+                "git tag failed: {}",
+                tag_result.stderr.trim()
+            )));
         }
 
         // Build the auth header. printf-into-base64 keeps the secret
         // out of the argv (visible in `ps`); piping via $T is the
         // smallest stdin-free alternative.
+        //
+        // Run via `Cmd::run` rather than `rt.sh` — we don't want the
+        // encoded token landing in recorded outputs.
         let token_pair = format!("x-access-token:{secret}");
         let encoded_output =
             Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(ShOpts {
@@ -114,12 +113,13 @@ impl MirrorJob {
             push_args.extend(self.refs.iter().cloned());
         }
         push_args.push(format!("refs/tags/{tag_name}"));
-        let push_cmd = Cmd::Argv {
-            program: "git".to_string(),
-            args: push_args,
-        };
-        let push_result = push_cmd.run(git_opts)?;
-        record_output(rt, calling, push_result);
+        rt.sh(
+            Cmd::Argv {
+                program: "git".to_string(),
+                args: push_args,
+            },
+            git_opts,
+        )?;
 
         Ok(())
     }
@@ -231,15 +231,6 @@ pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> 
         Err(e) => r.errors.borrow_mut().push(e),
     }
     Ok(())
-}
-
-/// Record an `ShOutput` against the calling job for log streaming.
-fn record_output(rt: &Runtime, job: &str, output: ShOutput) {
-    rt.outputs
-        .borrow_mut()
-        .entry(job.to_string())
-        .or_default()
-        .push(output);
 }
 
 #[cfg(test)]

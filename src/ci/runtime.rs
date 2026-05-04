@@ -144,6 +144,31 @@ impl Runtime {
     pub(super) fn take_outputs(&self) -> HashMap<String, Vec<ShOutput>> {
         std::mem::take(&mut *self.outputs.borrow_mut())
     }
+
+    /// Resolve a declared secret by name. Errors if the name isn't
+    /// declared or the secret's source can't be read.
+    pub(super) fn secret(&self, name: &str) -> crate::Result<String> {
+        let secret = self
+            .secrets
+            .get(name)
+            .ok_or_else(|| crate::Error::UnknownSecret(name.to_string()))?;
+        Ok(secret.reveal()?.to_string())
+    }
+
+    /// Run `cmd` with `opts` and record its output against the
+    /// current job (if one is active). Non-zero exits come back in
+    /// `:exit`, not as `Err`.
+    pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> crate::Result<ShOutput> {
+        let output = cmd.run(opts)?;
+        if let Some(job) = self.current_job.borrow().as_ref() {
+            self.outputs
+                .borrow_mut()
+                .entry(job.clone())
+                .or_default()
+                .push(output.clone());
+        }
+        Ok(output)
+    }
 }
 
 #[cfg(test)]
@@ -166,73 +191,75 @@ impl Runtime {
 pub(super) struct RuntimeHandle(pub Rc<Runtime>);
 
 impl IntoLua for RuntimeHandle {
+    // Errors raised by the closures below cross the mlua boundary via
+    // `Error::external`, which erases them to
+    // `Box<dyn Error + Send + Sync>`. The `std::error::Error` source
+    // chain is preserved, but miette `Diagnostic` metadata (codes,
+    // labels, source spans) does not survive the round trip — the
+    // resulting `mlua::Error` becomes the `#[source]` of
+    // `Error::JobFailed` at the executor, which only renders the chain
+    // as plain `Display`. Don't reach for richer error types here
+    // expecting them to render: rephrase the Display string to carry
+    // what the user needs to see.
     fn into_lua(self, lua: &Lua) -> mlua::Result<mlua::Value> {
         lua.set_app_data(self.0);
         let table = lua.create_table()?;
-        table.set("sh", lua.create_function(run_sh)?)?;
-        table.set("secret", lua.create_function(lookup_secret)?)?;
-        table.set("jobs", lua.create_function(lookup_input)?)?;
+
+        table.set(
+            "sh",
+            lua.create_function(|lua, (cmd, opts): (Cmd, Option<ShOpts>)| {
+                let opts = opts.unwrap_or_default();
+                let output = match lua.app_data_ref::<Rc<Runtime>>() {
+                    Some(rt) => rt.sh(cmd, opts).map_err(mlua::Error::external)?,
+                    None => cmd.run(opts).map_err(mlua::Error::external)?,
+                };
+                lua.to_value(&output)
+            })?,
+        )?;
+
+        table.set(
+            "secret",
+            lua.create_function(|lua, name: String| {
+                let rt = lua
+                    .app_data_ref::<Rc<Runtime>>()
+                    .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
+                rt.secret(&name).map_err(mlua::Error::external)
+            })?,
+        )?;
+
+        table.set(
+            "jobs",
+            lua.create_function(|lua, name: String| {
+                let rt = lua
+                    .app_data_ref::<Rc<Runtime>>()
+                    .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
+                let calling = rt.current_job.borrow();
+                let calling = calling.as_ref().ok_or_else(|| {
+                    mlua::Error::external("(jobs ...) called outside a job's run-fn")
+                })?;
+                // Runtime::new builds a view for every job and
+                // enter_job is the only setter for current_job, so a
+                // missing view is a programming error, not a
+                // user-reachable condition.
+                let view = rt
+                    .inputs
+                    .get(calling)
+                    .unwrap_or_else(|| unreachable!("no inputs view for calling job '{calling}'"));
+                match view.get(&name) {
+                    Some(Some(value)) => Ok(value.clone()),
+                    Some(None) => Ok(mlua::Value::Nil),
+                    None if name == *calling => Err(mlua::Error::external(format!(
+                        "Job '{calling}' cannot read its own outputs"
+                    ))),
+                    None => Err(mlua::Error::external(format!(
+                        "Job '{calling}' cannot read outputs from '{name}' — not in transitive inputs"
+                    ))),
+                }
+            })?,
+        )?;
+
         table.into_lua(lua)
     }
-}
-
-/// Body of `(jobs name)`. Returns the outputs the calling job's
-/// view has for `name` as a Lua value. Reachable names without
-/// recorded outputs come back as `nil`. Errors if `name` is outside
-/// the calling job's view, if the calling job tries to read its own
-/// outputs, or if the runtime isn't installed.
-fn lookup_input(lua: &Lua, name: String) -> mlua::Result<mlua::Value> {
-    let rt = lua
-        .app_data_ref::<Rc<Runtime>>()
-        .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
-    let calling = rt.current_job.borrow();
-    let calling = calling
-        .as_ref()
-        .ok_or_else(|| mlua::Error::external("(jobs ...) called outside a job's run-fn"))?;
-    // Runtime::new builds a view for every job and enter_job is the only
-    // setter for current_job, so a missing view is a programming error,
-    // not a user-reachable condition.
-    let view = rt
-        .inputs
-        .get(calling)
-        .unwrap_or_else(|| unreachable!("no inputs view for calling job '{calling}'"));
-    match view.get(&name) {
-        Some(Some(value)) => Ok(value.clone()),
-        Some(None) => Ok(mlua::Value::Nil),
-        None if name == *calling => Err(mlua::Error::external(format!(
-            "Job '{calling}' cannot read its own outputs"
-        ))),
-        None => Err(mlua::Error::external(format!(
-            "Job '{calling}' cannot read outputs from '{name}' — not in transitive inputs"
-        ))),
-    }
-}
-
-/// Body of `(secret name)`. Errors as a Lua error if the runtime
-/// isn't installed, the name is undeclared, or the file form fails to
-/// read.
-//
-// Errors here cross the mlua boundary via `Error::external`, which
-// erases them to `Box<dyn Error + Send + Sync>`. The `std::error::Error`
-// source chain is preserved, but miette `Diagnostic` metadata
-// (codes, labels, source spans) does not survive the round trip —
-// the resulting `mlua::Error` becomes the `#[source]` of
-// `Error::JobFailed` at the executor, which only renders the chain
-// as plain `Display`. Don't reach for richer error types here
-// expecting them to render: rephrase the Display string to carry
-// what the user needs to see.
-fn lookup_secret(lua: &Lua, name: String) -> mlua::Result<String> {
-    let rt = lua
-        .app_data_ref::<Rc<Runtime>>()
-        .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))?;
-    let secret = rt
-        .secrets
-        .get(&name)
-        .ok_or_else(|| mlua::Error::external(crate::Error::UnknownSecret(name)))?;
-    secret
-        .reveal()
-        .map(|s| s.to_string())
-        .map_err(mlua::Error::external)
 }
 
 /// The two valid shapes of `cmd` for `(sh cmd …)`. A bare string
@@ -378,28 +405,6 @@ pub struct ShOutput {
     /// The command that was run, formatted for display.
     #[serde(default)]
     pub cmd: String,
-}
-
-/// Body of `(sh cmd opts?)`. Glue between the Lua call and `Cmd::run`
-/// — defaults the opts, runs the command, records output into the
-/// active runtime (if any) under the current job, and converts the
-/// result back to a Lua table.
-fn run_sh(lua: &Lua, (cmd, opts): (Cmd, Option<ShOpts>)) -> mlua::Result<mlua::Value> {
-    let output = cmd
-        .run(opts.unwrap_or_default())
-        .map_err(mlua::Error::external)?;
-
-    if let Some(rt) = lua.app_data_ref::<Rc<Runtime>>()
-        && let Some(job) = rt.current_job.borrow().as_ref()
-    {
-        rt.outputs
-            .borrow_mut()
-            .entry(job.clone())
-            .or_default()
-            .push(output.clone());
-    }
-
-    lua.to_value(&output)
 }
 
 #[cfg(test)]
