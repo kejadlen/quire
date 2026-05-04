@@ -40,6 +40,24 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    #[error("workspace materialization failed")]
+    WorkspaceMaterializationFailed {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("image build failed")]
+    ImageBuildFailed {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("container start failed")]
+    ContainerStartFailed {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("git error: {0}")]
     Git(String),
 

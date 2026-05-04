@@ -466,11 +466,11 @@ pub fn materialize_workspace(
     let tar_status = tar.wait()?;
     let archive_status = archive.wait()?;
     if !archive_status.success() || !tar_status.success() {
-        // Task 3 introduces Error::WorkspaceMaterializationFailed; for
-        // now use std::io::Error wrapped as Error::Io. Task 3 swaps it.
-        return Err(Error::Io(std::io::Error::other(format!(
-            "materialize_workspace: git archive exited {archive_status}, tar exited {tar_status}"
-        ))));
+        return Err(Error::WorkspaceMaterializationFailed {
+            source: std::io::Error::other(format!(
+                "git archive exited {archive_status}, tar exited {tar_status}"
+            )),
+        });
     }
     Ok(())
 }
@@ -587,6 +587,41 @@ mod tests {
         assert_eq!(
             fs_err::read_to_string(workspace.join("hello.txt")).unwrap(),
             "hi\n"
+        );
+    }
+
+    #[test]
+    fn materialize_workspace_errors_on_unknown_sha() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src_repo = dir.path().join("src");
+        fs_err::create_dir_all(&src_repo).expect("mkdir src");
+
+        let env_vars: [(&str, &str); 6] = [
+            ("GIT_AUTHOR_NAME", "test"),
+            ("GIT_AUTHOR_EMAIL", "test@test"),
+            ("GIT_COMMITTER_NAME", "test"),
+            ("GIT_COMMITTER_EMAIL", "test@test"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ];
+        let out = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&src_repo)
+            .envs(env_vars)
+            .output()
+            .expect("git init");
+        assert!(out.status.success());
+
+        let workspace = dir.path().join("ws");
+        let err = materialize_workspace(
+            &src_repo.join(".git"),
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            &workspace,
+        )
+        .expect_err("expected failure on unknown SHA");
+        assert!(
+            matches!(err, Error::WorkspaceMaterializationFailed { .. }),
+            "expected WorkspaceMaterializationFailed, got: {err:?}"
         );
     }
 
