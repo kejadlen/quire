@@ -18,9 +18,10 @@ use super::runtime::{Cmd, Runtime, ShOpts, ShOutput};
 use crate::Result;
 use crate::error::Error;
 
-/// Parsed options from `(ci.mirror url opts)`. Captured at
-/// registration time and moved into the run-fn closure.
-struct MirrorOpts {
+/// Closure state for the `quire/mirror` job's run-fn: everything the
+/// tag-and-push needs at execute time, captured once at registration.
+struct MirrorJob {
+    url: String,
     secret: String,
     /// Refs to push to the remote. Empty means "push whatever ref
     /// triggered the run."
@@ -29,11 +30,104 @@ struct MirrorOpts {
     /// produce the tag name; the helper then tags `push.sha` and
     /// pushes that tag alongside the refs.
     tag: mlua::Function,
-    /// Extra job ids to depend on, in addition to `quire/push`.
-    after: Vec<String>,
 }
 
-/// Parse the opts table for `(ci.mirror url opts)`.
+impl MirrorJob {
+    /// Run the tag-and-push against the bare git dir from the runtime's
+    /// `quire/push` data. Side effects only — outputs are recorded
+    /// against the calling job via the sh-capture channel. Returns
+    /// `Ok(())` whether or not the remote push succeeded; non-zero
+    /// `git push` exit lands in the run log alongside any other shell
+    /// output. Returns `Err` only for setup failures (unknown secret,
+    /// failed tag, base64 spawn).
+    fn execute(&self, rt: &Runtime) -> Result<()> {
+        let calling = rt.current_job.borrow();
+        let calling = calling
+            .as_ref()
+            .expect("mirror run-fn invoked without an active job");
+
+        // Pull push data from this job's inputs view. Reachability is
+        // a structural fact established at registration; the unwraps
+        // are program invariants, not user-reachable conditions.
+        let view = rt
+            .inputs
+            .get(calling)
+            .unwrap_or_else(|| unreachable!("no inputs view for calling job '{calling}'"));
+        let push_table = view
+            .get("quire/push")
+            .and_then(|v| v.as_ref())
+            .and_then(|v| v.as_table())
+            .expect("quire/push table absent from quire/mirror inputs view");
+        let sha: String = push_table.get("sha")?;
+        let pushed_ref: String = push_table.get("ref")?;
+        let git_dir: String = push_table.get("git-dir")?;
+
+        // Resolve the access token.
+        let secret = rt
+            .secrets
+            .get(&self.secret)
+            .ok_or_else(|| Error::UnknownSecret(self.secret.clone()))?
+            .reveal()?
+            .to_string();
+
+        let git_opts = ShOpts {
+            env: HashMap::from([("GIT_DIR".to_string(), git_dir.clone())]),
+            cwd: None,
+        };
+
+        // Tag step.
+        let tag_name: String = self.tag.call(push_table.clone())?;
+        let tag_cmd = Cmd::Argv {
+            program: "git".to_string(),
+            args: vec!["tag".to_string(), tag_name.clone(), sha.clone()],
+        };
+        let tag_result = tag_cmd.run(git_opts.clone())?;
+        let tag_failed = tag_result.exit != 0;
+        let tag_stderr = tag_result.stderr.clone();
+        record_output(rt, calling, tag_result);
+        if tag_failed {
+            return Err(Error::Git(format!("git tag failed: {}", tag_stderr.trim())));
+        }
+
+        // Build the auth header. printf-into-base64 keeps the secret
+        // out of the argv (visible in `ps`); piping via $T is the
+        // smallest stdin-free alternative.
+        let token_pair = format!("x-access-token:{secret}");
+        let encoded_output =
+            Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(ShOpts {
+                env: HashMap::from([("T".to_string(), token_pair)]),
+                cwd: None,
+            })?;
+        let auth_header = format!("Authorization: Basic {}", encoded_output.stdout.trim());
+
+        // Push the configured refs (or the trigger ref, if none) plus the tag.
+        let mut push_args = vec![
+            "-c".to_string(),
+            format!("http.extraHeader={auth_header}"),
+            "push".to_string(),
+            "--porcelain".to_string(),
+            self.url.clone(),
+        ];
+        if self.refs.is_empty() {
+            push_args.push(pushed_ref);
+        } else {
+            push_args.extend(self.refs.iter().cloned());
+        }
+        push_args.push(format!("refs/tags/{tag_name}"));
+        let push_cmd = Cmd::Argv {
+            program: "git".to_string(),
+            args: push_args,
+        };
+        let push_result = push_cmd.run(git_opts)?;
+        record_output(rt, calling, push_result);
+
+        Ok(())
+    }
+}
+
+/// Parse `(ci.mirror url opts)` into the runtime job and the `:after`
+/// list. `:after` only affects sequencing (extra inputs on the
+/// registered job), so it stays out of the closure state.
 ///
 /// `:tag` is extracted manually since `mlua::Function` isn't
 /// serde-deserializable; the rest go through `lua.from_value` with
@@ -42,7 +136,11 @@ struct MirrorOpts {
 /// Errors are returned as `mlua::Error::external` so callers can
 /// render them via `Display` into a `DefinitionError::InvalidMirrorCall`
 /// at the call site.
-fn parse_mirror_opts(lua: &Lua, opts: mlua::Table) -> mlua::Result<MirrorOpts> {
+fn parse_mirror_call(
+    lua: &Lua,
+    url: String,
+    opts: mlua::Table,
+) -> mlua::Result<(MirrorJob, Vec<String>)> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Fields {
@@ -81,12 +179,15 @@ fn parse_mirror_opts(lua: &Lua, opts: mlua::Table) -> mlua::Result<MirrorOpts> {
 
     let fields: Fields = lua.from_value(mlua::Value::Table(stripped))?;
 
-    Ok(MirrorOpts {
-        secret: fields.secret,
-        refs: fields.refs,
-        tag,
-        after: fields.after,
-    })
+    Ok((
+        MirrorJob {
+            url,
+            secret: fields.secret,
+            refs: fields.refs,
+            tag,
+        },
+        fields.after,
+    ))
 }
 
 /// Body of `(ci.mirror url opts)`. Parses opts and registers an
@@ -104,8 +205,8 @@ pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> 
         .map(|l| l as u32)
         .unwrap_or(0);
 
-    let parsed = match parse_mirror_opts(lua, opts) {
-        Ok(p) => p,
+    let (job, after) = match parse_mirror_call(lua, url, opts) {
+        Ok(parsed) => parsed,
         Err(e) => {
             let span = pipeline::span_for_line(&r.source, line);
             r.errors
@@ -118,127 +219,17 @@ pub(super) fn register_mirror(lua: &Lua, (url, opts): (String, mlua::Table)) -> 
         }
     };
 
-    // Build the run-fn as a pure Rust closure. Captures owned
-    // values so it's `'static`. The mlua::Function for `:tag`
-    // carries its own registry handle and stays callable from Rust
-    // without a `&Lua`.
-    let url_owned = url.clone();
-    let secret_name = parsed.secret;
-    let refs = parsed.refs;
-    let tag_callback = parsed.tag;
-    let run_fn = RunFn::Rust(Rc::new(move |rt: &Runtime| {
-        execute_mirror(rt, &url_owned, &secret_name, &refs, &tag_callback)
-    }));
+    let run_fn = RunFn::Rust(Rc::new(move |rt: &Runtime| job.execute(rt)));
 
     // Inputs: always quire/push first (the push data source), then
     // any extra dependencies from :after for sequencing.
     let mut inputs = vec!["quire/push".to_string()];
-    inputs.extend(parsed.after);
+    inputs.extend(after);
 
     match Job::new("quire/mirror".to_string(), inputs, run_fn, line, &r.source) {
         Ok(job) => r.add_job(job, line),
         Err(e) => r.errors.borrow_mut().push(e),
     }
-    Ok(())
-}
-
-/// Run-time body of the `quire/mirror` job. Reads the push data from
-/// the runtime, tags the commit using `tag_callback`, and pushes the
-/// configured refs (or the triggering ref, when `refs` is empty)
-/// alongside the tag.
-///
-/// Side effects only — outputs are recorded against the calling job
-/// via the existing sh-capture channel. Returns `Ok(())` whether or
-/// not the remote push succeeded; non-zero `git push` exit lands in
-/// the run log alongside any other shell output. Returns `Err` only
-/// for setup failures (unknown secret, failed tag, base64 spawn).
-fn execute_mirror(
-    rt: &Runtime,
-    url: &str,
-    secret_name: &str,
-    refs: &[String],
-    tag_callback: &mlua::Function,
-) -> Result<()> {
-    let calling = rt.current_job.borrow();
-    let calling = calling
-        .as_ref()
-        .expect("mirror run-fn invoked without an active job");
-
-    // Pull push data from this job's inputs view. Reachability is a
-    // structural fact established at registration; the unwraps are
-    // program invariants, not user-reachable conditions.
-    let view = rt
-        .inputs
-        .get(calling)
-        .unwrap_or_else(|| unreachable!("no inputs view for calling job '{calling}'"));
-    let push_table = view
-        .get("quire/push")
-        .and_then(|v| v.as_ref())
-        .and_then(|v| v.as_table())
-        .expect("quire/push table absent from quire/mirror inputs view");
-    let sha: String = push_table.get("sha")?;
-    let pushed_ref: String = push_table.get("ref")?;
-    let git_dir: String = push_table.get("git-dir")?;
-
-    // Resolve the access token.
-    let secret = rt
-        .secrets
-        .get(secret_name)
-        .ok_or_else(|| Error::UnknownSecret(secret_name.to_string()))?
-        .reveal()?
-        .to_string();
-
-    let git_opts = ShOpts {
-        env: HashMap::from([("GIT_DIR".to_string(), git_dir.clone())]),
-        cwd: None,
-    };
-
-    // Tag step.
-    let tag_name: String = tag_callback.call(push_table.clone())?;
-    let tag_cmd = Cmd::Argv {
-        program: "git".to_string(),
-        args: vec!["tag".to_string(), tag_name.clone(), sha.clone()],
-    };
-    let tag_result = tag_cmd.run(git_opts.clone())?;
-    let tag_failed = tag_result.exit != 0;
-    let tag_stderr = tag_result.stderr.clone();
-    record_output(rt, calling, tag_result);
-    if tag_failed {
-        return Err(Error::Git(format!("git tag failed: {}", tag_stderr.trim())));
-    }
-
-    // Build the auth header. printf-into-base64 keeps the secret out
-    // of the argv (visible in `ps`); piping via $T is the smallest
-    // stdin-free alternative.
-    let token_pair = format!("x-access-token:{secret}");
-    let encoded_output =
-        Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(ShOpts {
-            env: HashMap::from([("T".to_string(), token_pair)]),
-            cwd: None,
-        })?;
-    let auth_header = format!("Authorization: Basic {}", encoded_output.stdout.trim());
-
-    // Push the configured refs (or the trigger ref, if none) plus the tag.
-    let mut push_args = vec![
-        "-c".to_string(),
-        format!("http.extraHeader={auth_header}"),
-        "push".to_string(),
-        "--porcelain".to_string(),
-        url.to_string(),
-    ];
-    if refs.is_empty() {
-        push_args.push(pushed_ref);
-    } else {
-        push_args.extend(refs.iter().cloned());
-    }
-    push_args.push(format!("refs/tags/{tag_name}"));
-    let push_cmd = Cmd::Argv {
-        program: "git".to_string(),
-        args: push_args,
-    };
-    let push_result = push_cmd.run(git_opts)?;
-    record_output(rt, calling, push_result);
-
     Ok(())
 }
 
