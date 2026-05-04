@@ -438,6 +438,43 @@ impl Run {
     }
 }
 
+/// Materialize a working tree at `sha` into `workspace` via
+/// `git archive | tar -x`. Creates the workspace dir if needed.
+pub fn materialize_workspace(
+    git_dir: &Path,
+    sha: &str,
+    workspace: &Path,
+) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    fs_err::create_dir_all(workspace)?;
+
+    let mut archive = Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["archive", sha])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let archive_stdout = archive.stdout.take().expect("piped stdout");
+
+    let mut tar = Command::new("tar")
+        .args(["-x", "-C"])
+        .arg(workspace)
+        .stdin(Stdio::from(archive_stdout))
+        .spawn()?;
+
+    let tar_status = tar.wait()?;
+    let archive_status = archive.wait()?;
+    if !archive_status.success() || !tar_status.success() {
+        // Task 3 introduces Error::WorkspaceMaterializationFailed; for
+        // now use std::io::Error wrapped as Error::Io. Task 3 swaps it.
+        return Err(Error::Io(std::io::Error::other(format!(
+            "materialize_workspace: git archive exited {archive_status}, tar exited {tar_status}"
+        ))));
+    }
+    Ok(())
+}
+
 /// Write a serializable value to a YAML file atomically (temp file + rename).
 pub(crate) fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp_path = path.with_extension("yml.tmp");
@@ -482,6 +519,75 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T12:00:00Z".parse().expect("parse timestamp"),
         }
+    }
+
+    #[test]
+    fn materialize_workspace_extracts_archive_at_sha() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src_repo = dir.path().join("src");
+        fs_err::create_dir_all(&src_repo).expect("mkdir src");
+
+        let env_vars: [(&str, &str); 6] = [
+            ("GIT_AUTHOR_NAME", "test"),
+            ("GIT_AUTHOR_EMAIL", "test@test"),
+            ("GIT_COMMITTER_NAME", "test"),
+            ("GIT_COMMITTER_EMAIL", "test@test"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ];
+
+        let output = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&src_repo)
+            .envs(env_vars)
+            .output()
+            .expect("git init");
+        assert!(output.status.success());
+
+        let output = std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "initial"])
+            .current_dir(&src_repo)
+            .envs(env_vars)
+            .output()
+            .expect("git commit initial");
+        assert!(output.status.success());
+
+        fs_err::write(src_repo.join("hello.txt"), "hi\n").expect("write hello.txt");
+
+        let output = std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&src_repo)
+            .envs(env_vars)
+            .output()
+            .expect("git add");
+        assert!(output.status.success());
+
+        let output = std::process::Command::new("git")
+            .args(["commit", "-m", "add file"])
+            .current_dir(&src_repo)
+            .envs(env_vars)
+            .output()
+            .expect("git commit");
+        assert!(output.status.success());
+
+        let sha_output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&src_repo)
+            .envs(env_vars)
+            .output()
+            .expect("git rev-parse");
+        assert!(sha_output.status.success());
+        let sha = String::from_utf8(sha_output.stdout)
+            .expect("utf8")
+            .trim()
+            .to_string();
+
+        let workspace = dir.path().join("ws");
+        materialize_workspace(&src_repo.join(".git"), &sha, &workspace).expect("materialize");
+        assert_eq!(
+            fs_err::read_to_string(workspace.join("hello.txt")).unwrap(),
+            "hi\n"
+        );
     }
 
     #[test]

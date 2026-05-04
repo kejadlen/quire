@@ -77,7 +77,8 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     println!("Run {}: executing at {}", run.id(), commit.display);
 
     let workspace = tmp.path().join("workspace");
-    fs_err::create_dir_all(&workspace).into_diagnostic()?;
+    quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
+        .into_diagnostic()?;
     let exec_result = run.execute(
         pipeline,
         secrets,
