@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use mlua::IntoLua;
 
 use super::pipeline::{Pipeline, RunFn};
-use super::runtime::{Runtime, RuntimeHandle, ShOutput};
+use super::runtime::{ExecutorRuntime, Runtime, RuntimeHandle, ShOutput};
 use crate::display_chain;
 use crate::secret::SecretString;
 use crate::{Error, Result};
@@ -23,7 +23,47 @@ use crate::{Error, Result};
 #[derive(Debug, Clone)]
 pub enum Executor {
     Host,
-    // Docker variant added in Task 5.
+    Docker,
+}
+
+/// Owns a [`ContainerSession`](crate::ci::docker::ContainerSession)
+/// alongside the run-dir's `container.yml` path so [`Drop`] can stamp
+/// `container_stopped_at` *before* the session itself drops and fires
+/// `docker stop`.
+///
+/// Field declaration order matters: `session` is declared first so it
+/// drops first after this struct's custom `Drop` body returns. The
+/// effect is: write `container_stopped_at` → drop `session` →
+/// `docker stop`.
+pub(super) struct DockerLifecycle {
+    #[allow(dead_code)] // Held for its Drop; read in Task 9 via Runtime::sh.
+    session: crate::ci::docker::ContainerSession,
+    record_path: PathBuf,
+}
+
+impl Drop for DockerLifecycle {
+    fn drop(&mut self) {
+        // Stamp `container_stopped_at` before ContainerSession's Drop
+        // (`docker stop`) fires. Errors are logged and swallowed —
+        // Drop cannot return Result.
+        match read_yaml::<ContainerRecord>(&self.record_path) {
+            Ok(mut rec) => {
+                rec.container_stopped_at = Some(Timestamp::now());
+                if let Err(e) = write_yaml(&self.record_path, &rec) {
+                    tracing::error!(
+                        error = %display_chain(&e),
+                        "failed to write container_stopped_at"
+                    );
+                }
+            }
+            Err(e) => tracing::error!(
+                error = %display_chain(&e),
+                "failed to read container.yml before stop"
+            ),
+        }
+        // After this body returns, fields drop in declaration order:
+        // `session` drops first → ContainerSession::Drop → docker stop.
+    }
 }
 
 /// The state of a CI run.
@@ -305,10 +345,25 @@ impl Run {
         workspace: &std::path::Path,
         executor: Executor,
     ) -> Result<HashMap<String, Vec<ShOutput>>> {
-        // `executor` is not yet read; later tasks wire it into the
-        // per-run container lifecycle.
-        let _ = executor;
         let meta = self.read_meta()?;
+
+        // Transition to Active *before* building/starting the
+        // container. The docker build can take a long time and
+        // happens with the run in `active/` so the on-disk state
+        // accurately reflects "this run is in progress." It also
+        // pins `self.path()` for the lifetime of the run, so the
+        // `container.yml` path captured by `DockerLifecycle` stays
+        // valid until just before the final Complete/Failed
+        // transition (where we explicitly drop the runtime first).
+        self.transition(RunState::Active)?;
+
+        let executor_runtime = match self.build_executor_runtime(executor, workspace) {
+            Ok(rt) => rt,
+            Err(e) => {
+                self.transition(RunState::Failed)?;
+                return Err(e);
+            }
+        };
 
         let runtime = Rc::new(Runtime::new(
             pipeline,
@@ -316,14 +371,13 @@ impl Run {
             &meta,
             git_dir,
             workspace.to_path_buf(),
+            executor_runtime,
         ));
 
         let lua = runtime.lua();
         let rt_value = RuntimeHandle(runtime.clone())
             .into_lua(lua)
             .expect("install runtime on Lua VM");
-
-        self.transition(RunState::Active)?;
 
         let mut failed_job: Option<(String, Error)> = None;
         for job_id in runtime.topo_order() {
@@ -356,6 +410,16 @@ impl Run {
 
         self.write_all_logs(&outputs)?;
 
+        // Drop the runtime *before* the final transition. In docker
+        // mode this fires `DockerLifecycle::drop`, which stamps
+        // `container_stopped_at` in `<run-dir>/container.yml`. The
+        // path it captured is still valid here (the run is in
+        // active/); the subsequent transition moves the file into
+        // place with the rest of the run dir.
+        drop(rt_value);
+        let _ = lua; // release the Lua borrow tied to `runtime`.
+        drop(runtime);
+
         if let Some((job, source)) = failed_job {
             self.transition(RunState::Failed)?;
             return Err(Error::JobFailed {
@@ -366,6 +430,49 @@ impl Run {
 
         self.transition(RunState::Complete)?;
         Ok(outputs)
+    }
+
+    /// Build the per-run container if `executor` is `Docker`, writing
+    /// `container.yml` incrementally as each phase completes. Run must
+    /// already be in `active/` so `self.path()` is stable for the
+    /// lifetime of the returned [`DockerLifecycle`].
+    fn build_executor_runtime(
+        &self,
+        executor: Executor,
+        workspace: &std::path::Path,
+    ) -> Result<ExecutorRuntime> {
+        match executor {
+            Executor::Host => Ok(ExecutorRuntime::Host),
+            Executor::Docker => {
+                let mut record = ContainerRecord::default();
+
+                // Build phase.
+                record.build_started_at = Some(Timestamp::now());
+                self.write_container_record(&record)?;
+
+                let dockerfile = workspace.join(".quire/Dockerfile");
+                let tag = format!("quire-ci/{}:{}", repo_segment(&self.base), self.id);
+
+                crate::ci::docker::docker_build(&dockerfile, workspace, &tag)?;
+
+                record.image_tag = Some(tag.clone());
+                record.build_finished_at = Some(Timestamp::now());
+                self.write_container_record(&record)?;
+
+                // Start phase.
+                let session =
+                    crate::ci::docker::ContainerSession::start(&tag, workspace, "/work")?;
+
+                record.container_id = Some(session.container_id.clone());
+                record.container_started_at = Some(session.container_started_at);
+                self.write_container_record(&record)?;
+
+                Ok(ExecutorRuntime::Docker(DockerLifecycle {
+                    session,
+                    record_path: self.path().join("container.yml"),
+                }))
+            }
+        }
     }
 
     /// Write per-job log files from the captured `(sh …)` outputs.
@@ -477,6 +584,16 @@ impl Run {
     pub fn write_container_record(&self, record: &ContainerRecord) -> Result<()> {
         write_yaml(&self.path().join("container.yml"), record)
     }
+}
+
+/// Take the final path component of a runs base (`runs/<repo>/`) for
+/// use as the tag segment in `quire-ci/<segment>:<id>`. Falls back to
+/// `repo` when the path has no name or it isn't UTF-8.
+fn repo_segment(base: &Path) -> String {
+    base.file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "repo".to_string())
 }
 
 /// Materialize a working tree at `sha` into `workspace` via
@@ -1508,5 +1625,120 @@ mod tests {
 
         let read = run.read_container_record().expect("read");
         assert_eq!(read, record);
+    }
+
+    #[test]
+    fn repo_segment_returns_final_component() {
+        assert_eq!(repo_segment(Path::new("runs/test.git")), "test.git");
+        assert_eq!(repo_segment(Path::new("/var/lib/quire/runs/repo.git")), "repo.git");
+        assert_eq!(repo_segment(Path::new("")), "repo");
+    }
+
+    #[test]
+    #[ignore = "requires docker"]
+    fn execute_docker_mode_runs_jobs_in_container() {
+        if !crate::ci::docker::is_available() {
+            return;
+        }
+
+        // Build a real git repo with a Dockerfile committed at HEAD.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src_repo = dir.path().join("src");
+        fs_err::create_dir_all(&src_repo).expect("mkdir src");
+
+        let env_vars: [(&str, &str); 6] = [
+            ("GIT_AUTHOR_NAME", "test"),
+            ("GIT_AUTHOR_EMAIL", "test@test"),
+            ("GIT_COMMITTER_NAME", "test"),
+            ("GIT_COMMITTER_EMAIL", "test@test"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ];
+        for cmd in [vec!["init", "-b", "main"]] {
+            let out = std::process::Command::new("git")
+                .args(&cmd)
+                .current_dir(&src_repo)
+                .envs(env_vars)
+                .output()
+                .expect("git");
+            assert!(out.status.success());
+        }
+        fs_err::create_dir_all(src_repo.join(".quire")).expect("mkdir .quire");
+        fs_err::write(
+            src_repo.join(".quire/Dockerfile"),
+            "FROM alpine:3.19\n",
+        )
+        .expect("write Dockerfile");
+        for cmd in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
+            let out = std::process::Command::new("git")
+                .args(&cmd)
+                .current_dir(&src_repo)
+                .envs(env_vars)
+                .output()
+                .expect("git");
+            assert!(out.status.success());
+        }
+        let sha = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&src_repo)
+                .envs(env_vars)
+                .output()
+                .expect("rev-parse")
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let workspace = dir.path().join("ws");
+        materialize_workspace(&src_repo.join(".git"), &sha, &workspace).expect("materialize");
+
+        let (_qd, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let meta = RunMeta {
+            sha,
+            r#ref: "refs/heads/main".to_string(),
+            pushed_at: "2026-05-04T12:00:00Z".parse().unwrap(),
+        };
+        let run = runs.create(&meta).expect("create");
+        let run_id = run.id().to_string();
+
+        // Pipeline runs ONE job that does nothing — Task 9 will wire
+        // sh through docker exec; this test just confirms the
+        // lifecycle works.
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :probe [:quire/push] (fn [_] nil))"#,
+        );
+
+        run.execute(
+            pipeline,
+            HashMap::new(),
+            &src_repo.join(".git"),
+            &workspace,
+            Executor::Docker,
+        )
+        .expect("execute");
+
+        // Verify container.yml was written with all fields.
+        let complete = runs.base.join(RunState::Complete.dir_name()).join(&run_id);
+        let record_path = complete.join("container.yml");
+        assert!(record_path.exists(), "container.yml should exist");
+        let record: ContainerRecord =
+            serde_yaml_ng::from_str(&fs_err::read_to_string(&record_path).unwrap()).unwrap();
+        assert!(record.image_tag.is_some());
+        assert!(record.container_id.is_some());
+        assert!(record.build_started_at.is_some());
+        assert!(record.build_finished_at.is_some());
+        assert!(record.container_started_at.is_some());
+        assert!(record.container_stopped_at.is_some());
+
+        // Cleanup the image we built.
+        if let Some(tag) = record.image_tag {
+            let _ = std::process::Command::new("docker")
+                .args(["image", "rm", &tag])
+                .output();
+        }
     }
 }

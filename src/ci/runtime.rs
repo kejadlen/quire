@@ -13,8 +13,19 @@ use std::rc::Rc;
 use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
-use super::run::RunMeta;
+use super::run::{DockerLifecycle, RunMeta};
 use crate::secret::SecretString;
+
+/// The runtime-side carrier for the chosen [`Executor`](super::run::Executor).
+/// `Host` runs `sh` directly on the host. `Docker` owns a
+/// [`DockerLifecycle`] whose Drop tears down the per-run container —
+/// the variant's payload is unread until Task 9 routes `sh` through
+/// `docker exec`.
+pub(super) enum ExecutorRuntime {
+    Host,
+    #[allow(dead_code)]
+    Docker(DockerLifecycle),
+}
 
 /// Per-execution runtime: owns the Lua VM, holds the secrets exposed
 /// to the job, the per-job `(jobs name)` views, the current-job
@@ -46,6 +57,9 @@ pub(super) struct Runtime {
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
     workspace: std::path::PathBuf,
+    /// The chosen executor. `Host` is a no-op; `Docker` owns the
+    /// per-run container's lifecycle (teardown on Drop).
+    executor: ExecutorRuntime,
 }
 
 impl Runtime {
@@ -66,6 +80,7 @@ impl Runtime {
         meta: &RunMeta,
         git_dir: &std::path::Path,
         workspace: std::path::PathBuf,
+        executor: ExecutorRuntime,
     ) -> Self {
         let transitive = pipeline.transitive_inputs();
         let lua = pipeline.fennel().lua();
@@ -105,6 +120,7 @@ impl Runtime {
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             workspace,
+            executor,
         }
     }
 
@@ -193,6 +209,7 @@ impl Runtime {
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             workspace: std::env::current_dir().expect("cwd"),
+            executor: ExecutorRuntime::Host,
         }
     }
 }
