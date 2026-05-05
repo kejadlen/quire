@@ -372,7 +372,7 @@ The `sh_honors_cwd` test in `runtime.rs` sets `cwd` explicitly, so no break. Tes
 
 ### Task 5: `docker_build` helper
 
-Implements `docker build -f <workspace>/.quire/Dockerfile -t quire-ci/<repo>:<run-id> <workspace>`.
+Implements `docker build --file <dockerfile> --tag <tag> <context>`. The helper is layout-agnostic: callers compose the dockerfile path themselves. Task 8 (the only caller) passes `workspace.join(".quire/Dockerfile")` as the dockerfile and `workspace` as the build context. Keeping the path policy at the orchestration layer avoids coupling the docker shell-out helper to quire's specific workspace layout.
 
 **Files:**
 - Create: `src/ci/docker.rs` — module for docker shell-out helpers.
@@ -407,20 +407,17 @@ fn docker_build_succeeds_with_minimal_dockerfile() {
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
-    let workspace = dir.path();
-    fs_err::create_dir_all(workspace.join(".quire")).expect("mkdir");
-    fs_err::write(
-        workspace.join(".quire/Dockerfile"),
-        "FROM alpine:3.19\nRUN echo built\n",
-    )
-    .expect("write Dockerfile");
+    let context = dir.path();
+    let dockerfile = context.join("Dockerfile");
+    fs_err::write(&dockerfile, "FROM alpine:3.19\nRUN echo built\n")
+        .expect("write Dockerfile");
 
     let tag = "quire-ci/test-task5:test";
-    docker_build(workspace, tag).expect("build should succeed");
+    docker_build(&dockerfile, context, tag).expect("build should succeed");
 
     // Cleanup.
     let _ = std::process::Command::new("docker")
-        .args(["rmi", tag])
+        .args(["image", "rm", tag])
         .output();
 }
 ```
@@ -436,15 +433,14 @@ Expect failure (function doesn't exist).
 **Step 4: Implement**
 
 ```rust
-pub(crate) fn docker_build(workspace: &Path, tag: &str) -> Result<()> {
-    let dockerfile = workspace.join(".quire/Dockerfile");
+pub(crate) fn docker_build(dockerfile: &Path, context: &Path, tag: &str) -> Result<()> {
     let output = std::process::Command::new("docker")
         .arg("build")
-        .arg("-f")
-        .arg(&dockerfile)
-        .arg("-t")
+        .arg("--file")
+        .arg(dockerfile)
+        .arg("--tag")
         .arg(tag)
-        .arg(workspace)
+        .arg(context)
         .output()
         .map_err(|e| Error::ImageBuildFailed { source: e })?;
     if !output.status.success() {
@@ -466,11 +462,12 @@ pub(crate) fn docker_build(workspace: &Path, tag: &str) -> Result<()> {
 fn docker_build_errors_on_bad_dockerfile() {
     if !is_available() { return; }
     let dir = tempfile::tempdir().expect("tempdir");
-    let workspace = dir.path();
-    fs_err::create_dir_all(workspace.join(".quire")).expect("mkdir");
-    fs_err::write(workspace.join(".quire/Dockerfile"), "GARBAGE\n").expect("write");
+    let context = dir.path();
+    let dockerfile = context.join("Dockerfile");
+    fs_err::write(&dockerfile, "GARBAGE\n").expect("write");
 
-    let err = docker_build(workspace, "quire-ci/test-task5-bad:test").expect_err("should fail");
+    let err = docker_build(&dockerfile, context, "quire-ci/test-task5-bad:test")
+        .expect_err("should fail");
     assert!(matches!(err, Error::ImageBuildFailed { .. }));
 }
 ```
@@ -704,7 +701,8 @@ let _container = match executor {
         rec.build_started_at = Some(Timestamp::now());
         self.write_container_record(&rec)?;
 
-        crate::ci::docker::docker_build(workspace, &tag)?;
+        let dockerfile = workspace.join(".quire/Dockerfile");
+        crate::ci::docker::docker_build(&dockerfile, workspace, &tag)?;
         rec.image_tag = Some(tag.clone());
         rec.build_finished_at = Some(Timestamp::now());
         self.write_container_record(&rec)?;

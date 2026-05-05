@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+pub(crate) mod docker;
 mod mirror;
 mod pipeline;
 mod registration;
