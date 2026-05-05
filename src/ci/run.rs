@@ -70,6 +70,26 @@ pub struct RunTimes {
     pub finished_at: Option<Timestamp>,
 }
 
+/// Container metadata for a docker-mode run, persisted to
+/// `<run-dir>/container.yml`. Each field is populated incrementally as
+/// the lifecycle progresses; absence implies "not yet (or never)
+/// reached." Host-mode runs do not write this file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContainerRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_started_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_finished_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_started_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_stopped_at: Option<Timestamp>,
+}
+
 /// Access to CI runs for a single repo.
 ///
 /// Owns the base path (`runs/<repo>/`) and provides run creation
@@ -441,6 +461,21 @@ impl Run {
     /// Update the timestamps for this run (atomic write).
     pub fn write_times(&self, times: &RunTimes) -> Result<()> {
         write_yaml(&self.path().join("times.yml"), times)
+    }
+
+    /// Read this run's `container.yml` record. Returns the deserialized
+    /// `ContainerRecord`. Errors if the file is missing or malformed —
+    /// callers should use `path().join("container.yml").exists()` if they
+    /// want to handle the absent case as "host mode."
+    pub fn read_container_record(&self) -> Result<ContainerRecord> {
+        read_yaml(&self.path().join("container.yml"))
+    }
+
+    /// Atomically write this run's `container.yml` record (temp file +
+    /// rename). Each call replaces the file; partial fields are
+    /// represented as `None` and skipped from the output.
+    pub fn write_container_record(&self, record: &ContainerRecord) -> Result<()> {
+        write_yaml(&self.path().join("container.yml"), record)
     }
 }
 
@@ -1451,5 +1486,27 @@ mod tests {
             source.to_string().contains("simulated rust failure"),
             "expected source to surface rust error, got: {source}"
         );
+    }
+
+    #[test]
+    fn container_record_round_trips_through_yaml() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        let now: Timestamp = "2026-05-04T16:20:01Z".parse().expect("parse");
+        let later: Timestamp = "2026-05-04T16:21:09Z".parse().expect("parse");
+        let record = ContainerRecord {
+            image_tag: Some("quire-ci/test:run-id".into()),
+            container_id: Some("9f3b8a72c1d4".into()),
+            build_started_at: Some(now),
+            build_finished_at: Some(later),
+            container_started_at: Some(later),
+            container_stopped_at: None,
+        };
+        run.write_container_record(&record).expect("write");
+
+        let read = run.read_container_record().expect("read");
+        assert_eq!(read, record);
     }
 }
