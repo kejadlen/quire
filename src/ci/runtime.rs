@@ -18,12 +18,11 @@ use crate::secret::SecretString;
 
 /// The runtime-side carrier for the chosen [`Executor`](super::run::Executor).
 /// `Host` runs `sh` directly on the host. `Docker` owns a
-/// [`DockerLifecycle`] whose Drop tears down the per-run container —
-/// the variant's payload is unread until Task 9 routes `sh` through
+/// [`DockerLifecycle`] whose Drop tears down the per-run container;
+/// `Runtime::sh` reads the variant's payload to wrap each command in
 /// `docker exec`.
 pub(super) enum ExecutorRuntime {
     Host,
-    #[allow(dead_code)]
     Docker(DockerLifecycle),
 }
 
@@ -144,6 +143,15 @@ impl Runtime {
         &self.workspace
     }
 
+    /// In docker mode, return the `(container_id, work_dir)` used to
+    /// route `(sh …)` through `docker exec`. Host mode returns `None`.
+    pub(super) fn docker_target(&self) -> Option<(&str, &str)> {
+        match &self.executor {
+            ExecutorRuntime::Host => None,
+            ExecutorRuntime::Docker(l) => Some((&l.session.container_id, &l.work_dir)),
+        }
+    }
+
     /// Mark `id` as the currently executing job. `(sh …)` invocations
     /// from this job's `run_fn` will record output under `id`, and
     /// `(jobs …)` lookups will resolve against `id`'s view.
@@ -183,8 +191,21 @@ impl Runtime {
     /// Run `cmd` with `opts` and record its output against the
     /// current job (if one is active). Non-zero exits come back in
     /// `:exit`, not as `Err`.
+    ///
+    /// In docker mode the command is wrapped in `docker exec` against
+    /// the per-run container; the bind-mounted workspace is the
+    /// container's working directory, and `opts.env` is forwarded as
+    /// `-e KEY=VAL` flags.
     pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> crate::Result<ShOutput> {
-        let output = cmd.run(opts, &self.workspace)?;
+        let output = match self.docker_target() {
+            None => cmd.run(opts, &self.workspace)?,
+            Some((container_id, work_dir)) => {
+                let wrapped = Cmd::wrap_in_docker_exec(cmd, container_id, work_dir, &opts);
+                // env was embedded into the docker exec argv; clear it
+                // so it isn't also set on the host `docker` process.
+                wrapped.run(ShOpts::default(), &self.workspace)?
+            }
+        };
         if let Some(job) = self.current_job.borrow().as_ref() {
             self.outputs
                 .borrow_mut()
@@ -351,6 +372,50 @@ impl Cmd {
     // Also revisit the `from_utf8_lossy` calls below — non-UTF-8 bytes
     // are silently replaced with U+FFFD and `:stdout` / `:stderr` end
     // up as mojibake with no signal that anything was lost.
+    /// Build a new `Cmd` that invokes `docker exec` against the given
+    /// container. Embeds `cwd` as `--workdir` and `opts.env` as
+    /// repeated `-e KEY=VALUE` flags, so the caller's `ShOpts` after
+    /// wrapping should be empty.
+    pub(super) fn wrap_in_docker_exec(
+        inner: Cmd,
+        container_id: &str,
+        work_dir: &str,
+        opts: &ShOpts,
+    ) -> Cmd {
+        // `--interactive` keeps stdin attached. No `--tty` so stdout
+        // and stderr stay as separate streams.
+        let mut args: Vec<String> = vec![
+            "exec".to_string(),
+            "--interactive".to_string(),
+            "--workdir".to_string(),
+            work_dir.to_string(),
+        ];
+        for (k, v) in &opts.env {
+            args.push("--env".to_string());
+            args.push(format!("{k}={v}"));
+        }
+        args.push(container_id.to_string());
+
+        match inner {
+            Cmd::Argv {
+                program,
+                args: inner_args,
+            } => {
+                args.push(program);
+                args.extend(inner_args);
+            }
+            Cmd::Shell(s) => {
+                args.push("sh".to_string());
+                args.push("-c".to_string());
+                args.push(s);
+            }
+        }
+        Cmd::Argv {
+            program: "docker".to_string(),
+            args,
+        }
+    }
+
     pub(super) fn run(self, opts: ShOpts, cwd: &std::path::Path) -> std::io::Result<ShOutput> {
         let cmd_str = format!("{self}");
         let mut command: std::process::Command = self.into();
@@ -602,6 +667,61 @@ mod tests {
         assert!(
             msg.contains("empty"),
             "expected empty-argv error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cmd_wrap_in_docker_exec_argv_form() {
+        let inner = Cmd::Argv {
+            program: "echo".to_string(),
+            args: vec!["hi".to_string()],
+        };
+        let mut opts = ShOpts::default();
+        opts.env.insert("FOO".to_string(), "bar".to_string());
+
+        let wrapped = Cmd::wrap_in_docker_exec(inner, "abc123", "/work", &opts);
+        let Cmd::Argv { program, args } = wrapped else {
+            panic!("expected argv form");
+        };
+        assert_eq!(program, "docker");
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "--interactive",
+                "--workdir",
+                "/work",
+                "--env",
+                "FOO=bar",
+                "abc123",
+                "echo",
+                "hi",
+            ]
+        );
+    }
+
+    #[test]
+    fn cmd_wrap_in_docker_exec_shell_form() {
+        let inner = Cmd::Shell("echo hi | tr a-z A-Z".to_string());
+        let opts = ShOpts::default();
+
+        let wrapped = Cmd::wrap_in_docker_exec(inner, "abc123", "/work", &opts);
+        let Cmd::Argv { program, args } = wrapped else {
+            panic!("expected argv form");
+        };
+        assert_eq!(program, "docker");
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "--interactive",
+                "--workdir",
+                "/work",
+                "abc123",
+                "sh",
+                "-c",
+                "echo hi | tr a-z A-Z",
+            ]
         );
     }
 

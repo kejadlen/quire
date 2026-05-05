@@ -36,9 +36,9 @@ pub enum Executor {
 /// effect is: write `container_stopped_at` → drop `session` →
 /// `docker stop`.
 pub(super) struct DockerLifecycle {
-    #[allow(dead_code)] // Held for its Drop; read in Task 9 via Runtime::sh.
-    session: crate::ci::docker::ContainerSession,
+    pub(super) session: crate::ci::docker::ContainerSession,
     record_path: PathBuf,
+    pub(super) work_dir: String,
 }
 
 impl Drop for DockerLifecycle {
@@ -459,9 +459,12 @@ impl Run {
                 record.build_finished_at = Some(Timestamp::now());
                 self.write_container_record(&record)?;
 
-                // Start phase.
+                // Start phase. The bind-mount target inside the
+                // container doubles as the working directory for every
+                // `(sh …)` invocation routed through `docker exec`.
+                const WORK_DIR: &str = "/work";
                 let session =
-                    crate::ci::docker::ContainerSession::start(&tag, workspace, "/work")?;
+                    crate::ci::docker::ContainerSession::start(&tag, workspace, WORK_DIR)?;
 
                 record.container_id = Some(session.container_id.clone());
                 record.container_started_at = Some(session.container_started_at);
@@ -470,6 +473,7 @@ impl Run {
                 Ok(ExecutorRuntime::Docker(DockerLifecycle {
                     session,
                     record_path: self.path().join("container.yml"),
+                    work_dir: WORK_DIR.to_string(),
                 }))
             }
         }
@@ -1704,22 +1708,32 @@ mod tests {
         let run = runs.create(&meta).expect("create");
         let run_id = run.id().to_string();
 
-        // Pipeline runs ONE job that does nothing — Task 9 will wire
-        // sh through docker exec; this test just confirms the
-        // lifecycle works.
+        // Run `uname -s` inside the container. On macOS `uname -s`
+        // returns `Darwin`; getting `Linux` back proves the command
+        // ran inside the alpine container, not on the host.
         let pipeline = load(
             r#"(local ci (require :quire.ci))
-(ci.job :probe [:quire/push] (fn [_] nil))"#,
+(ci.job :probe [:quire/push] (fn [{: sh}] (sh ["uname" "-s"])))"#,
         );
 
-        run.execute(
-            pipeline,
-            HashMap::new(),
-            &src_repo.join(".git"),
-            &workspace,
-            Executor::Docker,
-        )
-        .expect("execute");
+        let outputs = run
+            .execute(
+                pipeline,
+                HashMap::new(),
+                &src_repo.join(".git"),
+                &workspace,
+                Executor::Docker,
+            )
+            .expect("execute");
+
+        let probe = &outputs["probe"];
+        assert_eq!(probe.len(), 1);
+        assert_eq!(
+            probe[0].stdout.trim(),
+            "Linux",
+            "expected uname -s to return Linux from inside the container, got: {:?}",
+            probe[0].stdout,
+        );
 
         // Verify container.yml was written with all fields.
         let complete = runs.base.join(RunState::Complete.dir_name()).join(&run_id);
