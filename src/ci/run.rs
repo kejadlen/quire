@@ -285,12 +285,18 @@ impl Run {
         workspace: &std::path::Path,
         executor: Executor,
     ) -> Result<HashMap<String, Vec<ShOutput>>> {
-        // `workspace` and `executor` are not yet read; later tasks
-        // wire them into the runtime and per-run container lifecycle.
-        let _ = (workspace, executor);
+        // `executor` is not yet read; later tasks wire it into the
+        // per-run container lifecycle.
+        let _ = executor;
         let meta = self.read_meta()?;
 
-        let runtime = Rc::new(Runtime::new(pipeline, secrets, &meta, git_dir));
+        let runtime = Rc::new(Runtime::new(
+            pipeline,
+            secrets,
+            &meta,
+            git_dir,
+            workspace.to_path_buf(),
+        ));
 
         let lua = runtime.lua();
         let rt_value = RuntimeHandle(runtime.clone())
@@ -956,6 +962,39 @@ mod tests {
 
     fn load(source: &str) -> Pipeline {
         super::super::pipeline::compile(source, "ci.fnl").expect("compile should succeed")
+    }
+
+    #[test]
+    fn host_mode_runs_sh_in_workspace() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs.create(&test_meta()).expect("create");
+
+        let workspace = quire.base_dir().join("ws");
+        fs_err::create_dir_all(&workspace).expect("mkdir ws");
+        fs_err::write(workspace.join("marker"), "x").expect("write marker");
+
+        let pipeline = load(
+            r#"(local ci (require :quire.ci))
+(ci.job :pwd [:quire/push] (fn [{: sh}] (sh ["ls"])))"#,
+        );
+
+        let outputs = run
+            .execute(
+                pipeline,
+                HashMap::new(),
+                std::path::Path::new("."),
+                &workspace,
+                Executor::Host,
+            )
+            .expect("execute");
+        let pwd = &outputs["pwd"];
+        assert_eq!(pwd.len(), 1);
+        assert!(
+            pwd[0].stdout.contains("marker"),
+            "expected workspace ls to include marker, got: {:?}",
+            pwd[0].stdout,
+        );
     }
 
     #[test]

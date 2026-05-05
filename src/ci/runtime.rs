@@ -43,6 +43,9 @@ pub(super) struct Runtime {
     pub(super) inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
     pub(super) current_job: RefCell<Option<String>>,
     pub(super) outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
+    /// The materialized workspace for this run. Every `(sh …)` call
+    /// runs here.
+    workspace: std::path::PathBuf,
 }
 
 impl Runtime {
@@ -62,6 +65,7 @@ impl Runtime {
         secrets: HashMap<String, SecretString>,
         meta: &RunMeta,
         git_dir: &std::path::Path,
+        workspace: std::path::PathBuf,
     ) -> Self {
         let transitive = pipeline.transitive_inputs();
         let lua = pipeline.fennel().lua();
@@ -100,6 +104,7 @@ impl Runtime {
             inputs,
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
+            workspace,
         }
     }
 
@@ -116,6 +121,11 @@ impl Runtime {
     /// Look up a job by id.
     pub(super) fn job(&self, id: &str) -> Option<&Job> {
         self.pipeline.job(id)
+    }
+
+    /// Borrow the run's materialized workspace path.
+    pub(super) fn workspace(&self) -> &std::path::Path {
+        &self.workspace
     }
 
     /// Mark `id` as the currently executing job. `(sh …)` invocations
@@ -158,7 +168,7 @@ impl Runtime {
     /// current job (if one is active). Non-zero exits come back in
     /// `:exit`, not as `Err`.
     pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> crate::Result<ShOutput> {
-        let output = cmd.run(opts)?;
+        let output = cmd.run(opts, &self.workspace)?;
         if let Some(job) = self.current_job.borrow().as_ref() {
             self.outputs
                 .borrow_mut()
@@ -173,7 +183,8 @@ impl Runtime {
 #[cfg(test)]
 impl Runtime {
     /// Minimal constructor for tests — no source outputs, just
-    /// secrets and the pipeline's VM.
+    /// secrets and the pipeline's VM. Defaults the workspace to the
+    /// process CWD so tests that don't care about cwd keep working.
     fn for_test(pipeline: Pipeline, secrets: HashMap<String, SecretString>) -> Self {
         Self {
             pipeline,
@@ -181,6 +192,7 @@ impl Runtime {
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
+            workspace: std::env::current_dir().expect("cwd"),
         }
     }
 }
@@ -310,7 +322,8 @@ impl From<Cmd> for std::process::Command {
 impl Cmd {
     /// Spawn this command with the given options, blocking until exit,
     /// and capture the result. Inherits the runner's env with
-    /// `opts.env` merged on top.
+    /// `opts.env` merged on top. `cwd` becomes the child's working
+    /// directory unconditionally.
     //
     // TODO: stream stdout/stderr live instead of buffering. `output()`
     // captures the full child output in memory and only returns at exit,
@@ -321,15 +334,13 @@ impl Cmd {
     // Also revisit the `from_utf8_lossy` calls below — non-UTF-8 bytes
     // are silently replaced with U+FFFD and `:stdout` / `:stderr` end
     // up as mojibake with no signal that anything was lost.
-    pub(super) fn run(self, opts: ShOpts) -> std::io::Result<ShOutput> {
+    pub(super) fn run(self, opts: ShOpts, cwd: &std::path::Path) -> std::io::Result<ShOutput> {
         let cmd_str = format!("{self}");
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
             command.env(k, v);
         }
-        if let Some(cwd) = opts.cwd {
-            command.current_dir(cwd);
-        }
+        command.current_dir(cwd);
         let output = command.output()?;
         // Signal-killed processes have no exit code; collapse them to -1
         // for now. Surfacing the signal as a separate field is future work.
@@ -382,7 +393,6 @@ impl mlua::FromLua for Cmd {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ShOpts {
     pub(super) env: HashMap<String, String>,
-    pub(super) cwd: Option<String>,
 }
 
 impl mlua::FromLua for ShOpts {
@@ -525,21 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn sh_honors_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Resolve symlinks (macOS /tmp → /private/tmp) so the assertion holds.
-        let canonical = fs_err::canonicalize(dir.path()).expect("canonicalize");
-        let source = format!(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{{: sh}}] (sh "pwd" {{:cwd "{}"}})))"#,
-            canonical.display()
-        );
-        let r = run_sh_via_job(&source);
-        assert_eq!(r.exit, 0);
-        assert_eq!(r.stdout.trim(), canonical.to_string_lossy());
-    }
-
-    #[test]
     fn sh_rejects_unknown_opt_key() {
         let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
@@ -553,7 +548,7 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("cwdir"),
-            "expected unknown-field error mentioning the typo, got: {msg}"
+            "expected unknown-field error mentioning the unknown key, got: {msg}"
         );
     }
 

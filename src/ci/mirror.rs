@@ -66,7 +66,6 @@ impl MirrorJob {
 
         let git_opts = ShOpts {
             env: HashMap::from([("GIT_DIR".to_string(), git_dir)]),
-            cwd: None,
         };
 
         // Tag step.
@@ -92,11 +91,12 @@ impl MirrorJob {
         // Run via `Cmd::run` rather than `rt.sh` — we don't want the
         // encoded token landing in recorded outputs.
         let token_pair = format!("x-access-token:{secret}");
-        let encoded_output =
-            Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(ShOpts {
+        let encoded_output = Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(
+            ShOpts {
                 env: HashMap::from([("T".to_string(), token_pair)]),
-                cwd: None,
-            })?;
+            },
+            rt.workspace(),
+        )?;
         let auth_header = format!("Authorization: Basic {}", encoded_output.stdout.trim());
 
         // Push the configured refs (or the trigger ref, if none) plus the tag.
@@ -441,7 +441,13 @@ mod tests {
             RunFn::Rust(f) => f,
             RunFn::Lua(_) => panic!("mirror should register a RunFn::Rust"),
         };
-        let runtime = Rc::new(Runtime::new(pipeline, secrets, meta, git_dir));
+        let runtime = Rc::new(Runtime::new(
+            pipeline,
+            secrets,
+            meta,
+            git_dir,
+            std::env::current_dir().expect("cwd"),
+        ));
         let _ = RuntimeHandle(runtime.clone())
             .into_lua(runtime.lua())
             .expect("install runtime");
