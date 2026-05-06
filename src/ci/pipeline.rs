@@ -379,9 +379,9 @@ fn validate_post_graph(
     let mut errors = Vec::new();
     let mut cycle_members: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
-    // Rule 1: acyclic. Each non-trivial strongly connected component
-    // is a distinct cycle. A single-node SCC is only a cycle if it has
-    // a self-edge.
+    // Acyclic. Each non-trivial strongly connected component is a
+    // distinct cycle. A single-node SCC is only a cycle if it has a
+    // self-edge.
     for scc in petgraph::algo::tarjan_scc(graph) {
         let is_cycle = scc.len() > 1 || (scc.len() == 1 && graph.contains_edge(scc[0], scc[0]));
         if !is_cycle {
@@ -397,7 +397,7 @@ fn validate_post_graph(
         errors.push(StructureError::Cycle { cycle_jobs, spans });
     }
 
-    // Rule 3: reachability — every job's transitive inputs must include a source ref.
+    // Reachability — every job's transitive inputs must include a source ref.
     //
     // TODO: replace the `quire/` prefix check with a whitelist of real
     // source refs (`quire/push`, etc.) once those are implemented, so
