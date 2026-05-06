@@ -1,10 +1,23 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use crate::{Error, Result};
-
 #[cfg(test)]
 use crate::fennel::Fennel;
+
+/// Errors produced by secret resolution.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum Error {
+    /// File-backed secret could not be read.
+    ///
+    /// Stored as a string because `OnceLock` in `SecretString::reveal` caches
+    /// the error and `std::io::Error` is not `Clone`. Once `once_cell_try`
+    /// stabilizes (allowing `OnceLock::get_or_try_init` with a separate error
+    /// type), we can store a structured error instead of a string.
+    #[error("secret resolution failed: {0}")]
+    Resolve(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// A string value that deserializes from either a plain literal or a file path.
 ///
@@ -63,7 +76,7 @@ impl SecretString {
                 })
                 .as_ref()
                 .map(|s| s.as_str())
-                .map_err(|msg| Error::SecretResolve(msg.clone())),
+                .map_err(|msg| Error::Resolve(msg.clone())),
         }
     }
 }
@@ -185,8 +198,8 @@ mod tests {
         let secret = SecretString::from_file(PathBuf::from("/no/such/file/ever").as_path());
         let err = secret.reveal().unwrap_err();
         assert!(
-            matches!(err, Error::SecretResolve(_)),
-            "expected SecretResolve error, got {err:?}"
+            matches!(err, Error::Resolve(_)),
+            "expected Resolve error, got {err:?}"
         );
     }
 

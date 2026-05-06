@@ -1,20 +1,13 @@
 use miette::Diagnostic;
 
-use crate::ci::{PipelineError, RunState};
+use crate::ci::Error as CiError;
 use crate::fennel::FennelError;
+use crate::secret;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-
-    // Stored as a string because `OnceLock` in `SecretString::reveal` caches
-    // the error and `std::io::Error` is not `Clone`. See `secret.rs` for details.
-    #[error("secret resolution failed: {0}")]
-    SecretResolve(String),
-
-    #[error("unknown secret: {0:?}")]
-    UnknownSecret(String),
 
     #[error("config not found: {0}")]
     ConfigNotFound(String),
@@ -25,47 +18,10 @@ pub enum Error {
 
     #[error(transparent)]
     #[diagnostic(transparent)]
-    Pipeline(Box<PipelineError>),
-
-    #[error("invalid run transition: {from:?} -> {to:?}")]
-    InvalidTransition { from: RunState, to: RunState },
+    Ci(#[from] CiError),
 
     #[error(transparent)]
-    Lua(Box<mlua::Error>),
-
-    #[error("job '{job}' failed")]
-    JobFailed {
-        job: String,
-        #[source]
-        source: Box<Error>,
-    },
-
-    #[error("docker is not available — install docker and ensure the daemon is running")]
-    DockerUnavailable,
-
-    #[error("missing .quire/Dockerfile")]
-    DockerfileMissing,
-
-    #[error("workspace materialization failed")]
-    WorkspaceMaterializationFailed {
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("image build failed")]
-    ImageBuildFailed {
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("container start failed")]
-    ContainerStartFailed {
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("git error: {0}")]
-    Git(String),
+    Secret(#[from] secret::Error),
 
     #[error(transparent)]
     Yaml(#[from] serde_yaml_ng::Error),
@@ -115,18 +71,6 @@ impl From<FennelError> for Error {
     }
 }
 
-impl From<PipelineError> for Error {
-    fn from(err: PipelineError) -> Self {
-        Error::Pipeline(Box::new(err))
-    }
-}
-
-impl From<mlua::Error> for Error {
-    fn from(err: mlua::Error) -> Self {
-        Error::Lua(Box::new(err))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,14 +109,17 @@ mod tests {
 
     #[test]
     fn display_chain_handles_no_source() {
-        let err = Error::Git("boom".to_string());
-        assert_eq!(display_chain(&err).to_string(), "git error: boom");
+        let err = Error::ConfigNotFound("missing.yml".to_string());
+        assert_eq!(
+            display_chain(&err).to_string(),
+            "config not found: missing.yml"
+        );
     }
 
     #[test]
     fn from_pipeline_error() {
         let source = "(ci.job :a [] (fn [_] nil))";
-        let pipeline_err = PipelineError {
+        let pipeline_err = crate::ci::PipelineError {
             src: miette::NamedSource::new("ci.fnl", source.to_string()),
             diagnostics: vec![crate::ci::Diagnostic::Definition(
                 crate::ci::DefinitionError::EmptyInputs {
@@ -181,7 +128,8 @@ mod tests {
                 },
             )],
         };
-        let err: Error = pipeline_err.into();
+        let ci_err = crate::ci::Error::from(pipeline_err);
+        let err: Error = ci_err.into();
         assert!(err.to_string().contains("ci.fnl has errors"));
     }
 }

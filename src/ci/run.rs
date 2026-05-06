@@ -12,11 +12,11 @@ use std::rc::Rc;
 use jiff::Timestamp;
 use mlua::IntoLua;
 
+use super::error::{Error, Result};
 use super::pipeline::{Pipeline, RunFn};
 use super::runtime::{ExecutorRuntime, Runtime, RuntimeHandle, ShOutput};
 use crate::display_chain;
 use crate::secret::SecretString;
-use crate::{Error, Result};
 
 /// The execution mode for a run. Host runs `sh` directly on the host.
 /// Docker materializes a container and routes `sh` through `docker exec`.
@@ -1611,7 +1611,7 @@ mod tests {
         );
 
         pipeline.replace_first_run_fn(RunFn::Rust(Rc::new(|_rt| {
-            Err(crate::Error::Git("simulated rust failure".into()))
+            Err(Error::Git("simulated rust failure".into()))
         })));
 
         let err = run

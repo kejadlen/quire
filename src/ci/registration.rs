@@ -14,9 +14,9 @@ use mlua::{IntoLua, Lua};
 
 use miette::NamedSource;
 
+use super::error::Result;
 use super::mirror;
 use super::pipeline::{self, DefinitionError, Diagnostic, Job, PipelineError, RunFn};
-use crate::Result;
 use crate::fennel::Fennel;
 
 /// Output of [`register`]: jobs and image successfully registered

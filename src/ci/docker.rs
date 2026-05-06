@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::{Error, Result};
+use super::error::{Error, Result};
 
 /// Returns true iff the docker daemon is reachable. Used to gate
 /// integration tests; calls `docker info` and treats any failure

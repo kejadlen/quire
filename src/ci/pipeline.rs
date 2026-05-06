@@ -11,8 +11,8 @@ use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, Reversed};
 
+use super::error::Result;
 use super::registration::{self, Registrations};
-use crate::Result;
 use crate::fennel::Fennel;
 
 /// A registration-time error caught while individual `(ci.job …)` and
@@ -515,7 +515,7 @@ mod tests {
         let f = Fennel::new().expect("Fennel::new() should succeed");
         let err =
             registration::register(&f, source, "ci.fnl").expect_err("expected registration errors");
-        let crate::Error::Pipeline(pe) = err else {
+        let crate::ci::error::Error::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}")
         };
         pe.diagnostics
@@ -808,7 +808,7 @@ mod tests {
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
             "ci.fnl",
         );
-        let Err(crate::Error::Pipeline(pe)) = result else {
+        let Err(crate::ci::error::Error::Pipeline(pe)) = result else {
             panic!("expected PipelineError")
         };
         for d in &pe.diagnostics {

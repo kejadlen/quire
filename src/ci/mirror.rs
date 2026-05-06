@@ -12,11 +12,10 @@ use std::rc::Rc;
 
 use mlua::{Lua, LuaSerdeExt};
 
+use super::error::{Error, Result};
 use super::pipeline::{self, DefinitionError, Job, RunFn};
 use super::registration::Registration;
 use super::runtime::{Cmd, Runtime, ShOpts};
-use crate::Result;
-use crate::error::Error;
 
 /// Closure state for the `quire/mirror` job's run-fn: everything the
 /// tag-and-push needs at execute time, captured once at registration.
@@ -338,7 +337,7 @@ mod tests {
         let Err(err) = compile(source, "ci.fnl") else {
             panic!("expected error");
         };
-        let crate::Error::Pipeline(pe) = err else {
+        let crate::ci::error::Error::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}");
         };
         assert!(
@@ -357,7 +356,7 @@ mod tests {
         let Err(err) = compile(source, "ci.fnl") else {
             panic!("expected error");
         };
-        let crate::Error::Pipeline(pe) = err else {
+        let crate::ci::error::Error::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}");
         };
         pe.diagnostics

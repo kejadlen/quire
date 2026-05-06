@@ -9,6 +9,9 @@ mod registration;
 mod run;
 mod runtime;
 
+pub(crate) mod error;
+
+pub use error::{Error, Result};
 pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
 pub use run::{Executor, Run, RunMeta, RunState, RunTimes, Runs, materialize_workspace};
 
@@ -25,7 +28,6 @@ pub struct CommitRef {
 
 use std::path::PathBuf;
 
-use crate::Result;
 use crate::display_chain;
 use crate::event::{PushEvent, PushRef};
 use crate::quire::Repo;
@@ -62,7 +64,7 @@ impl Ci {
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
     /// Errors if the Fennel source fails to parse/evaluate or if the
     /// resulting job graph violates any structural rule.
-    pub fn pipeline(&self, commit: &CommitRef) -> Result<Option<Pipeline>> {
+    pub fn pipeline(&self, commit: &CommitRef) -> error::Result<Option<Pipeline>> {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
@@ -75,7 +77,7 @@ impl Ci {
     ///
     /// Returns `Ok(None)` if the file does not exist at that commit,
     /// `Ok(Some(contents))` if it does, or `Err` for unexpected failures.
-    fn source(&self, sha: &str) -> Result<Option<String>> {
+    fn source(&self, sha: &str) -> error::Result<Option<String>> {
         let output = self
             .git(&["show", &format!("{sha}:{CI_FNL}")])
             .stdout(std::process::Stdio::piped())
@@ -87,7 +89,7 @@ impl Ci {
             if stderr.contains("does not exist") || stderr.contains("not found") {
                 return Ok(None);
             }
-            return Err(crate::Error::Git(format!(
+            return Err(error::Error::Git(format!(
                 "failed to read {CI_FNL} at {sha}: {stderr}"
             )));
         }
@@ -144,7 +146,7 @@ fn trigger_ref(
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     secrets: &HashMap<String, crate::secret::SecretString>,
-) -> Result<()> {
+) -> error::Result<()> {
     let ci = repo.ci();
 
     let Some(source) = ci.source(&push_ref.new_sha)? else {

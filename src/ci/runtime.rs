@@ -180,11 +180,11 @@ impl Runtime {
 
     /// Resolve a declared secret by name. Errors if the name isn't
     /// declared or the secret's source can't be read.
-    pub(super) fn secret(&self, name: &str) -> crate::Result<String> {
+    pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
         let secret = self
             .secrets
             .get(name)
-            .ok_or_else(|| crate::Error::UnknownSecret(name.to_string()))?;
+            .ok_or_else(|| super::error::Error::UnknownSecret(name.to_string()))?;
         Ok(secret.reveal()?.to_string())
     }
 
@@ -196,7 +196,7 @@ impl Runtime {
     /// the per-run container; the bind-mounted workspace is the
     /// container's working directory, and `opts.env` is forwarded as
     /// `-e KEY=VAL` flags.
-    pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> crate::Result<ShOutput> {
+    pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> super::error::Result<ShOutput> {
         let output = match self.docker_target() {
             None => cmd.run(opts, &self.workspace)?,
             Some((container_id, work_dir)) => {
