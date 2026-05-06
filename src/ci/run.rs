@@ -441,7 +441,7 @@ impl Run {
     fn write_sh_records(
         &self,
         outputs: &HashMap<String, Vec<ShOutput>>,
-        timings: &HashMap<String, Vec<(usize, jiff::Timestamp, jiff::Timestamp)>>,
+        timings: &HashMap<String, super::runtime::ShTimings>,
     ) -> Result<()> {
         if outputs.is_empty() {
             return Ok(());
@@ -467,11 +467,7 @@ impl Run {
                 // Write CRI log file.
                 fs_err::create_dir_all(&job_dir)?;
                 let sh_path = job_dir.join(format!("sh-{n}.log"));
-                super::logs::write_cri_log(
-                    &sh_path,
-                    output,
-                    &started_at.to_string(),
-                )?;
+                super::logs::write_cri_log(&sh_path, output, &started_at.to_string())?;
 
                 // Insert sh event into the database.
                 db.execute(
@@ -646,7 +642,6 @@ pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Res
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

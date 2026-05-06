@@ -54,7 +54,7 @@ pub async fn run_list(
 }
 
 fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>, String> {
-    let db = Connection::open(&quire.db_path()).map_err(|e| e.to_string())?;
+    let db = Connection::open(quire.db_path()).map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
             "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
@@ -135,8 +135,13 @@ pub async fn run_detail(
             .join(&ev.job_id)
             .join(format!("sh-{sh_n}.log"));
         if log_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&log_path) {
-                log_contents.insert(key, content);
+            match fs_err::read_to_string(&log_path) {
+                Ok(content) => {
+                    log_contents.insert(key, content);
+                }
+                Err(e) => {
+                    tracing::warn!(path = %log_path.display(), error = %e, "failed to read CRI log");
+                }
             }
         }
     }
@@ -166,7 +171,7 @@ fn load_run_detail(
     repo: &str,
     run_id: &str,
 ) -> Result<(RunRow, Vec<JobRow>, Vec<ShEvent>), String> {
-    let db = Connection::open(&quire.db_path()).map_err(|e| e.to_string())?;
+    let db = Connection::open(quire.db_path()).map_err(|e| e.to_string())?;
 
     let run = db
         .query_row(
@@ -399,8 +404,8 @@ sh-{sh_n} · {ev_duration} · exit {exit_code}
     }
 
     if jobs.is_empty() {
-        jobs_html = r#"<div style="padding:16px 0;color:var(--muted)">no jobs recorded</div>"#
-            .to_string();
+        jobs_html =
+            r#"<div style="padding:16px 0;color:var(--muted)">no jobs recorded</div>"#.to_string();
     }
 
     let style = css();
@@ -544,10 +549,7 @@ fn html_escape(s: &str) -> String {
 pub fn router(quire: Quire) -> axum::Router {
     axum::Router::new()
         .route("/repo/{repo}/ci", axum::routing::get(run_list))
-        .route(
-            "/repo/{repo}/ci/{run_id}",
-            axum::routing::get(run_detail),
-        )
+        .route("/repo/{repo}/ci/{run_id}", axum::routing::get(run_detail))
         .with_state(quire)
 }
 

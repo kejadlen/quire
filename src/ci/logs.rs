@@ -20,7 +20,7 @@ use super::runtime::ShOutput;
 pub fn write_cri_log(path: &Path, output: &ShOutput, ts: &str) -> std::io::Result<()> {
     use std::io::Write;
 
-    let mut f = std::fs::File::create(path)?;
+    let mut f = fs_err::File::create(path)?;
 
     for line in output.stdout.lines() {
         writeln!(f, "{ts} stdout F {line}")?;

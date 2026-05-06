@@ -10,12 +10,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mlua::{IntoLua, Lua, LuaSerdeExt};
 use jiff::Timestamp;
+use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::{DockerLifecycle, RunMeta};
 use crate::secret::SecretString;
+
+/// Per-sh timing: (index, started_at, finished_at).
+pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
 /// The runtime-side carrier for the chosen [`Executor`](super::run::Executor).
 /// `Host` runs `sh` directly on the host. `Docker` owns a
@@ -56,7 +59,7 @@ pub(super) struct Runtime {
     pub(super) outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
     /// Per-sh timing records: job_id → (sh_index, started_at, finished_at).
     /// Parallel to `outputs`; each entry at the same index corresponds.
-    pub(super) sh_timings: RefCell<HashMap<String, Vec<(usize, Timestamp, Timestamp)>>>,
+    pub(super) sh_timings: RefCell<HashMap<String, ShTimings>>,
     /// Per-job sh call counter for assigning sequential indices.
     sh_counter: RefCell<HashMap<String, usize>>,
     /// The materialized workspace for this run. Every `(sh …)` call
@@ -187,7 +190,7 @@ impl Runtime {
     }
 
     /// Drain all recorded sh timings, returning them keyed by job id.
-    pub(super) fn take_sh_timings(&self) -> HashMap<String, Vec<(usize, Timestamp, Timestamp)>> {
+    pub(super) fn take_sh_timings(&self) -> HashMap<String, ShTimings> {
         std::mem::take(&mut *self.sh_timings.borrow_mut())
     }
 
