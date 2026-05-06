@@ -46,10 +46,8 @@ pub async fn run(quire: &Quire) -> Result<()> {
     quire::db::migrate(&mut db).into_diagnostic()?;
     drop(db);
 
-    // Scan for orphaned runs from a previous server instance.
-    for repo in quire.repos().context("failed to list repos")? {
-        repo.runs(&db_path).reconcile_orphans()?;
-    }
+    // Reconcile any orphaned runs from a previous server instance.
+    quire::ci::reconcile_orphans(&db_path)?;
 
     let quire_handle = quire.clone();
     let event_handle = tokio::spawn(event_listener(listener, quire_handle));

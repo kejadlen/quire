@@ -176,66 +176,25 @@ impl Runs {
             base_dir: self.base_dir.clone(),
         })
     }
+}
 
-    /// Find runs stuck in `pending` or `active` states.
-    pub fn scan_orphans(&self) -> Result<Vec<Run>> {
-        let db = crate::db::open(&self.db_path)?;
-        let mut stmt = db.prepare(
-            "SELECT id, state FROM runs WHERE state IN ('pending', 'active') AND repo = ?1",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![&self.repo], |row| {
-            let id: String = row.get(0)?;
-            let state_str: String = row.get(1)?;
-            Ok((id, state_str))
-        })?;
-
-        let mut orphans = Vec::new();
-        for row in rows {
-            let (id, state_str) = row?;
-            let state: RunState = state_str.parse().expect("DB enforces valid states");
-            orphans.push(Run {
-                db_path: self.db_path.clone(),
-                id,
-                state,
-                base_dir: self.base_dir.clone(),
-            });
-        }
-        Ok(orphans)
+/// Move every `pending` or `active` run to `failed` with
+/// `failure_kind = 'orphaned'`. Called once at server startup to clean
+/// up runs left behind by a prior instance. Operates across all repos —
+/// orphans aren't a per-repo concern.
+pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
+    let now = Timestamp::now().as_millisecond();
+    let db = crate::db::open(db_path)?;
+    let count = db.execute(
+        "UPDATE runs SET state = 'failed', finished_at_ms = ?1,
+         container_id = NULL, failure_kind = 'orphaned'
+         WHERE state IN ('pending', 'active')",
+        rusqlite::params![now],
+    )?;
+    if count > 0 {
+        tracing::warn!(count, "reconciled orphaned runs");
     }
-
-    /// Reconcile orphaned runs from a previous server instance.
-    ///
-    /// - `pending` orphans are moved to `failed` (created but never started).
-    /// - `active` orphans are moved to `failed` (no live runner).
-    pub fn reconcile_orphans(&self) -> Result<()> {
-        let orphans = self.scan_orphans()?;
-        for orphan in &orphans {
-            tracing::warn!(
-                run_id = %orphan.id(),
-                state = ?orphan.state(),
-                "found orphaned run"
-            );
-        }
-
-        let now = Timestamp::now().as_millisecond();
-        let db = crate::db::open(&self.db_path)?;
-
-        // Active orphans → failed
-        db.execute(
-            "UPDATE runs SET state = 'failed', finished_at_ms = ?1, container_id = NULL, failure_kind = 'orphaned'
-             WHERE state = 'active' AND repo = ?2",
-            rusqlite::params![now, &self.repo],
-        )?;
-
-        // Pending orphans → failed (created but never executed).
-        db.execute(
-            "UPDATE runs SET state = 'failed', finished_at_ms = ?1, failure_kind = 'orphaned'
-             WHERE state = 'pending' AND repo = ?2",
-            rusqlite::params![now, &self.repo],
-        )?;
-
-        Ok(())
-    }
+    Ok(())
 }
 
 /// A CI run backed by a SQLite row.
@@ -918,58 +877,14 @@ mod tests {
     }
 
     #[test]
-    fn scan_orphans_finds_pending() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
-
-        let orphans = runs.scan_orphans().expect("scan");
-        assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].id(), run.id());
-        assert_eq!(orphans[0].state(), RunState::Pending);
-    }
-
-    #[test]
-    fn scan_orphans_finds_active() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("transition");
-
-        let orphans = runs.scan_orphans().expect("scan");
-        assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].state(), RunState::Active);
-    }
-
-    #[test]
-    fn scan_orphans_skips_complete() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("transition");
-        run.transition(RunState::Complete).expect("transition");
-
-        let orphans = runs.scan_orphans().expect("scan");
-        assert!(orphans.is_empty(), "complete runs are not orphans");
-    }
-
-    #[test]
-    fn scan_orphans_empty_when_no_runs() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        assert!(runs.scan_orphans().expect("scan").is_empty());
-    }
-
-    #[test]
     fn reconcile_fails_pending_orphans() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
         let id = run.id().to_string();
 
-        runs.reconcile_orphans().expect("reconcile");
+        reconcile_orphans(&quire.db_path()).expect("reconcile");
 
-        // Pending orphan should be moved to failed.
         let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
         assert_eq!(reopened.state(), RunState::Failed);
     }
@@ -982,10 +897,31 @@ mod tests {
         run.transition(RunState::Active).expect("to active");
         let id = run.id().to_string();
 
-        runs.reconcile_orphans().expect("reconcile");
+        reconcile_orphans(&quire.db_path()).expect("reconcile");
 
         let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
         assert_eq!(reopened.state(), RunState::Failed);
+    }
+
+    #[test]
+    fn reconcile_leaves_complete_runs_alone() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        run.transition(RunState::Active).expect("to active");
+        run.transition(RunState::Complete).expect("to complete");
+        let id = run.id().to_string();
+
+        reconcile_orphans(&quire.db_path()).expect("reconcile");
+
+        let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Complete);
+    }
+
+    #[test]
+    fn reconcile_is_a_noop_when_no_runs() {
+        let (_dir, quire) = tmp_quire();
+        reconcile_orphans(&quire.db_path()).expect("reconcile");
     }
 
     fn load(source: &str) -> Pipeline {

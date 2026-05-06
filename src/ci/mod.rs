@@ -13,7 +13,7 @@ pub(crate) mod error;
 
 pub use error::{Error, Result};
 pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
-pub use run::{Executor, Run, RunMeta, RunState, Runs, materialize_workspace};
+pub use run::{Executor, Run, RunMeta, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.
 ///
@@ -368,10 +368,16 @@ mod tests {
         )
         .expect("trigger_ref should succeed");
 
-        // Verify a run was created in complete/.
-        let runs = repo.runs(&quire.db_path());
-        let orphans = runs.scan_orphans().expect("scan");
-        assert!(orphans.is_empty(), "run should be complete, not orphaned");
+        // Verify the run completed (no pending or active rows left behind).
+        let conn = crate::db::open(&quire.db_path()).expect("db");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE state IN ('pending', 'active')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 0, "run should be complete, not orphaned");
     }
 
     #[test]
