@@ -94,7 +94,28 @@ enum CiCommands {
         /// Commit SHA to run. Defaults to the working-copy revision.
         #[arg(short, long)]
         sha: Option<String>,
+
+        /// Where to run `(sh ...)` calls. `host` runs them locally in the
+        /// materialized workspace; `docker` builds `.quire/Dockerfile` and
+        /// routes commands through `docker exec`.
+        #[arg(long, value_enum, default_value = "host")]
+        executor: CliExecutor,
     },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum CliExecutor {
+    Host,
+    Docker,
+}
+
+impl From<CliExecutor> for quire::ci::Executor {
+    fn from(value: CliExecutor) -> Self {
+        match value {
+            CliExecutor::Host => quire::ci::Executor::Host,
+            CliExecutor::Docker => quire::ci::Executor::Docker,
+        }
+    }
 }
 
 /// Initialize Sentry if the global config provides a DSN.
@@ -185,7 +206,9 @@ async fn main() -> Result<()> {
         },
         Commands::Ci { command } => match command {
             CiCommands::Validate { sha } => commands::ci::validate(sha.as_deref()).await?,
-            CiCommands::Run { sha } => commands::ci::run(&quire, sha.as_deref()).await?,
+            CiCommands::Run { sha, executor } => {
+                commands::ci::run(&quire, sha.as_deref(), executor.into()).await?
+            }
         },
     }
 

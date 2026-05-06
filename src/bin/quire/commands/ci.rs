@@ -41,7 +41,11 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 /// default), creates a transient Run rooted at a tempdir, drives the
 /// pipeline through it, and prints each job's `(ci.sh …)` output to
 /// stdout. The tempdir is removed when the command exits.
-pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
+pub async fn run(
+    quire: &Quire,
+    maybe_sha: Option<&str>,
+    executor: Executor,
+) -> Result<()> {
     let repo_path = discover_repo()?;
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path.clone());
@@ -84,7 +88,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         secrets,
         &repo_path.join(".git"),
         &workspace,
-        Executor::Host,
+        executor,
     );
 
     match exec_result {
