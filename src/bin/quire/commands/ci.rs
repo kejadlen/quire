@@ -78,7 +78,12 @@ pub async fn run(
     };
 
     let run = runs.create(&meta)?;
-    println!("Run {}: executing at {}", run.id(), commit.display);
+    println!(
+        "Run {}: executing at {} ({})",
+        run.id(),
+        commit.display,
+        &commit.sha[..commit.sha.len().min(12)],
+    );
 
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)

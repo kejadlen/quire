@@ -43,6 +43,9 @@ pub enum Error {
     #[error("docker is not available — install docker and ensure the daemon is running")]
     DockerUnavailable,
 
+    #[error("missing .quire/Dockerfile")]
+    DockerfileMissing,
+
     #[error("workspace materialization failed")]
     WorkspaceMaterializationFailed {
         #[source]

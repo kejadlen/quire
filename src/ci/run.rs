@@ -455,6 +455,9 @@ impl Run {
                 self.write_container_record(&record)?;
 
                 let dockerfile = workspace.join(".quire/Dockerfile");
+                if !dockerfile.exists() {
+                    return Err(Error::DockerfileMissing);
+                }
                 let tag = format!("quire-ci/{}:{}", repo_segment(&self.base), self.id);
 
                 crate::ci::docker::docker_build(&dockerfile, workspace, &tag)?;
@@ -594,14 +597,34 @@ impl Run {
     }
 }
 
-/// Take the final path component of a runs base (`runs/<repo>/`) for
-/// use as the tag segment in `quire-ci/<segment>:<id>`. Falls back to
-/// `repo` when the path has no name or it isn't UTF-8.
+/// Take the final path component of a runs base (`runs/<repo>/`) and
+/// sanitize it for use as the tag segment in `quire-ci/<segment>:<id>`.
+/// Docker reference components match `[a-z0-9]+(?:[._-][a-z0-9]+)*`,
+/// so we lowercase, replace any other character with `_`, and strip
+/// leading non-alphanumerics (e.g. tempdir names like `.tmpXyZ`).
+/// Falls back to `repo` when the result would be empty.
 fn repo_segment(base: &Path) -> String {
-    base.file_name()
-        .and_then(|s| s.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| "repo".to_string())
+    let Some(raw) = base.file_name().and_then(|s| s.to_str()) else {
+        return "repo".to_string();
+    };
+    let sanitized: String = raw
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string();
+    if sanitized.is_empty() {
+        "repo".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Materialize a working tree at `sha` into `workspace` via
@@ -1640,6 +1663,17 @@ mod tests {
         assert_eq!(repo_segment(Path::new("runs/test.git")), "test.git");
         assert_eq!(repo_segment(Path::new("/var/lib/quire/runs/repo.git")), "repo.git");
         assert_eq!(repo_segment(Path::new("")), "repo");
+    }
+
+    #[test]
+    fn repo_segment_sanitizes_for_docker_tags() {
+        // Docker rejects tags whose component starts with `.` or `-` —
+        // tempdir names produced by `tempfile::tempdir()` start with `.`.
+        assert_eq!(repo_segment(Path::new("/tmp/.tmpAbCdEf")), "tmpabcdef");
+        // Uppercase is rejected; lowercase fine.
+        assert_eq!(repo_segment(Path::new("MyRepo.git")), "myrepo.git");
+        // Other invalid characters become underscores.
+        assert_eq!(repo_segment(Path::new("repo with spaces")), "repo_with_spaces");
     }
 
     #[test]
