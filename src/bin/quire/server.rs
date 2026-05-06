@@ -13,8 +13,8 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn index() -> &'static str {
-    "quire\n"
+async fn index() -> String {
+    format!("quire {}\n", crate::VERSION)
 }
 
 pub async fn run(quire: &Quire) -> Result<()> {
