@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use miette::{Context, IntoDiagnostic, Result, ensure};
 
+pub mod web;
+
 use crate::ci::{Ci, Runs};
 use crate::fennel::Fennel;
 use crate::secret::SecretString;

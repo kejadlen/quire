@@ -54,7 +54,8 @@ pub async fn run(quire: &Quire) -> Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/", get(index));
+        .route("/", get(index))
+        .merge(quire::quire::web::router(quire.clone()));
 
     tracing::info!(%addr, "starting HTTP server");
 
