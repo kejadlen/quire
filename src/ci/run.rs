@@ -178,10 +178,6 @@ impl Runs {
     }
 
     /// Find runs stuck in `pending` or `active` states.
-    ///
-    /// The caller decides how to reconcile the returned runs:
-    /// - `pending` entries should be re-enqueued or completed.
-    /// - `active` entries with no live runner should be marked failed.
     pub fn scan_orphans(&self) -> Result<Vec<Run>> {
         let db = crate::db::open(&self.db_path)?;
         let mut stmt = db.prepare(
@@ -209,8 +205,7 @@ impl Runs {
 
     /// Reconcile orphaned runs from a previous server instance.
     ///
-    /// - `pending` orphans are moved to `complete` (will be re-enqueued when
-    ///   the runner exists; for now, immediately completed).
+    /// - `pending` orphans are moved to `failed` (created but never started).
     /// - `active` orphans are moved to `failed` (no live runner).
     pub fn reconcile_orphans(&self) -> Result<()> {
         let orphans = self.scan_orphans()?;
@@ -232,10 +227,9 @@ impl Runs {
             rusqlite::params![now, &self.repo],
         )?;
 
-        // Pending orphans → complete (matching current behavior;
-        // umykvluw changes this to failed separately)
+        // Pending orphans → failed (created but never executed).
         db.execute(
-            "UPDATE runs SET state = 'complete', started_at_ms = ?1, finished_at_ms = ?1
+            "UPDATE runs SET state = 'failed', finished_at_ms = ?1, failure_kind = 'orphaned'
              WHERE state = 'pending' AND repo = ?2",
             rusqlite::params![now, &self.repo],
         )?;
@@ -967,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_completes_pending_orphans() {
+    fn reconcile_fails_pending_orphans() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
@@ -975,9 +969,9 @@ mod tests {
 
         runs.reconcile_orphans().expect("reconcile");
 
-        // Pending orphan should be moved to complete.
+        // Pending orphan should be moved to failed.
         let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
-        assert_eq!(reopened.state(), RunState::Complete);
+        assert_eq!(reopened.state(), RunState::Failed);
     }
 
     #[test]
