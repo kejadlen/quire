@@ -32,9 +32,7 @@ pub(crate) fn docker_build(dockerfile: &Path, context: &Path, tag: &str) -> Resu
         .map_err(|e| Error::ImageBuildFailed { source: e })?;
     if !output.status.success() {
         return Err(Error::ImageBuildFailed {
-            source: std::io::Error::other(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ),
+            source: std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()),
         });
     }
     Ok(())
@@ -58,11 +56,7 @@ impl ContainerSession {
     /// bind-mounted at `mount_target` inside the container, with
     /// `mount_target` as the working directory. Captures the container
     /// ID. Failures surface as `Error::ContainerStartFailed`.
-    pub(crate) fn start(
-        image_tag: &str,
-        mount_source: &Path,
-        mount_target: &str,
-    ) -> Result<Self> {
+    pub(crate) fn start(image_tag: &str, mount_source: &Path, mount_target: &str) -> Result<Self> {
         let mount = format!(
             "type=bind,src={},dst={}",
             mount_source.to_string_lossy(),
@@ -80,9 +74,7 @@ impl ContainerSession {
             .map_err(|e| Error::ContainerStartFailed { source: e })?;
         if !output.status.success() {
             return Err(Error::ContainerStartFailed {
-                source: std::io::Error::other(
-                    String::from_utf8_lossy(&output.stderr).into_owned(),
-                ),
+                source: std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned()),
             });
         }
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -128,8 +120,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let context = dir.path();
         let dockerfile = context.join("Dockerfile");
-        fs_err::write(&dockerfile, "FROM alpine:3.19\nRUN echo built\n")
-            .expect("write Dockerfile");
+        fs_err::write(&dockerfile, "FROM alpine:3.19\nRUN echo built\n").expect("write Dockerfile");
 
         let tag = "quire-ci/test-task5:test";
         docker_build(&dockerfile, context, tag).expect("build should succeed");
@@ -169,7 +160,12 @@ mod tests {
 
         assert!(!session.container_id.is_empty());
         // Docker container IDs from `docker run` are 64-char SHA256 hex.
-        assert_eq!(session.container_id.len(), 64, "got: {}", session.container_id);
+        assert_eq!(
+            session.container_id.len(),
+            64,
+            "got: {}",
+            session.container_id
+        );
         // session drops here; docker stop runs.
     }
 

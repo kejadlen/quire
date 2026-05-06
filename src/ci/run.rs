@@ -629,11 +629,7 @@ fn repo_segment(base: &Path) -> String {
 
 /// Materialize a working tree at `sha` into `workspace` via
 /// `git archive | tar -x`. Creates the workspace dir if needed.
-pub fn materialize_workspace(
-    git_dir: &Path,
-    sha: &str,
-    workspace: &Path,
-) -> Result<()> {
+pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Result<()> {
     use std::process::{Command, Stdio};
 
     fs_err::create_dir_all(workspace)?;
@@ -1661,7 +1657,10 @@ mod tests {
     #[test]
     fn repo_segment_returns_final_component() {
         assert_eq!(repo_segment(Path::new("runs/test.git")), "test.git");
-        assert_eq!(repo_segment(Path::new("/var/lib/quire/runs/repo.git")), "repo.git");
+        assert_eq!(
+            repo_segment(Path::new("/var/lib/quire/runs/repo.git")),
+            "repo.git"
+        );
         assert_eq!(repo_segment(Path::new("")), "repo");
     }
 
@@ -1673,7 +1672,10 @@ mod tests {
         // Uppercase is rejected; lowercase fine.
         assert_eq!(repo_segment(Path::new("MyRepo.git")), "myrepo.git");
         // Other invalid characters become underscores.
-        assert_eq!(repo_segment(Path::new("repo with spaces")), "repo_with_spaces");
+        assert_eq!(
+            repo_segment(Path::new("repo with spaces")),
+            "repo_with_spaces"
+        );
     }
 
     #[test]
@@ -1706,11 +1708,8 @@ mod tests {
             assert!(out.status.success());
         }
         fs_err::create_dir_all(src_repo.join(".quire")).expect("mkdir .quire");
-        fs_err::write(
-            src_repo.join(".quire/Dockerfile"),
-            "FROM alpine:3.19\n",
-        )
-        .expect("write Dockerfile");
+        fs_err::write(src_repo.join(".quire/Dockerfile"), "FROM alpine:3.19\n")
+            .expect("write Dockerfile");
         for cmd in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
             let out = std::process::Command::new("git")
                 .args(&cmd)
