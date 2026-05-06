@@ -68,6 +68,9 @@ pub enum Error {
     Utf8(#[from] std::string::FromUtf8Error),
 
     #[error(transparent)]
+    Sql(#[from] rusqlite::Error),
+
+    #[error(transparent)]
     Secret(#[from] secret::Error),
 
     #[error("unknown secret: {0:?}")]

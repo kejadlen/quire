@@ -1,9 +1,9 @@
-//! On-disk storage for CI runs.
+//! SQLite-backed storage for CI runs.
 //!
-//! A run is a directory under `runs/<repo>/<state>/<id>/` containing
-//! `meta.yml` (immutable) and `times.yml` (timestamps). The directory's
-//! parent name is the authoritative state; transitions are atomic
-//! `rename` operations.
+//! A run is a row in the `runs` table identified by UUID. State
+//! transitions are single `UPDATE` statements inside a transaction.
+//! Run directories on disk hold the materialized workspace and per-job
+//! log files, but state lives in the database.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,10 +26,9 @@ pub enum Executor {
     Docker,
 }
 
-/// Owns a [`ContainerSession`](crate::ci::docker::ContainerSession)
-/// alongside the run-dir's `container.yml` path so [`Drop`] can stamp
-/// `container_stopped_at` *before* the session itself drops and fires
-/// `docker stop`.
+/// Owns the per-run container session alongside the database path
+/// so [`Drop`] can stamp `container_stopped_at` *before* the session
+/// itself drops and fires `docker stop`.
 ///
 /// Field declaration order matters: `session` is declared first so it
 /// drops first after this struct's custom `Drop` body returns. The
@@ -37,7 +36,8 @@ pub enum Executor {
 /// `docker stop`.
 pub(super) struct DockerLifecycle {
     pub(super) session: crate::ci::docker::ContainerSession,
-    record_path: PathBuf,
+    db_path: PathBuf,
+    run_id: String,
     pub(super) work_dir: String,
 }
 
@@ -46,19 +46,22 @@ impl Drop for DockerLifecycle {
         // Stamp `container_stopped_at` before ContainerSession's Drop
         // (`docker stop`) fires. Errors are logged and swallowed —
         // Drop cannot return Result.
-        match read_yaml::<ContainerRecord>(&self.record_path) {
-            Ok(mut rec) => {
-                rec.container_stopped_at = Some(Timestamp::now());
-                if let Err(e) = write_yaml(&self.record_path, &rec) {
+        match crate::db::open(&self.db_path) {
+            Ok(conn) => {
+                let now = Timestamp::now().as_millisecond();
+                if let Err(e) = conn.execute(
+                    "UPDATE runs SET container_stopped_at_ms = ?1 WHERE id = ?2",
+                    rusqlite::params![now, &self.run_id],
+                ) {
                     tracing::error!(
-                        error = %display_chain(&e),
+                        error = %display_chain(&Error::from(e)),
                         "failed to write container_stopped_at"
                     );
                 }
             }
             Err(e) => tracing::error!(
                 error = %display_chain(&e),
-                "failed to read container.yml before stop"
+                "failed to open db before container stop"
             ),
         }
         // After this body returns, fields drop in declaration order:
@@ -73,21 +76,39 @@ pub enum RunState {
     Active,
     Complete,
     Failed,
+    Superseded,
 }
 
 impl RunState {
-    /// The directory name used for this state in the run storage layout.
-    pub fn dir_name(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             RunState::Pending => "pending",
             RunState::Active => "active",
             RunState::Complete => "complete",
             RunState::Failed => "failed",
+            RunState::Superseded => "superseded",
         }
     }
 }
 
-/// Immutable metadata for a CI run. Written once and never modified.
+impl std::str::FromStr for RunState {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "pending" => Some(RunState::Pending),
+            "active" => Some(RunState::Active),
+            "complete" => Some(RunState::Complete),
+            "failed" => Some(RunState::Failed),
+            "superseded" => Some(RunState::Superseded),
+            _ => None,
+        }
+        .ok_or(())
+    }
+}
+
+/// Immutable metadata for a CI run. Passed to `Runs::create` at
+/// enqueue time; the fields are written to the `runs` row once.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunMeta {
     /// The commit SHA that triggered this run.
@@ -98,203 +119,147 @@ pub struct RunMeta {
     pub pushed_at: Timestamp,
 }
 
-/// Timestamps recorded across the run lifecycle. The directory name is the
-/// authoritative state; this file records when transitions happened.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RunTimes {
-    /// When the run was picked up (moved to active).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<Timestamp>,
-    /// When the run finished (moved to complete/failed).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<Timestamp>,
-}
-
-/// Container metadata for a docker-mode run, persisted to
-/// `<run-dir>/container.yml`. Each field is populated incrementally as
-/// the lifecycle progresses; absence implies "not yet (or never)
-/// reached." Host-mode runs do not write this file.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ContainerRecord {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_tag: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_started_at: Option<Timestamp>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub build_finished_at: Option<Timestamp>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_started_at: Option<Timestamp>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_stopped_at: Option<Timestamp>,
-}
-
 /// Access to CI runs for a single repo.
 ///
-/// Owns the base path (`runs/<repo>/`) and provides run creation
-/// and orphan reconciliation. Obtain one via `Ci::runs()`.
+/// Owns the database path, repo name, and base directory for run
+/// artifacts (workspace, logs). Each method opens a connection via
+/// [`crate::db::open`]. Obtain one via `Ci::runs()`.
 #[derive(Debug)]
 pub struct Runs {
-    base: PathBuf,
+    db_path: PathBuf,
+    repo: String,
+    base_dir: PathBuf,
 }
 
 impl Runs {
-    pub fn new(base: PathBuf) -> Self {
-        Self { base }
+    pub fn new(db_path: PathBuf, repo: String, base_dir: PathBuf) -> Self {
+        Self {
+            db_path,
+            repo,
+            base_dir,
+        }
     }
 
     /// Create a new run record in the `pending` state.
     ///
-    /// Writes `meta.yml` and `times.yml` atomically (temp dir + rename).
+    /// Inserts a row into `runs` and creates the run directory for
+    /// workspace materialization and log storage.
     pub fn create(&self, meta: &RunMeta) -> Result<Run> {
-        let pending_dir = self.base.join(RunState::Pending.dir_name());
         let id = uuid::Uuid::now_v7().to_string();
+        let workspace_path = self.base_dir.join(&id).join("workspace");
 
-        fs_err::create_dir_all(&pending_dir)?;
+        let db = crate::db::open(&self.db_path)?;
+        db.execute(
+            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+            rusqlite::params![
+                &id,
+                &self.repo,
+                &meta.r#ref,
+                &meta.sha,
+                meta.pushed_at.as_millisecond(),
+                Timestamp::now().as_millisecond(),
+                workspace_path.to_str().ok_or_else(|| std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "workspace path is not valid UTF-8",
+                ))?,
+            ],
+        )?;
 
-        let tmp_dir = pending_dir.join(format!(".tmp-{id}"));
-        fs_err::create_dir_all(&tmp_dir)?;
+        // Create run directory for workspace and logs.
+        fs_err::create_dir_all(&workspace_path)?;
 
-        write_yaml(&tmp_dir.join("meta.yml"), meta)?;
-        write_yaml(&tmp_dir.join("times.yml"), &RunTimes::default())?;
-
-        let final_dir = pending_dir.join(&id);
-        fs_err::rename(&tmp_dir, &final_dir)?;
-
-        // Set the latest symlink after opening the run so it can do it.
-        let run = Run::open(self.base.clone(), RunState::Pending, id)?;
-        run.update_latest()?;
-        Ok(run)
+        Ok(Run {
+            db_path: self.db_path.clone(),
+            id,
+            state: RunState::Pending,
+            base_dir: self.base_dir.clone(),
+        })
     }
 
-    /// Scan for orphaned runs in `pending/` and `active/` directories.
-    ///
-    /// Entries that cannot be opened (missing/unreadable `meta.yml` or
-    /// `times.yml`) are quarantined to `failed/` so they don't stay
-    /// stuck in pending/active forever.
+    /// Find runs stuck in `pending` or `active` states.
     ///
     /// The caller decides how to reconcile the returned runs:
-    /// - `pending/` entries should be re-enqueued.
-    /// - `active/` entries with no live runner should be marked failed.
+    /// - `pending` entries should be re-enqueued or completed.
+    /// - `active` entries with no live runner should be marked failed.
     pub fn scan_orphans(&self) -> Result<Vec<Run>> {
+        let db = crate::db::open(&self.db_path)?;
+        let mut stmt = db.prepare(
+            "SELECT id, state FROM runs WHERE state IN ('pending', 'active') AND repo = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![&self.repo], |row| {
+            let id: String = row.get(0)?;
+            let state_str: String = row.get(1)?;
+            Ok((id, state_str))
+        })?;
+
         let mut orphans = Vec::new();
-
-        for &state in &[RunState::Pending, RunState::Active] {
-            let state_path = self.base.join(state.dir_name());
-            let entries = match fs_err::read_dir(&state_path) {
-                Ok(entries) => entries,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()), // cov-excl-line
-            };
-
-            for entry in entries {
-                let entry = entry?;
-                let name = match entry.file_name().to_str() {
-                    Some(n) => n.to_string(),
-                    None => continue, // cov-excl-line
-                };
-
-                if name.starts_with('.') {
-                    continue;
-                }
-
-                match Run::open(self.base.clone(), state, name.clone()) {
-                    Ok(run) => orphans.push(run),
-                    Err(e) => {
-                        tracing::warn!(
-                            state = ?state,
-                            run_id = %name,
-                            error = %display_chain(&e),
-                            "quarantining unreadable run to failed/"
-                        );
-                        self.quarantine(&state_path.join(&name), &name)?;
-                    }
-                }
-            }
+        for row in rows {
+            let (id, state_str) = row?;
+            let state: RunState = state_str.parse().expect("DB enforces valid states");
+            orphans.push(Run {
+                db_path: self.db_path.clone(),
+                id,
+                state,
+                base_dir: self.base_dir.clone(),
+            });
         }
-
         Ok(orphans)
-    }
-
-    /// Move a broken run directory into `failed/` so it stops blocking
-    /// pending/active. The contents may be unreadable; we only care
-    /// about getting it out of the active state buckets.
-    fn quarantine(&self, src: &Path, id: &str) -> Result<()> {
-        let failed_dir = self.base.join(RunState::Failed.dir_name());
-        fs_err::create_dir_all(&failed_dir)?;
-        fs_err::rename(src, failed_dir.join(id))?;
-        Ok(())
     }
 
     /// Reconcile orphaned runs from a previous server instance.
     ///
-    /// - `pending/` orphans are moved to `complete/` (will be re-enqueued when
+    /// - `pending` orphans are moved to `complete` (will be re-enqueued when
     ///   the runner exists; for now, immediately completed).
-    /// - `active/` orphans are moved to `failed/` (no live runner).
+    /// - `active` orphans are moved to `failed` (no live runner).
     pub fn reconcile_orphans(&self) -> Result<()> {
         let orphans = self.scan_orphans()?;
         for orphan in &orphans {
             tracing::warn!(
-                run_id = %orphan.id(), // cov-excl-line
-                state = ?orphan.state(), // cov-excl-line
+                run_id = %orphan.id(),
+                state = ?orphan.state(),
                 "found orphaned run"
             );
         }
 
-        for mut orphan in orphans {
-            match orphan.state() {
-                RunState::Pending => {
-                    tracing::warn!(
-                        run_id = %orphan.id(), // cov-excl-line
-                        "completing orphaned pending run"
-                    );
-                    if let Err(e) = orphan.transition(RunState::Complete) {
-                        tracing::error!(
-                            run_id = %orphan.id(), // cov-excl-line
-                            error = %display_chain(&e),
-                            "failed to transition orphaned pending run"
-                        );
-                    }
-                }
-                RunState::Active => {
-                    tracing::warn!(
-                        run_id = %orphan.id(), // cov-excl-line
-                        "marking orphaned active run as failed"
-                    );
-                    if let Err(e) = orphan.transition(RunState::Failed) {
-                        tracing::error!(
-                            run_id = %orphan.id(), // cov-excl-line
-                            error = %display_chain(&e),
-                            "failed to transition orphaned active run to failed"
-                        );
-                    }
-                }
-                RunState::Complete | RunState::Failed => {
-                    unreachable!("scan_orphans only returns pending/active")
-                }
-            }
-        }
+        let now = Timestamp::now().as_millisecond();
+        let db = crate::db::open(&self.db_path)?;
+
+        // Active orphans → failed
+        db.execute(
+            "UPDATE runs SET state = 'failed', finished_at_ms = ?1, container_id = NULL, failure_kind = 'orphaned'
+             WHERE state = 'active' AND repo = ?2",
+            rusqlite::params![now, &self.repo],
+        )?;
+
+        // Pending orphans → complete (matching current behavior;
+        // umykvluw changes this to failed separately)
+        db.execute(
+            "UPDATE runs SET state = 'complete', started_at_ms = ?1, finished_at_ms = ?1
+             WHERE state = 'pending' AND repo = ?2",
+            rusqlite::params![now, &self.repo],
+        )?;
 
         Ok(())
     }
 }
 
-/// A CI run on disk.
+/// A CI run backed by a SQLite row.
 ///
-/// Owns the path to the run directory and the in-memory execution
-/// state used while driving a pipeline. Tracks current state so that
-/// `transition` can move the directory in one call.
+/// Owns the path to the database and the run's in-memory state cache.
+/// Reads and writes go through SQL. The run directory on disk holds
+/// the workspace and per-job log files.
 pub struct Run {
-    base: PathBuf,
-    state: RunState,
+    db_path: PathBuf,
     id: String,
+    state: RunState,
+    base_dir: PathBuf,
 }
 
 impl Run {
     /// The resolved path to this run's directory on disk.
     pub fn path(&self) -> PathBuf {
-        self.base.join(self.state.dir_name()).join(&self.id)
+        self.base_dir.join(&self.id)
     }
 
     /// The run's ID.
@@ -307,32 +272,39 @@ impl Run {
         self.state
     }
 
-    /// Open an existing run from disk.
-    ///
-    /// `state` is the directory the run is expected to be in (e.g.
-    /// `pending/`, `active/`). Returns an error if `meta.yml` or
-    /// `times.yml` are missing or unreadable.
-    pub fn open(base: PathBuf, state: RunState, id: String) -> Result<Self> {
-        let run = Self { base, state, id };
-        run.read_meta()?;
-        run.read_times()?;
-        Ok(run)
+    /// Open an existing run from the database by ID.
+    pub fn open(db_path: PathBuf, id: String, base_dir: PathBuf) -> Result<Self> {
+        let db = crate::db::open(&db_path)?;
+        let state_str: String = db.query_row(
+            "SELECT state FROM runs WHERE id = ?1",
+            rusqlite::params![&id],
+            |row| row.get(0),
+        )?;
+        let state: RunState = state_str.parse().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid state in db: {state_str}"),
+            )
+        })?;
+        Ok(Self {
+            db_path,
+            id,
+            state,
+            base_dir,
+        })
     }
 
     /// Drive `pipeline` to completion through this run.
     ///
     /// Consumes the pipeline, taking ownership of its Lua VM. Constructs
     /// a fresh [`Runtime`] with `secrets`, the source outputs
-    /// (`:quire/push` from `meta.yml`), and the per-job transitive-input
+    /// (`:quire/push` from metadata), and the per-job transitive-input
     /// sets; installs it on the VM, topo-sorts the jobs, transitions
     /// Pending → Active, then invokes each `run_fn` in dependency order
     /// with the runtime handle as its sole argument. Returns a map of
     /// job id → captured `(sh …)` outputs. The run finishes in
     /// `Complete` if every job's `run_fn` returned without error,
     /// otherwise `Failed`.
-    ///
-    /// Source-ref filtering (e.g. running only `quire/push`-reachable
-    /// jobs) is not yet implemented; for now every validated job runs.
     ///
     /// Per-job logs are written to `jobs/<job-id>/log` inside the run
     /// directory before the final state transition, so logs are
@@ -349,12 +321,10 @@ impl Run {
 
         // Transition to Active *before* building/starting the
         // container. The docker build can take a long time and
-        // happens with the run in `active/` so the on-disk state
+        // happens with the run in `active` so the database state
         // accurately reflects "this run is in progress." It also
-        // pins `self.path()` for the lifetime of the run, so the
-        // `container.yml` path captured by `DockerLifecycle` stays
-        // valid until just before the final Complete/Failed
-        // transition (where we explicitly drop the runtime first).
+        // means `container_id` is allowed (the CHECK constraint
+        // permits it in `active`).
         self.transition(RunState::Active)?;
 
         let executor_runtime = match self.build_executor_runtime(executor, workspace) {
@@ -412,10 +382,7 @@ impl Run {
 
         // Drop the runtime *before* the final transition. In docker
         // mode this fires `DockerLifecycle::drop`, which stamps
-        // `container_stopped_at` in `<run-dir>/container.yml`. The
-        // path it captured is still valid here (the run is in
-        // active/); the subsequent transition moves the file into
-        // place with the rest of the run dir.
+        // `container_stopped_at` in the database.
         drop(rt_value);
         let _ = lua; // release the Lua borrow tied to `runtime`.
         drop(runtime);
@@ -433,9 +400,8 @@ impl Run {
     }
 
     /// Build the per-run container if `executor` is `Docker`, writing
-    /// `container.yml` incrementally as each phase completes. Run must
-    /// already be in `active/` so `self.path()` is stable for the
-    /// lifetime of the returned [`DockerLifecycle`].
+    /// build and container timestamps to the database incrementally.
+    /// Run must already be in `active` so `container_id` is permitted.
     fn build_executor_runtime(
         &self,
         executor: Executor,
@@ -449,38 +415,42 @@ impl Run {
                 }
 
                 // Build phase.
-                let mut record = ContainerRecord {
-                    build_started_at: Some(Timestamp::now()),
-                    ..Default::default()
-                };
-                self.write_container_record(&record)?;
+                let now = Timestamp::now().as_millisecond();
+                let db = crate::db::open(&self.db_path)?;
+                db.execute(
+                    "UPDATE runs SET build_started_at_ms = ?1 WHERE id = ?2",
+                    rusqlite::params![now, &self.id],
+                )?;
 
                 let dockerfile = workspace.join(".quire/Dockerfile");
                 if !dockerfile.exists() {
                     return Err(Error::DockerfileMissing);
                 }
-                let tag = format!("quire-ci/{}:{}", repo_segment(&self.base), self.id);
+                let tag = format!("quire-ci/{}:{}", repo_segment(&self.base_dir), self.id);
 
                 crate::ci::docker::docker_build(&dockerfile, workspace, &tag)?;
 
-                record.image_tag = Some(tag.clone());
-                record.build_finished_at = Some(Timestamp::now());
-                self.write_container_record(&record)?;
+                let build_finished = Timestamp::now().as_millisecond();
+                db.execute(
+                    "UPDATE runs SET image_tag = ?1, build_finished_at_ms = ?2 WHERE id = ?3",
+                    rusqlite::params![&tag, build_finished, &self.id],
+                )?;
 
-                // Start phase. The bind-mount target inside the
-                // container doubles as the working directory for every
-                // `(sh …)` invocation routed through `docker exec`.
+                // Start phase.
                 const WORK_DIR: &str = "/work";
                 let session =
                     crate::ci::docker::ContainerSession::start(&tag, workspace, WORK_DIR)?;
 
-                record.container_id = Some(session.container_id.clone());
-                record.container_started_at = Some(session.container_started_at);
-                self.write_container_record(&record)?;
+                let container_started = session.container_started_at.as_millisecond();
+                db.execute(
+                    "UPDATE runs SET container_id = ?1, container_started_at_ms = ?2 WHERE id = ?3",
+                    rusqlite::params![&session.container_id, container_started, &self.id],
+                )?;
 
                 Ok(ExecutorRuntime::Docker(DockerLifecycle {
                     session,
-                    record_path: self.path().join("container.yml"),
+                    db_path: self.db_path.clone(),
+                    run_id: self.id.clone(),
                     work_dir: WORK_DIR.to_string(),
                 }))
             }
@@ -490,10 +460,8 @@ impl Run {
     /// Write per-job log files from the captured `(sh …)` outputs.
     ///
     /// Creates `jobs/<job-id>/log.yml` in the run directory for each
-    /// job that has outputs. The file contains a YAML list of `ShOutput`
-    /// entries — command, exit code, stdout, stderr — one per `(sh …)`
-    /// call. Written before the final state transition so logs are
-    /// available for both successful and failed runs.
+    /// job that has outputs. Written before the final state transition
+    /// so logs are available for both successful and failed runs.
     fn write_all_logs(&self, outputs: &HashMap<String, Vec<ShOutput>>) -> Result<()> {
         for (job_id, sh_outputs) in outputs {
             if sh_outputs.is_empty() {
@@ -508,13 +476,12 @@ impl Run {
 
     /// Transition the run from its current state to a new state.
     ///
-    /// Moves the run directory between state parent directories and stamps
-    /// `started_at` (entering Active) or `finished_at` (entering Complete or
-    /// Failed) on `times.yml`. Each timestamp is set at most once.
+    /// Executes a single `UPDATE` in the database, stamping
+    /// `started_at` (entering Active) or `finished_at` (entering
+    /// Complete or Failed) and clearing `container_id` on terminal
+    /// states. Each timestamp is set at most once.
     pub fn transition(&mut self, to: RunState) -> Result<()> {
         use RunState::*;
-        // Allowed transitions. Pending->Complete is the orphan-reconcile
-        // placeholder; everything else is the normal trigger lifecycle.
         let allowed = matches!(
             (self.state, to),
             (Pending, Active) | (Pending, Complete) | (Active, Complete) | (Active, Failed)
@@ -526,75 +493,76 @@ impl Run {
             });
         }
 
-        let src = self.path();
-        let dst_parent = self.base.join(to.dir_name());
+        let now = Timestamp::now().as_millisecond();
+        let db = crate::db::open(&self.db_path)?;
 
-        if !src.exists() {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("run directory not found: {}", src.display()),
-            )));
-        }
-
-        fs_err::create_dir_all(&dst_parent)?;
-        let dst = dst_parent.join(&self.id);
-        fs_err::rename(&src, &dst)?;
-        self.state = to;
-
-        let mut times = self.read_times()?;
-        let now = Timestamp::now();
+        // Build the SET clause dynamically based on the target state.
         match to {
-            RunState::Active if times.started_at.is_none() => times.started_at = Some(now),
-            RunState::Complete | RunState::Failed if times.finished_at.is_none() => {
-                times.finished_at = Some(now)
+            Active => {
+                db.execute(
+                    "UPDATE runs SET state = 'active', started_at_ms = COALESCE(started_at_ms, ?1)
+                     WHERE id = ?2",
+                    rusqlite::params![now, &self.id],
+                )?;
             }
-            _ => {} // cov-excl-line
+            Complete | Failed => {
+                db.execute(
+                    "UPDATE runs SET state = ?1, \
+                        started_at_ms = COALESCE(started_at_ms, ?2), \
+                        finished_at_ms = COALESCE(finished_at_ms, ?3), \
+                        container_id = NULL \
+                     WHERE id = ?4",
+                    rusqlite::params![to.as_str(), now, now, &self.id],
+                )?;
+            }
+            _ => unreachable!("checked by allowed match above"),
         }
-        self.write_times(&times)?;
-        self.update_latest()?;
-        Ok(())
-    }
 
-    /// Atomically update the `latest` symlink to point at this run.
-    fn update_latest(&self) -> Result<()> {
-        let latest = self.base.join("latest");
-        let link_target = PathBuf::from(self.state.dir_name()).join(&self.id);
-        let tmp_link = self.base.join(".tmp-latest");
-        let _ = fs_err::remove_file(&tmp_link);
-        std::os::unix::fs::symlink(&link_target, &tmp_link)?;
-        let _ = fs_err::remove_file(&latest);
-        fs_err::rename(&tmp_link, &latest)?;
+        self.state = to;
         Ok(())
-    }
-
-    /// Read the timestamps recorded for this run.
-    pub fn read_times(&self) -> Result<RunTimes> {
-        read_yaml(&self.path().join("times.yml"))
     }
 
     /// Read the immutable metadata for this run.
     pub fn read_meta(&self) -> Result<RunMeta> {
-        read_yaml(&self.path().join("meta.yml"))
+        let db = crate::db::open(&self.db_path)?;
+        let (sha, ref_name, pushed_at_ms) = db.query_row(
+            "SELECT sha, ref_name, pushed_at_ms FROM runs WHERE id = ?1",
+            rusqlite::params![&self.id],
+            |row| {
+                let sha: String = row.get(0)?;
+                let ref_name: String = row.get(1)?;
+                let pushed_at_ms: i64 = row.get(2)?;
+                Ok((sha, ref_name, pushed_at_ms))
+            },
+        )?;
+        Ok(RunMeta {
+            sha,
+            r#ref: ref_name,
+            pushed_at: Timestamp::from_millisecond(pushed_at_ms)
+                .expect("db stores valid timestamps"),
+        })
     }
 
-    /// Update the timestamps for this run (atomic write).
-    pub fn write_times(&self, times: &RunTimes) -> Result<()> {
-        write_yaml(&self.path().join("times.yml"), times)
+    /// Read the `started_at` timestamp for this run, if set.
+    pub fn read_started_at(&self) -> Result<Option<Timestamp>> {
+        let db = crate::db::open(&self.db_path)?;
+        let ms: Option<i64> = db.query_row(
+            "SELECT started_at_ms FROM runs WHERE id = ?1",
+            rusqlite::params![&self.id],
+            |row| row.get(0),
+        )?;
+        Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
-    /// Read this run's `container.yml` record. Returns the deserialized
-    /// `ContainerRecord`. Errors if the file is missing or malformed —
-    /// callers should use `path().join("container.yml").exists()` if they
-    /// want to handle the absent case as "host mode."
-    pub fn read_container_record(&self) -> Result<ContainerRecord> {
-        read_yaml(&self.path().join("container.yml"))
-    }
-
-    /// Atomically write this run's `container.yml` record (temp file +
-    /// rename). Each call replaces the file; partial fields are
-    /// represented as `None` and skipped from the output.
-    pub fn write_container_record(&self, record: &ContainerRecord) -> Result<()> {
-        write_yaml(&self.path().join("container.yml"), record)
+    /// Read the `finished_at` timestamp for this run, if set.
+    pub fn read_finished_at(&self) -> Result<Option<Timestamp>> {
+        let db = crate::db::open(&self.db_path)?;
+        let ms: Option<i64> = db.query_row(
+            "SELECT finished_at_ms FROM runs WHERE id = ?1",
+            rusqlite::params![&self.id],
+            |row| row.get(0),
+        )?;
+        Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 }
 
@@ -670,12 +638,6 @@ pub(crate) fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<
     Ok(())
 }
 
-/// Read a deserializable value from a YAML file.
-fn read_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let f = fs_err::File::open(path)?;
-    Ok(serde_yaml_ng::from_reader(std::io::BufReader::new(f))?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,11 +646,16 @@ mod tests {
     fn tmp_quire() -> (tempfile::TempDir, Quire) {
         let dir = tempfile::tempdir().expect("tempdir");
         let quire = Quire::new(dir.path().to_path_buf());
+        // Initialize the database.
+        let mut db = crate::db::open(&quire.db_path()).expect("init db");
+        crate::db::migrate(&mut db).expect("migrate db");
+        drop(db);
         (dir, quire)
     }
 
     fn test_runs(quire: &Quire) -> Runs {
-        Runs::new(quire.base_dir().join("runs").join("test.git"))
+        let base_dir = quire.base_dir().join("runs").join("test.git");
+        Runs::new(quire.db_path(), "test.git".to_string(), base_dir)
     }
 
     /// Materialize a workspace directory under the test Quire's base dir.
@@ -812,11 +779,17 @@ mod tests {
     }
 
     #[test]
-    fn run_state_dir_name() {
-        assert_eq!(RunState::Pending.dir_name(), "pending");
-        assert_eq!(RunState::Active.dir_name(), "active");
-        assert_eq!(RunState::Complete.dir_name(), "complete");
-        assert_eq!(RunState::Failed.dir_name(), "failed");
+    fn run_state_round_trips() {
+        for state in [
+            RunState::Pending,
+            RunState::Active,
+            RunState::Complete,
+            RunState::Failed,
+            RunState::Superseded,
+        ] {
+            assert!(state.as_str().parse::<RunState>().is_ok());
+        }
+        assert!("unknown".parse::<RunState>().is_err());
     }
 
     #[test]
@@ -829,70 +802,47 @@ mod tests {
     }
 
     #[test]
-    fn create_symlinks_latest() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
-
-        let latest = runs.base.join("latest");
-        assert!(latest.is_symlink(), "latest should be a symlink");
-        let target = fs_err::read_link(&latest).expect("read link");
-        assert_eq!(
-            target,
-            PathBuf::from(RunState::Pending.dir_name()).join(run.id())
-        );
-        assert!(latest.exists(), "latest should resolve to a real directory");
-
-        // Symlink should follow through transitions.
-        run.transition(RunState::Active).expect("to active");
-        let target = fs_err::read_link(&latest).expect("read link");
-        assert_eq!(
-            target,
-            PathBuf::from(RunState::Active.dir_name()).join(run.id())
-        );
-        assert!(latest.exists(), "latest should resolve after transition");
-    }
-
-    #[test]
-    fn create_writes_files_in_pending() {
+    fn create_writes_row_in_pending_state() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
 
-        let path = run.path();
-        assert!(path.exists(), "run directory should exist");
-        assert!(path.join("meta.yml").exists());
-        assert!(path.join("times.yml").exists());
         assert_eq!(run.state(), RunState::Pending);
 
+        // Verify workspace directory was created.
+        let workspace = run.path().join("workspace");
+        assert!(workspace.exists(), "workspace directory should exist");
+
+        // Verify metadata round-trips through the DB.
         let meta = run.read_meta().expect("read meta");
         assert_eq!(meta.sha, "abc123");
 
-        let state = run.read_times().expect("read state");
-        assert!(state.started_at.is_none());
-        assert!(state.finished_at.is_none());
+        // No started_at yet.
+        let started = run.read_started_at().expect("read started_at");
+        assert!(started.is_none());
+        let finished = run.read_finished_at().expect("read finished_at");
+        assert!(finished.is_none());
     }
 
     #[test]
-    fn transition_moves_directory() {
+    fn transition_updates_state_in_db() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
         let id = run.id().to_string();
 
-        let old_path = run.path();
         run.transition(RunState::Active).expect("transition");
-
-        assert!(!old_path.exists(), "pending dir should be gone");
         assert_eq!(run.state(), RunState::Active);
 
-        let new_path = run.path();
-        assert!(new_path.exists(), "active dir should exist");
+        // Verify started_at was stamped.
+        let started = run.read_started_at().expect("read started_at");
+        assert!(started.is_some(), "started_at should be stamped");
 
-        // Meta is byte-identical after move.
-        let meta = run.read_meta().expect("read meta");
-        assert_eq!(meta.sha, "abc123");
-        assert_eq!(run.id(), id);
+        // Re-open the run and verify state persists.
+        let reopened =
+            Run::open(quire.db_path(), id.clone(), runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Active);
+        assert_eq!(reopened.id(), id);
     }
 
     #[test]
@@ -902,9 +852,9 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
 
         run.transition(RunState::Active).expect("to active");
-        let times = run.read_times().expect("read state");
-        assert!(times.started_at.is_some(), "started_at should be stamped");
-        assert!(times.finished_at.is_none());
+        let started = run.read_started_at().expect("read started_at");
+        assert!(started.is_some(), "started_at should be stamped");
+        assert!(run.read_finished_at().expect("read").is_none());
     }
 
     #[test]
@@ -917,14 +867,12 @@ mod tests {
         completed
             .transition(RunState::Complete)
             .expect("to complete");
-        let times = completed.read_times().expect("read state");
-        assert!(times.finished_at.is_some());
+        assert!(completed.read_finished_at().expect("read").is_some());
 
         let mut failed = runs.create(&test_meta()).expect("create");
         failed.transition(RunState::Active).expect("to active");
         failed.transition(RunState::Failed).expect("to failed");
-        let failed_times = failed.read_times().expect("read state");
-        assert!(failed_times.finished_at.is_some());
+        assert!(failed.read_finished_at().expect("read").is_some());
     }
 
     #[test]
@@ -953,35 +901,13 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
 
         run.transition(RunState::Active).expect("to active");
-        let active_times = run.read_times().expect("read state");
-        let started = active_times.started_at;
+        let started = run.read_started_at().expect("read started_at");
 
         run.transition(RunState::Complete).expect("to complete");
-        let complete_times = run.read_times().expect("read state");
-        assert_eq!(complete_times.started_at, started, "started_at preserved");
-    }
-
-    #[test]
-    fn transition_keeps_existing_started_at() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
-
-        // Pre-stamp started_at before transitioning to Active.
-        let pre: Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
-        run.write_times(&RunTimes {
-            started_at: Some(pre),
-            finished_at: None,
-        })
-        .expect("write times");
-
-        run.transition(RunState::Active).expect("to active");
-
-        let times = run.read_times().expect("read times");
         assert_eq!(
-            times.started_at,
-            Some(pre),
-            "should keep pre-set started_at"
+            run.read_started_at().expect("read"),
+            started,
+            "started_at preserved"
         );
     }
 
@@ -995,19 +921,6 @@ mod tests {
         run.transition(RunState::Complete).expect("to complete");
 
         assert_eq!(run.state(), RunState::Complete);
-        assert!(run.path().exists());
-    }
-
-    #[test]
-    fn transition_errors_on_missing_source() {
-        let mut run = Run {
-            base: PathBuf::from("/tmp/quire-test-runs/test.git"),
-            state: RunState::Pending,
-            id: uuid::Uuid::now_v7().to_string(),
-        };
-
-        let result = run.transition(RunState::Active);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -1039,6 +952,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
+        run.transition(RunState::Active).expect("transition");
         run.transition(RunState::Complete).expect("transition");
 
         let orphans = runs.scan_orphans().expect("scan");
@@ -1046,67 +960,10 @@ mod tests {
     }
 
     #[test]
-    fn scan_orphans_quarantines_unreadable_runs() {
-        let (_dir, quire) = tmp_quire();
-        let base = quire.base_dir().join("runs").join("test.git");
-        let runs = Runs::new(base.clone());
-
-        // Create a run, then break it by removing meta.yml.
-        let run = runs.create(&test_meta()).expect("create");
-        let id = run.id().to_string();
-        fs_err::remove_file(run.path().join("meta.yml")).expect("remove meta");
-
-        let orphans = runs.scan_orphans().expect("scan");
-        assert!(orphans.is_empty(), "broken run should not be returned");
-
-        let pending = base.join(RunState::Pending.dir_name()).join(&id);
-        assert!(!pending.exists(), "broken run should leave pending/");
-
-        let failed = base.join(RunState::Failed.dir_name()).join(&id);
-        assert!(failed.exists(), "broken run should land in failed/");
-    }
-
-    #[test]
-    fn scan_orphans_empty_when_no_runs_dir() {
+    fn scan_orphans_empty_when_no_runs() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         assert!(runs.scan_orphans().expect("scan").is_empty());
-    }
-
-    #[test]
-    fn scan_orphans_skips_dot_prefixed_entries() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
-
-        // Drop a dot-prefixed directory into pending/ alongside the real run.
-        let pending_dir = runs.base.join(RunState::Pending.dir_name());
-        fs_err::create_dir_all(pending_dir.join(".tmp-stale")).expect("mkdir dot");
-
-        let orphans = runs.scan_orphans().expect("scan");
-        assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].id(), run.id());
-    }
-
-    #[test]
-    fn write_times_updates_in_place() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
-
-        let started: Timestamp = "2026-04-28T12:00:01Z".parse().expect("parse");
-        run.write_times(&RunTimes {
-            started_at: Some(started),
-            finished_at: None,
-        })
-        .expect("write state");
-
-        let loaded = run.read_times().expect("read state");
-        assert_eq!(loaded.started_at, Some(started));
-
-        // Meta is unchanged.
-        let loaded_meta = run.read_meta().expect("read meta");
-        assert_eq!(loaded_meta, test_meta());
     }
 
     #[test]
@@ -1119,10 +976,8 @@ mod tests {
         runs.reconcile_orphans().expect("reconcile");
 
         // Pending orphan should be moved to complete.
-        let completed = runs.base.join(RunState::Complete.dir_name()).join(&id);
-        assert!(completed.exists(), "orphan should be in complete/");
-        let pending = runs.base.join(RunState::Pending.dir_name()).join(&id);
-        assert!(!pending.exists(), "orphan should not be in pending/");
+        let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Complete);
     }
 
     #[test]
@@ -1135,9 +990,8 @@ mod tests {
 
         runs.reconcile_orphans().expect("reconcile");
 
-        // Active orphan should be moved to failed.
-        let failed = runs.base.join(RunState::Failed.dir_name()).join(&id);
-        assert!(failed.exists(), "orphan should be in failed/");
+        let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Failed);
     }
 
     fn load(source: &str) -> Pipeline {
@@ -1200,9 +1054,9 @@ mod tests {
             )
             .expect("execute");
 
-        // Verify the run landed in complete/ on disk.
-        let completed = runs.base.join(RunState::Complete.dir_name()).join(&run_id);
-        assert!(completed.exists(), "run should be in complete/");
+        // Verify the run landed in complete in the DB.
+        let reopened = Run::open(quire.db_path(), run_id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Complete);
 
         let a = &outputs["a"];
         let b = &outputs["b"];
@@ -1214,8 +1068,6 @@ mod tests {
 
     #[test]
     fn execute_runs_jobs_in_topo_order() {
-        // `b` depends on `a`, but the registration order puts `b` first.
-        // Topo-sorted execution must run `a` before `b`.
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
@@ -1267,9 +1119,9 @@ mod tests {
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
 
-        // Verify the run landed in failed/ on disk.
-        let failed = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
-        assert!(failed.exists(), "run should be in failed/");
+        // Verify the run is failed in the DB.
+        let reopened = Run::open(quire.db_path(), run_id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Failed);
     }
 
     #[test]
@@ -1303,8 +1155,6 @@ mod tests {
 
     #[test]
     fn jobs_returns_quire_push_outputs_through_transitive_input() {
-        // `b` depends on `a` which depends on `:quire/push`; `b` reads
-        // `:quire/push` directly even though it's not a direct input.
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
@@ -1366,7 +1216,6 @@ mod tests {
 
     #[test]
     fn jobs_errors_on_non_ancestor_job() {
-        // `peer` exists as a job but isn't an ancestor of `grab`.
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
@@ -1432,7 +1281,6 @@ mod tests {
         let runs = test_runs(&quire);
         let run = runs.create(&test_meta()).expect("create");
 
-        // `a` does nothing, `b` reads `a`'s outputs — should get nil.
         let pipeline = load(
             r#"(local ci (require :quire.ci))
 (ci.job :a [:quire/push] (fn [_] nil))
@@ -1478,8 +1326,7 @@ mod tests {
         .expect("execute");
 
         let log_path = runs
-            .base
-            .join(RunState::Complete.dir_name())
+            .base_dir
             .join(&run_id)
             .join("jobs")
             .join("greet")
@@ -1518,8 +1365,8 @@ mod tests {
             Executor::Host,
         );
 
-        let failed_dir = runs.base.join(RunState::Failed.dir_name()).join(&run_id);
-        assert!(failed_dir.exists(), "run should be in failed/");
+        let failed_dir = runs.base_dir.join(&run_id);
+        assert!(failed_dir.exists(), "run directory should exist");
 
         let log_path = failed_dir.join("jobs").join("a").join("log.yml");
         assert!(
@@ -1634,28 +1481,6 @@ mod tests {
     }
 
     #[test]
-    fn container_record_round_trips_through_yaml() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
-
-        let now: Timestamp = "2026-05-04T16:20:01Z".parse().expect("parse");
-        let later: Timestamp = "2026-05-04T16:21:09Z".parse().expect("parse");
-        let record = ContainerRecord {
-            image_tag: Some("quire-ci/test:run-id".into()),
-            container_id: Some("9f3b8a72c1d4".into()),
-            build_started_at: Some(now),
-            build_finished_at: Some(later),
-            container_started_at: Some(later),
-            container_stopped_at: None,
-        };
-        run.write_container_record(&record).expect("write");
-
-        let read = run.read_container_record().expect("read");
-        assert_eq!(read, record);
-    }
-
-    #[test]
     fn repo_segment_returns_final_component() {
         assert_eq!(repo_segment(Path::new("runs/test.git")), "test.git");
         assert_eq!(
@@ -1667,12 +1492,8 @@ mod tests {
 
     #[test]
     fn repo_segment_sanitizes_for_docker_tags() {
-        // Docker rejects tags whose component starts with `.` or `-` —
-        // tempdir names produced by `tempfile::tempdir()` start with `.`.
         assert_eq!(repo_segment(Path::new("/tmp/.tmpAbCdEf")), "tmpabcdef");
-        // Uppercase is rejected; lowercase fine.
         assert_eq!(repo_segment(Path::new("MyRepo.git")), "myrepo.git");
-        // Other invalid characters become underscores.
         assert_eq!(
             repo_segment(Path::new("repo with spaces")),
             "repo_with_spaces"
@@ -1686,7 +1507,6 @@ mod tests {
             return;
         }
 
-        // Build a real git repo with a Dockerfile committed at HEAD.
         let dir = tempfile::tempdir().expect("tempdir");
         let src_repo = dir.path().join("src");
         fs_err::create_dir_all(&src_repo).expect("mkdir src");
@@ -1746,9 +1566,6 @@ mod tests {
         let run = runs.create(&meta).expect("create");
         let run_id = run.id().to_string();
 
-        // Run `uname -s` inside the container. On macOS `uname -s`
-        // returns `Darwin`; getting `Linux` back proves the command
-        // ran inside the alpine container, not on the host.
         let pipeline = load(
             r#"(local ci (require :quire.ci))
 (ci.job :probe [:quire/push] (fn [{: sh}] (sh ["uname" "-s"])))"#,
@@ -1773,21 +1590,31 @@ mod tests {
             probe[0].stdout,
         );
 
-        // Verify container.yml was written with all fields.
-        let complete = runs.base.join(RunState::Complete.dir_name()).join(&run_id);
-        let record_path = complete.join("container.yml");
-        assert!(record_path.exists(), "container.yml should exist");
-        let record: ContainerRecord =
-            serde_yaml_ng::from_str(&fs_err::read_to_string(&record_path).unwrap()).unwrap();
-        assert!(record.image_tag.is_some());
-        assert!(record.container_id.is_some());
-        assert!(record.build_started_at.is_some());
-        assert!(record.build_finished_at.is_some());
-        assert!(record.container_started_at.is_some());
-        assert!(record.container_stopped_at.is_some());
+        // Verify container metadata was written to the DB.
+        let db = crate::db::open(&quire.db_path()).expect("open db");
+        let image_tag: Option<String> = db
+            .query_row(
+                "SELECT image_tag FROM runs WHERE id = ?1",
+                rusqlite::params![&run_id],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert!(image_tag.is_some(), "image_tag should be set");
+
+        let container_stopped_ms: Option<i64> = db
+            .query_row(
+                "SELECT container_stopped_at_ms FROM runs WHERE id = ?1",
+                rusqlite::params![&run_id],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert!(
+            container_stopped_ms.is_some(),
+            "container_stopped_at_ms should be set"
+        );
 
         // Cleanup the image we built.
-        if let Some(tag) = record.image_tag {
+        if let Some(tag) = image_tag {
             let _ = std::process::Command::new("docker")
                 .args(["image", "rm", &tag])
                 .output();

@@ -129,8 +129,12 @@ impl Repo {
     }
 
     /// Access CI runs for this repo.
-    pub fn runs(&self) -> Runs {
-        Runs::new(self.runs_base())
+    pub fn runs(&self, db_path: &Path) -> Runs {
+        Runs::new(
+            db_path.to_path_buf(),
+            self.name().to_string(),
+            self.runs_base(),
+        )
     }
 }
 
@@ -165,6 +169,10 @@ impl Quire {
 
     pub fn config_path(&self) -> PathBuf {
         self.base_dir.join("config.fnl")
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.base_dir.join("quire.db")
     }
 
     pub fn socket_path(&self) -> PathBuf {

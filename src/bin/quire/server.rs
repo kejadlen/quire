@@ -39,9 +39,16 @@ pub async fn run(quire: &Quire) -> Result<()> {
 
     tracing::info!(path = %socket_path.display(), "listening on event socket");
 
+    // Open and migrate the database.
+    let db_path = quire.db_path();
+    tracing::info!(path = %db_path.display(), "opening database");
+    let mut db = quire::db::open(&db_path).into_diagnostic()?;
+    quire::db::migrate(&mut db).into_diagnostic()?;
+    drop(db);
+
     // Scan for orphaned runs from a previous server instance.
     for repo in quire.repos().context("failed to list repos")? {
-        repo.runs().reconcile_orphans()?;
+        repo.runs(&db_path).reconcile_orphans()?;
     }
 
     let quire_handle = quire.clone();

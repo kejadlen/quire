@@ -65,7 +65,11 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>, executor: Executor) -> 
     // (e.g. $XDG_CACHE_HOME/quire/local-runs) so logs survive past the
     // command and `tail -f` becomes useful.
     let tmp = tempfile::tempdir().into_diagnostic()?;
-    let runs = Runs::new(tmp.path().to_path_buf());
+    let db_path = tmp.path().join("quire.db");
+    let mut db = quire::db::open(&db_path).into_diagnostic()?;
+    quire::db::migrate(&mut db).into_diagnostic()?;
+    drop(db);
+    let runs = Runs::new(db_path, "local".to_string(), tmp.path().to_path_buf());
 
     let meta = RunMeta {
         sha: commit.sha.clone(),

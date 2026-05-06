@@ -46,6 +46,7 @@ One volume mounted into the container:
 
 ```
 /var/quire/
+  quire.db                       # SQLite database
   repos/
     foo.git/
       quire/
@@ -54,10 +55,11 @@ One volume mounted into the container:
         quire/...
   runs/
     <repo>/<run-id>/
-      meta.fnl               status, ref, sha, pipeline source, timings
-      log                    streamed stdout/stderr
-      artifacts/
-  config.fnl                 global config
+      workspace/                 # materialized checkout
+      jobs/
+        <job-id>/
+          log.yml                # per-job sh output logs
+  config.fnl                 # global config
 ```
 
 Per-repo config (`public_runs`, etc.) is checked into the repo at `.quire/config.fnl`, not stored in the bare repo's `quire/` directory. The `quire/` directory holds only generated artifacts.

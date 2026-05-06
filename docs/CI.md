@@ -26,31 +26,33 @@ The runner doesn't get its own process because **it doesn't execute user code in
 
 Within the host process, `(sh ...)` is the only sanctioned host-effect primitive in the Lua VM. See "Sandbox the in-process VM" below — the compile-then-execute split removes `io`/`os`/`debug` from the execute VM so a buggy or hostile ci.fnl can't bypass the chokepoint.
 
-## Communication: filesystem as state of record, channels as optimization
+## Communication: SQLite as state of record, channels as optimization
 
-Run records on disk are the **durable truth** once written. The hook is a thin transport: it sends a push event over a Unix socket to `quire serve`, which is the sole writer of run records on disk.
+Run records in SQLite are the **durable truth** once written. The hook is a thin transport: it sends a push event over a Unix socket to `quire serve`, which is the sole writer of run records.
 
-| Component | Reads from disk | Writes to disk | In-memory comms |
+| Component | Reads from | Writes to | In-memory comms |
 | --- | --- | --- | --- |
 | Hook (`post-receive`) | — | — | push event → `quire serve` socket listener |
-| Runner (in-process with `quire serve`) | run records on startup | `meta.json`, `state.json`, `jobs/*/`, logs | wakeup from listener (mpsc); broadcast logs → web |
-| Web (`quire serve`) | run records on demand | — | subscribe to log broadcasts |
+| Runner (in-process with `quire serve`) | SQLite on startup | SQLite, `jobs/*/`, logs | wakeup from listener (Notify); broadcast logs → web |
+| Web (`quire serve`) | SQLite on demand | — | subscribe to log broadcasts |
 
-The listener task (also inside `quire serve`) bridges the hook process boundary to the in-process runner. It binds `/var/quire/server.sock` on startup, parses incoming events, writes the initial run record, and signals the runner via mpsc. The wakeup signal carries no payload — the runner re-derives state by scanning `pending/`, so missed or duplicated wakes are idempotent.
+The listener task (also inside `quire serve`) bridges the hook process boundary to the in-process runner. It binds `/var/quire/server.sock` on startup, parses incoming events, inserts the initial run row, and signals the runner. The wakeup signal carries no payload — the runner queries SQLite for the next pending run, so missed or duplicated wakes are idempotent.
 
-On startup, the runner walks `runs/pending/` and `runs/active/`, reconstructs the queue, and reconciles orphans (any `active/` entry whose container is no longer running gets marked failed). Crash resilience covers `quire serve` restart: any run record committed before the crash gets picked up.
+On startup, the runner reconciles orphans: any `active` row whose container is no longer running gets marked `failed`. Crash resilience covers `quire serve` restart: any run row committed before the crash gets picked up.
 
-**v1 limitation: zero-loss-on-server-down is not provided.** If `quire serve` is down at push time, the hook's socket connect fails, the pusher sees a stderr warning, and no run is created. The push itself remains accepted by git (post-receive runs after acceptance). The v1 mitigation is "run `quire serve` under a supervisor that restarts it"; a hook fallback that writes `meta.json` directly when the socket is unreachable is a deferred follow-up if this ever bites in practice.
+**v1 limitation: zero-loss-on-server-down is not provided.** If `quire serve` is down at push time, the hook's socket connect fails, the pusher sees a stderr warning, and no run is created. The push itself remains accepted by git (post-receive runs after acceptance). The v1 mitigation is "run `quire serve` under a supervisor that restarts it"; a hook fallback that inserts directly into SQLite when the socket is unreachable is a deferred follow-up if this ever bites in practice.
 
-The "we could one day extract the runner into its own process" door stays open: the on-disk schema doesn't change, the listener-to-runner mpsc becomes a Unix socket. Not building it now.
+The "we could one day extract the runner into its own process" door stays open: the SQLite schema doesn't change, the listener-to-runner wakeup becomes a Unix socket. Not building it now.
 
-## Storage: no database
+## Storage: SQLite
 
-No SQLite in v1. Run records, job state, logs, and the queue all live as files under `/var/quire/runs/`. None of the queries the v1 web UI wants are slow at this scale; the in-memory queue handles low-latency enqueue/dequeue.
+Run state, job state, and the run queue live in a single SQLite database at `<quire-data-root>/quire.db`. The database is the primary store for all run lifecycle data. The filesystem holds per-run workspaces and per-job log files only.
 
-**The commitment, written down so it doesn't drift:** if SQLite ever earns its keep — most likely trigger is FTS5 over logs — it enters as a **secondary index over the filesystem**, never as a primary store. Files remain canonical. The database is rebuildable: `quire reindex` walks `runs/` and repopulates. If the database is corrupted or lost, recovery is mechanical. The rule: `rm /var/quire/quire.db && quire reindex` returns the system to a working state. If that ever stops being true, the database has crossed a line it shouldn't have.
+The database is project-scoped, not CI-scoped, even though the only tables today are CI tables. Future tables (config snapshots, hook event audit, etc.) live in the same file.
 
-This is the principle that prevents drift. The temptation to migrate state into SQLite ("just this one thing, it's so much easier") is constant once it exists; without the rule written down, the second time you reach for SQLite you'll have forgotten why you originally said no.
+Migrations are SQL files under `migrations/` at the project root, embedded into the binary via `include_str!`. `rusqlite_migration` tracks `PRAGMA user_version` and applies missing migrations transactionally. Each future schema change adds a new file (`0002_*.sql`, `0003_*.sql`, …) and a corresponding `M::up` entry. Files are append-only — never edit a migration that has already shipped.
+
+SQLite is the queue: `quire serve` finds the next pending run with a `SELECT`, not by scanning directories. The wakeup signal stays an in-process `tokio::sync::Notify` — used only to nudge the runner, not to carry data.
 
 ## Concurrency: max one run at a time
 
@@ -146,28 +148,30 @@ The reason this is the chosen path rather than "subprocess + rlimit, no bwrap" �
 
 ## Run lifecycle
 
-1. **`post-receive` hook** sends a push event (one JSON line: `{type, repo, pushed_at, refs: [{ref, old_sha, new_sha}, ...]}`) over `/var/quire/server.sock` and exits. The listener task in `quire serve` parses the event, allocates a run-id per ref, writes `runs/<repo>/<run-id>/{meta.json, state.json}`, and signals the runner via mpsc. No CI work runs in the hook itself.
-2. **Runner picks up** the entry from the queue. Atomic rename `pending/<id>` → `active/<id>` for state-machine clarity.
+1. **`post-receive` hook** sends a push event (one JSON line: `{type, repo, pushed_at, refs: [{ref, old_sha, new_sha}, ...]}`) over `/var/quire/server.sock` and exits. The listener task in `quire serve` parses the event, allocates a run-id per ref, inserts a row into `runs` in `pending` state, and signals the runner. No CI work runs in the hook itself.
+2. **Runner picks up** the entry from the queue. Single `UPDATE runs SET state = 'active'` in SQLite.
 3. **Materialize workspace.** `git --git-dir=repos/foo.git archive <sha> | tar -x -C workspace/`. No worktree, no checkout state on the bare repo. Workspace is throwaway; deleted at end of run.
 4. **Evaluate `.quire/ci.fnl`** in the host process (see above). Pipeline image is read from the `(ci.image ...)` registration; jobs are registered via `(ci.job ...)`; the run-fns are not yet invoked.
-5. **Start the run container.** `docker run -d --rm --mount type=bind,src=<run-dir>,dst=/work -w /work <image> sleep infinity`. Container ID stowed on the runtime. The run's container hosts every `(sh ...)` call from every job in the run.
-6. **Per ready job:** invoke its run-fn in topological order. Each `(sh ...)` call inside the run-fn issues `docker exec` (no TTY) into the run container, streams stdout/stderr into `jobs/<job-id>/log.jsonl` as JSONL events (one per `sh-start`, `stdout`/`stderr`, `sh-exit`), and returns `{exit, stdout, stderr, cmd}` to Lua. Container-level events (`container-start`, `container-died`, `container-end`) go into the run's own `<run-dir>/log.jsonl`.
-7. **Tear down the run container.** `docker stop` + `docker rm`. Even on error paths — no orphaned containers if a run-fn errors.
-8. **Aggregate.** Write final status to the run directory. Move `active/<id>` → `complete/<id>` (or `failed/<id>`).
+5. **Start the run container.** `docker run -d --rm --mount type=bind,src=<run-dir>,dst=/work -w /work <image> sleep infinity`. Container ID written to the `runs` row. The run's container hosts every `(sh ...)` call from every job in the run.
+6. **Per ready job:** invoke its run-fn in topological order. Each `(sh ...)` call inside the run-fn issues `docker exec` (no TTY) into the run container, captures stdout/stderr and exit code, and returns `{exit, stdout, stderr, cmd}` to Lua.
+7. **Tear down the run container.** `docker stop` + `docker rm`. Even on error paths — no orphaned containers if a run-fn errors. `container_stopped_at_ms` written to the `runs` row.
+8. **Aggregate.** Write final status via `UPDATE runs SET state = 'complete'` (or `'failed'`). Per-job logs are written to `jobs/<job-id>/log.yml` on disk before the final transition.
 
 ## Run record schema
 
 ```
+quire.db
+  runs table: id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
+              queued_at_ms, started_at_ms, finished_at_ms, container_id,
+              image_tag, build_started_at_ms, build_finished_at_ms,
+              container_started_at_ms, container_stopped_at_ms, workspace_path
+  jobs table:  run_id, job_id, state, exit_code, started_at_ms, finished_at_ms
+
 runs/<repo>/<run-id>/
-  meta.json        # immutable: sha, ref, pusher, pushed_at
-  state.json       # mutable: status, started_at, finished_at, runner_pid, container_id
-  log.jsonl        # per-run events: container-start, container-died, container-end
+  workspace/               # materialized checkout
   jobs/
     <job-id>/
-      spec.json    # immutable: inputs, registration source location
-      state.json   # mutable: status, started_at, finished_at, outputs
-      log.jsonl    # per-job events: sh-start, stdout, stderr, sh-exit
-  cancel           # touch-file; runner checks before each job
+      log.yml              # per-job sh output logs
 ```
 
 Two principles fall out:
@@ -246,7 +250,7 @@ Punt on cache invalidation until it actually annoys. "Delete the cache dir" is a
 ## Locked-in decisions
 
 * **Runner is in-process** with `quire serve` as a tokio task; not a separate process. Filesystem is the state of record; channels are the wakeup optimization.
-* **No SQLite in v1.** If it enters later, it's a secondary index over the filesystem, never primary. `rm quire.db && quire reindex` must always recover.
+* **SQLite is the primary store for run and job state.** Migrations under `migrations/`, embedded into the binary. The filesystem holds workspaces and per-job log files only.
 * **Per-run container**, not per-job and not long-lived runners. One `docker run` at run start, `docker exec` per `(sh ...)` call from each job, `docker stop` at run end. Per-job container differentiation is a deferred extension.
 * **`(sh ...)` is the only host-effect primitive in the Lua VM.** No `(container ...)` primitive. The execute VM is hardened (no `io`/`os`/`debug`) so `sh` becomes the documented chokepoint — every effect is auditable, persistable, redactable in one place.
 * **Pipeline-level image declaration via `(ci.image ...)`.** Single image per pipeline; per-job override deferred until pipelines actually need heterogeneity.

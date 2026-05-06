@@ -13,7 +13,7 @@ pub(crate) mod error;
 
 pub use error::{Error, Result};
 pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
-pub use run::{Executor, Run, RunMeta, RunState, RunTimes, Runs, materialize_workspace};
+pub use run::{Executor, Run, RunMeta, RunState, Runs, materialize_workspace};
 
 /// A resolved commit reference.
 ///
@@ -26,7 +26,7 @@ pub struct CommitRef {
     pub display: String,
 }
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::display_chain;
 use crate::event::{PushEvent, PushRef};
@@ -47,11 +47,6 @@ pub struct Ci {
 impl Ci {
     pub fn new(repo_path: PathBuf) -> Self {
         Self { repo_path }
-    }
-
-    /// Access CI runs for this repo.
-    pub fn runs(&self, runs_base: PathBuf) -> Runs {
-        Runs::new(runs_base)
     }
 
     /// Read and compile ci.fnl at a given SHA, returning the validated
@@ -134,8 +129,9 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
+    let db_path = quire.db_path();
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(&repo, event.pushed_at, push_ref, &secrets) {
+        if let Err(e) = trigger_ref(&repo, &db_path, event.pushed_at, push_ref, &secrets) {
             tracing::error!(
                 repo = %event.repo,
                 sha = %push_ref.new_sha, // cov-excl-line
@@ -149,6 +145,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 /// Create and run CI for a single updated ref.
 fn trigger_ref(
     repo: &Repo,
+    db_path: &Path,
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     secrets: &HashMap<String, crate::secret::SecretString>,
@@ -165,7 +162,7 @@ fn trigger_ref(
         pushed_at,
     };
 
-    let mut run = ci.runs(repo.runs_base()).create(&meta)?;
+    let mut run = repo.runs(db_path).create(&meta)?;
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
@@ -245,6 +242,10 @@ mod tests {
         );
 
         let quire = Quire::new(dir.path().to_path_buf());
+        // Initialize the database.
+        let mut db = crate::db::open(&quire.db_path()).expect("init db");
+        crate::db::migrate(&mut db).expect("migrate db");
+        drop(db);
         (dir, quire, "test.git".to_string())
     }
 
@@ -267,6 +268,9 @@ mod tests {
         );
 
         let quire = Quire::new(dir.path().to_path_buf());
+        let mut db = crate::db::open(&quire.db_path()).expect("init db");
+        crate::db::migrate(&mut db).expect("migrate db");
+        drop(db);
         (dir, quire, "test.git".to_string())
     }
 
@@ -276,13 +280,6 @@ mod tests {
             .output()
             .expect("rev-parse");
         String::from_utf8(output.stdout).unwrap().trim().to_string()
-    }
-
-    #[test]
-    fn ci_new_and_runs() {
-        let ci = Ci::new(PathBuf::from("/tmp/test"));
-        let _runs = ci.runs(PathBuf::from("/tmp/runs"));
-        // Just confirm construction works — Runs::new is covered elsewhere.
     }
 
     #[test]
@@ -362,11 +359,17 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        trigger_ref(&repo, pushed_at, &push_ref, &HashMap::new())
-            .expect("trigger_ref should succeed");
+        trigger_ref(
+            &repo,
+            &quire.db_path(),
+            pushed_at,
+            &push_ref,
+            &HashMap::new(),
+        )
+        .expect("trigger_ref should succeed");
 
         // Verify a run was created in complete/.
-        let runs = repo.runs();
+        let runs = repo.runs(&quire.db_path());
         let orphans = runs.scan_orphans().expect("scan");
         assert!(orphans.is_empty(), "run should be complete, not orphaned");
     }
@@ -383,8 +386,14 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        trigger_ref(&repo, pushed_at, &push_ref, &HashMap::new())
-            .expect("should succeed without ci.fnl");
+        trigger_ref(
+            &repo,
+            &quire.db_path(),
+            pushed_at,
+            &push_ref,
+            &HashMap::new(),
+        )
+        .expect("should succeed without ci.fnl");
     }
 
     #[test]
@@ -400,7 +409,13 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        let result = trigger_ref(&repo, pushed_at, &push_ref, &HashMap::new());
+        let result = trigger_ref(
+            &repo,
+            &quire.db_path(),
+            pushed_at,
+            &push_ref,
+            &HashMap::new(),
+        );
         assert!(result.is_err(), "invalid pipeline should fail");
     }
 
