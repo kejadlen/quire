@@ -68,9 +68,15 @@ impl Ci {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
-        let name = CI_FNL.to_string();
-        let pipeline = pipeline::compile(&source, &name)?;
-        Ok(Some(pipeline))
+        Ok(Some(self.compile(&source)?))
+    }
+
+    /// Compile `.quire/ci.fnl` source into a validated [`Pipeline`].
+    ///
+    /// Single chokepoint for compile + structural validation, used by
+    /// [`Ci::pipeline`] and `trigger_ref` so the two paths can't drift.
+    fn compile(&self, source: &str) -> error::Result<Pipeline> {
+        pipeline::compile(source, CI_FNL)
     }
 
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
@@ -168,7 +174,7 @@ fn trigger_ref(
         "created CI run"
     );
 
-    let pipeline = match pipeline::compile(&source, CI_FNL) {
+    let pipeline = match ci.compile(&source) {
         Ok(p) => p,
         Err(e) => {
             run.transition(RunState::Active)?;
