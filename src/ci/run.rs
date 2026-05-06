@@ -448,10 +448,11 @@ impl Run {
                     return Err(Error::DockerUnavailable);
                 }
 
-                let mut record = ContainerRecord::default();
-
                 // Build phase.
-                record.build_started_at = Some(Timestamp::now());
+                let mut record = ContainerRecord {
+                    build_started_at: Some(Timestamp::now()),
+                    ..Default::default()
+                };
                 self.write_container_record(&record)?;
 
                 let dockerfile = workspace.join(".quire/Dockerfile");
