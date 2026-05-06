@@ -43,6 +43,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Build stage: cook dependencies first (cached across rebuilds), then build
 # the binary. Changes to source code do not retrigger dependency compilation.
 FROM chef AS builder
+ARG QUIRE_VERSION
+ENV QUIRE_VERSION=${QUIRE_VERSION}
 COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git/db \
