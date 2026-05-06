@@ -444,6 +444,10 @@ impl Run {
         match executor {
             Executor::Host => Ok(ExecutorRuntime::Host),
             Executor::Docker => {
+                if !crate::ci::docker::is_available() {
+                    return Err(Error::DockerUnavailable);
+                }
+
                 let mut record = ContainerRecord::default();
 
                 // Build phase.

@@ -40,6 +40,9 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    #[error("docker is not available — install docker and ensure the daemon is running")]
+    DockerUnavailable,
+
     #[error("workspace materialization failed")]
     WorkspaceMaterializationFailed {
         #[source]

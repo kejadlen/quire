@@ -50,7 +50,6 @@ pub(crate) fn docker_build(dockerfile: &Path, context: &Path, tag: &str) -> Resu
 /// reconciliation handles anything that survives.
 pub(crate) struct ContainerSession {
     pub(crate) container_id: String,
-    pub(crate) image_tag: String,
     pub(crate) container_started_at: jiff::Timestamp,
 }
 
@@ -89,7 +88,6 @@ impl ContainerSession {
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(Self {
             container_id,
-            image_tag: image_tag.to_string(),
             container_started_at: jiff::Timestamp::now(),
         })
     }
@@ -172,7 +170,6 @@ mod tests {
         assert!(!session.container_id.is_empty());
         // Docker container IDs from `docker run` are 64-char SHA256 hex.
         assert_eq!(session.container_id.len(), 64, "got: {}", session.container_id);
-        assert_eq!(session.image_tag, "alpine:3.19");
         // session drops here; docker stop runs.
     }
 
