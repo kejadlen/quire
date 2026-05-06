@@ -11,7 +11,10 @@ use rusqlite_migration::{M, Migrations};
 /// The ordered set of schema migrations. Append-only — never edit
 /// a migration that has already shipped.
 static MIGRATIONS: std::sync::LazyLock<Migrations<'static>> = std::sync::LazyLock::new(|| {
-    Migrations::new(vec![M::up(include_str!("../migrations/0001_initial.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("../migrations/0001_initial.sql")),
+        M::up(include_str!("../migrations/0002_sh_events.sql")),
+    ])
 });
 
 /// Error from running migrations.

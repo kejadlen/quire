@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{IntoLua, Lua, LuaSerdeExt};
+use jiff::Timestamp;
 
 use super::pipeline::{Job, Pipeline};
 use super::run::{DockerLifecycle, RunMeta};
@@ -53,6 +54,11 @@ pub(super) struct Runtime {
     pub(super) inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
     pub(super) current_job: RefCell<Option<String>>,
     pub(super) outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
+    /// Per-sh timing records: job_id → (sh_index, started_at, finished_at).
+    /// Parallel to `outputs`; each entry at the same index corresponds.
+    pub(super) sh_timings: RefCell<HashMap<String, Vec<(usize, Timestamp, Timestamp)>>>,
+    /// Per-job sh call counter for assigning sequential indices.
+    sh_counter: RefCell<HashMap<String, usize>>,
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
     workspace: std::path::PathBuf,
@@ -118,6 +124,8 @@ impl Runtime {
             inputs,
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
+            sh_timings: RefCell::new(HashMap::new()),
+            sh_counter: RefCell::new(HashMap::new()),
             workspace,
             executor,
         }
@@ -178,6 +186,11 @@ impl Runtime {
         std::mem::take(&mut *self.outputs.borrow_mut())
     }
 
+    /// Drain all recorded sh timings, returning them keyed by job id.
+    pub(super) fn take_sh_timings(&self) -> HashMap<String, Vec<(usize, Timestamp, Timestamp)>> {
+        std::mem::take(&mut *self.sh_timings.borrow_mut())
+    }
+
     /// Resolve a declared secret by name. Errors if the name isn't
     /// declared or the secret's source can't be read.
     pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
@@ -197,6 +210,7 @@ impl Runtime {
     /// container's working directory, and `opts.env` is forwarded as
     /// `-e KEY=VAL` flags.
     pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> super::error::Result<ShOutput> {
+        let started_at = Timestamp::now();
         let output = match self.docker_target() {
             None => cmd.run(opts, &self.workspace)?,
             Some((container_id, work_dir)) => {
@@ -206,12 +220,25 @@ impl Runtime {
                 wrapped.run(ShOpts::default(), &self.workspace)?
             }
         };
+        let finished_at = Timestamp::now();
         if let Some(job) = self.current_job.borrow().as_ref() {
+            let n = {
+                let mut counter = self.sh_counter.borrow_mut();
+                let entry = counter.entry(job.clone()).or_insert(1);
+                let n = *entry;
+                *entry += 1;
+                n
+            };
             self.outputs
                 .borrow_mut()
                 .entry(job.clone())
                 .or_default()
                 .push(output.clone());
+            self.sh_timings
+                .borrow_mut()
+                .entry(job.clone())
+                .or_default()
+                .push((n, started_at, finished_at));
         }
         Ok(output)
     }
@@ -229,6 +256,8 @@ impl Runtime {
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
+            sh_timings: RefCell::new(HashMap::new()),
+            sh_counter: RefCell::new(HashMap::new()),
             workspace: std::env::current_dir().expect("cwd"),
             executor: ExecutorRuntime::Host,
         }

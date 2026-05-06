@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 pub(crate) mod docker;
+pub(crate) mod logs;
 mod mirror;
 mod pipeline;
 mod registration;

@@ -310,6 +310,16 @@ impl Run {
                 .run_fn
                 .clone();
 
+            // Insert job row in 'active' state.
+            let job_started = Timestamp::now().as_millisecond();
+            {
+                let db = crate::db::open(&self.db_path)?;
+                db.execute(
+                    "INSERT INTO jobs (run_id, job_id, state, started_at_ms) VALUES (?1, ?2, 'active', ?3)",
+                    rusqlite::params![&self.id, job_id, job_started],
+                )?;
+            }
+
             runtime.enter_job(job_id);
             let result: Result<()> = (|| match run_fn {
                 RunFn::Lua(f) => {
@@ -320,6 +330,20 @@ impl Run {
             })();
             runtime.leave_job();
 
+            // Update job row to terminal state.
+            let job_finished = Timestamp::now().as_millisecond();
+            let (job_state, exit_code) = match &result {
+                Ok(()) => ("complete", None::<i32>),
+                Err(_) => ("failed", None::<i32>),
+            };
+            {
+                let db = crate::db::open(&self.db_path)?;
+                db.execute(
+                    "UPDATE jobs SET state = ?1, exit_code = ?2, finished_at_ms = ?3 WHERE run_id = ?4 AND job_id = ?5",
+                    rusqlite::params![job_state, exit_code, job_finished, &self.id, job_id],
+                )?;
+            }
+
             if let Err(e) = result {
                 failed_job = Some((job_id.to_string(), e));
                 break;
@@ -329,9 +353,10 @@ impl Run {
         // Always drain outputs and write logs, even on failure — the
         // jobs that did run before the failure are useful context.
         let outputs = runtime.take_outputs();
+        let timings = runtime.take_sh_timings();
         lua.remove_app_data::<Rc<Runtime>>();
 
-        self.write_all_logs(&outputs)?;
+        self.write_sh_records(&outputs, &timings)?;
 
         // Drop the runtime *before* the final transition. In docker
         // mode this fires `DockerLifecycle::drop`, which stamps
@@ -410,20 +435,60 @@ impl Run {
         }
     }
 
-    /// Write per-job log files from the captured `(sh …)` outputs.
-    ///
-    /// Creates `jobs/<job-id>/log.yml` in the run directory for each
-    /// job that has outputs. Written before the final state transition
-    /// so logs are available for both successful and failed runs.
-    fn write_all_logs(&self, outputs: &HashMap<String, Vec<ShOutput>>) -> Result<()> {
-        for (job_id, sh_outputs) in outputs {
-            if sh_outputs.is_empty() {
-                continue;
-            }
-            let job_dir = self.path().join("jobs").join(job_id);
-            fs_err::create_dir_all(&job_dir)?;
-            write_yaml(&job_dir.join("log.yml"), sh_outputs)?;
+    /// Write sh events to the database and per-sh CRI log files to
+    /// disk. Written before the final state transition so logs are
+    /// available for both successful and failed runs.
+    fn write_sh_records(
+        &self,
+        outputs: &HashMap<String, Vec<ShOutput>>,
+        timings: &HashMap<String, Vec<(usize, jiff::Timestamp, jiff::Timestamp)>>,
+    ) -> Result<()> {
+        if outputs.is_empty() {
+            return Ok(());
         }
+
+        let db = crate::db::open(&self.db_path)?;
+
+        for (job_id, sh_outputs) in outputs {
+            let job_timings = timings.get(job_id);
+            let job_dir = self.path().join("jobs").join(job_id);
+
+            for (i, output) in sh_outputs.iter().enumerate() {
+                let (n, started_at, finished_at) = job_timings
+                    .and_then(|t| t.get(i))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        // Fallback if timing wasn't captured (shouldn't happen).
+                        let n = i + 1;
+                        let now = jiff::Timestamp::now();
+                        (n, now, now)
+                    });
+
+                // Write CRI log file.
+                fs_err::create_dir_all(&job_dir)?;
+                let sh_path = job_dir.join(format!("sh-{n}.log"));
+                super::logs::write_cri_log(
+                    &sh_path,
+                    output,
+                    &started_at.to_string(),
+                )?;
+
+                // Insert sh event into the database.
+                db.execute(
+                    "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        &self.id,
+                        job_id,
+                        started_at.as_millisecond(),
+                        finished_at.as_millisecond(),
+                        output.exit,
+                        &output.cmd,
+                    ],
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -582,14 +647,6 @@ pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Res
     Ok(())
 }
 
-/// Write a serializable value to a YAML file atomically (temp file + rename).
-pub(crate) fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let tmp_path = path.with_extension("yml.tmp");
-    let f = fs_err::File::create(&tmp_path)?;
-    serde_yaml_ng::to_writer(std::io::BufWriter::new(f), value)?;
-    fs_err::rename(&tmp_path, path)?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -1255,22 +1312,28 @@ mod tests {
         )
         .expect("execute");
 
+        // CRI log file should exist.
         let log_path = runs
             .base_dir
             .join(&run_id)
             .join("jobs")
             .join("greet")
-            .join("log.yml");
-        assert!(log_path.exists(), "job log file should exist");
+            .join("sh-1.log");
+        assert!(log_path.exists(), "sh-1.log should exist");
 
-        let entries: Vec<ShOutput> =
-            serde_yaml_ng::from_str(&fs_err::read_to_string(&log_path).expect("read log"))
-                .expect("parse log");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].exit, 0);
-        assert_eq!(entries[0].stdout, "hello\n");
-        assert!(entries[0].stderr.is_empty());
-        assert_eq!(entries[0].cmd, "[\"echo\", \"hello\"]");
+        let contents = fs_err::read_to_string(&log_path).expect("read log");
+        assert!(contents.contains("stdout F hello"));
+
+        // sh_events table should have one row.
+        let db = crate::db::open(&quire.db_path()).expect("db");
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sh_events WHERE run_id = ?1 AND job_id = 'greet'",
+                rusqlite::params![&run_id],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -1298,17 +1361,14 @@ mod tests {
         let failed_dir = runs.base_dir.join(&run_id);
         assert!(failed_dir.exists(), "run directory should exist");
 
-        let log_path = failed_dir.join("jobs").join("a").join("log.yml");
+        let log_path = failed_dir.join("jobs").join("a").join("sh-1.log");
         assert!(
             log_path.exists(),
-            "job 'a' log should exist even though 'b' failed"
+            "job 'a' sh-1.log should exist even though 'b' failed"
         );
 
-        let entries: Vec<ShOutput> =
-            serde_yaml_ng::from_str(&fs_err::read_to_string(&log_path).expect("read log"))
-                .expect("parse log");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].stdout, "from-a\n");
+        let contents = fs_err::read_to_string(&log_path).expect("read log");
+        assert!(contents.contains("stdout F from-a"));
     }
 
     #[test]
