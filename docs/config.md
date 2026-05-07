@@ -52,6 +52,31 @@ The `Debug` impl redacts the value, so a config struct slipping into a
 `tracing::debug!` call won't leak the secret. Calling `.reveal()` and
 logging the result bypasses this — don't.
 
+## Secret redaction in CI output
+
+Resolved secret values are scrubbed from CI output before persistence.
+When a job calls `(secret :name)`, the returned value is registered
+for the run; later appearances in `(sh ...)` stdout, stderr, or
+recorded command strings are replaced with `{{ name }}` in:
+
+- The CRI log files written under each run's workspace.
+- The `sh_events.cmd` column.
+- Any other `ShOutput`-derived persistence.
+
+Limits worth knowing:
+
+- Values shorter than 8 bytes are not registered. Common short
+  strings like `"true"` or `"yes"` would otherwise produce
+  unacceptable false-positive replacements. A `WARN`-level trace
+  event is emitted when a short value is skipped, so an operator
+  can see why a particular token is showing up unredacted.
+- Encoded forms (base64, URL-encoded, hex) are not registered. A
+  job that emits the secret in a transformed form is on its own.
+- The value returned by `(secret :name)` to the Lua caller is the
+  raw secret; subsequent `(sh ...)` calls composed from it have
+  their *recorded* output redacted at record time.
+- Tracing output is not yet redacted (tracked separately).
+
 ## See also
 
 - [`fennel.md`](fennel.md) — how Fennel files are loaded into Rust structs.
