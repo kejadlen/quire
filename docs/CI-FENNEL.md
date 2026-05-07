@@ -25,7 +25,32 @@ This is closer to Concourse's resources-and-jobs model than to GitHub Actions' t
 
 Top-level form, called once before any `(ci.job ...)`. Declares the image used to start the run's container; every `(sh ...)` call from every job in the run is `docker exec`'d into this container. Pipelines that need heterogeneous images per job will get a per-job override later — for now, one image per pipeline keeps the model simple.
 
-A pipeline that registers a job but never declares an image errors at validation, not at runtime. Calling `ci.image` more than once errors with the same shape as other duplicate-registration errors.
+Calling `ci.image` more than once errors with the same shape as other duplicate-registration errors.
+
+A pipeline can also build its image from a checked-in `.quire/Dockerfile` instead of declaring a public image. The resolution order is `(ci.image ...)` → `.quire/Dockerfile` → error.
+
+> **v0 status:** the docker executor only honors `.quire/Dockerfile` today; `(ci.image ...)` is parsed and validated but not yet wired into the executor. Pipelines targeting docker need a `.quire/Dockerfile` until the declared-image path lands.
+
+## Mirroring with `(ci.mirror ...)`
+
+```
+(ci.mirror "https://github.com/example/repo.git"
+  {:secret :github_auth_header
+   :tag    (fn [push] (.. "quire-" (string.sub push.sha 1 8)))
+   :refs   ["refs/heads/main"]   ; optional
+   :after  [:test]})             ; optional
+```
+
+Top-level form. Registers a singleton `quire/mirror` job that tags the pushed commit and `git push`es the configured refs (plus the tag) to the remote.
+
+Options:
+
+- `:secret` (required) — name of a secret in the global `:secrets` map. The secret's value is passed verbatim as an `http.extraHeader` value, so it should be the entire header (e.g. `"Authorization: Bearer ..."`).
+- `:tag` (required) — function `(fn [push] tag-name)`. Called at execute time with the `quire/push` table; the result names the tag created on `push.sha` and pushed alongside the configured refs.
+- `:refs` (optional, default empty) — list of refspecs to push. Doubles as a trigger filter: when set, the mirror runs only if the trigger ref is in the list. When empty, the mirror always runs and pushes the trigger ref.
+- `:after` (optional) — extra job ids the mirror should sequence after, listed as inputs alongside the implicit `:quire/push`.
+
+`(ci.mirror ...)` may be called once per pipeline; a second call collides on the reserved `quire/mirror` id and registers a `DuplicateJob` error.
 
 ## The `job` primitive
 
