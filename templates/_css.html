@@ -39,9 +39,11 @@ pre { white-space: pre-wrap; word-break: break-word; }
   align-items: center;
 }
 
-.page-nav .breadcrumbs .sep { color: var(--rule2); }
-.page-nav .crumb-muted { color: var(--muted); }
-.page-nav .crumb-faint { color: var(--mutedFaint); }
+.page-nav .nav-bar { display: flex; align-items: center; gap: 6px; }
+.page-nav .nav-wordmark,
+.page-nav .nav-repo { color: var(--ink); text-decoration: none; }
+.page-nav .nav-crumb { color: var(--muted); }
+.page-nav .sep { color: var(--rule2); }
 .page-nav .shortcuts { font-size: 11px; color: var(--mutedFaint); }
 
 .page-main { padding: 22px 56px 32px; }

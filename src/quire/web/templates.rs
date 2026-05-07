@@ -10,7 +10,7 @@ use super::format;
 #[template(path = "ci/run_list.html")]
 pub struct RunListTemplate {
     pub repo: String,
-    pub page: String,
+    pub crumbs: Vec<String>,
     pub runs: Vec<RunListRow>,
 }
 
@@ -60,7 +60,7 @@ impl RunListRow {
 #[template(path = "ci/run_detail.html")]
 pub struct RunDetailTemplate {
     pub repo: String,
-    pub page: String,
+    pub crumbs: Vec<String>,
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
 }
@@ -194,7 +194,7 @@ impl DetailShEvent {
 #[template(path = "error.html")]
 pub struct ErrorTemplate {
     pub repo: String,
-    pub page: String,
+    pub crumbs: Vec<String>,
     pub title: String,
     pub detail: String,
 }

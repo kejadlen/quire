@@ -39,7 +39,7 @@ async fn read_log(path: &std::path::Path) -> String {
 fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -> Response {
     let tmpl = ErrorTemplate {
         repo,
-        page: "error".to_string(),
+        crumbs: vec!["error".to_string()],
         title: title.to_string(),
         detail: detail.clone(),
     };
@@ -87,7 +87,7 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
 
     let tmpl = RunListTemplate {
         repo: repo_display,
-        page: "ci".to_string(),
+        crumbs: vec!["ci".to_string()],
         runs: template_runs,
     };
     render(&tmpl)
@@ -175,9 +175,10 @@ pub async fn run_detail(
         });
     }
 
+    let crumbs = vec!["ci".to_string(), detail_run.sha_short().to_string()];
     let tmpl = RunDetailTemplate {
         repo: repo_display,
-        page: format!("ci · {}", detail_run.sha_short()),
+        crumbs,
         run: detail_run,
         jobs: detail_jobs,
     };

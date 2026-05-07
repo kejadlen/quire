@@ -1,10 +1,12 @@
 <nav class="page-nav">
-  <div class="breadcrumbs">
-    <span class="crumb-faint">quire</span>
+  <div class="nav-bar">
+    <a class="nav-wordmark" href="/">quire</a>
     <span class="sep">/</span>
-    <span>{{ repo }}</span>
+    <a class="nav-repo" href="/{{ repo }}/ci">{{ repo }}</a>
+    {% for crumb in crumbs %}
     <span class="sep">/</span>
-    <span class="crumb-muted">{{ page }}</span>
+    <span class="nav-crumb">{{ crumb }}</span>
+    {% endfor %}
   </div>
   <div class="shortcuts">press [?] for shortcuts</div>
 </nav>
