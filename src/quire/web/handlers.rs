@@ -184,7 +184,13 @@ pub async fn run_detail(
     let runs_base = quire.base_dir().join("runs").join(&repo_name);
     let job_dir_base = runs_base.join(&run_id).join("jobs");
 
-    let mut detail_jobs: Vec<DetailJob> = Vec::with_capacity(detail.jobs.len());
+    // Build a flat list of log paths keyed by (job index, event index)
+    // so we can issue all reads concurrently and reassemble in order.
+    //
+    // tokio::spawn returns JoinHandle; awaiting handles in order preserves
+    // spawn order while all tasks run concurrently.
+    let mut log_handles: Vec<tokio::task::JoinHandle<String>> = Vec::new();
+
     for job in &detail.jobs {
         let job_events = events_by_job
             .get(job.job_id.as_str())
@@ -195,20 +201,46 @@ pub async fn run_detail(
             tracing::warn!(job_id = %job.job_id, "skipping CRI log reads for unsafe job_id");
         }
 
-        let mut detail_sh_events: Vec<DetailShEvent> = Vec::with_capacity(job_events.len());
-        for (i, ev) in job_events.iter().enumerate() {
+        for (i, _ev) in job_events.iter().enumerate() {
             let sh_n = i + 1;
-            let log_content = match &job_dir {
-                Some(dir) => read_log(&dir.join(format!("sh-{sh_n}.log"))).await,
-                None => String::new(),
-            };
+            match &job_dir {
+                Some(dir) => {
+                    let path = dir.join(format!("sh-{sh_n}.log"));
+                    log_handles.push(tokio::spawn(async move { read_log(&path).await }));
+                }
+                None => {
+                    log_handles.push(tokio::spawn(async { String::new() }));
+                }
+            }
+        }
+    }
+
+    // Await all spawned reads — tasks run concurrently; awaiting handles
+    // in spawn order preserves the index mapping.
+    let mut log_results: Vec<String> = Vec::with_capacity(log_handles.len());
+    for handle in log_handles {
+        log_results.push(handle.await.unwrap_or_default());
+    }
+
+    // Reassemble: walk jobs/events in the same order, pulling from log_results.
+    let mut log_idx = 0;
+    let mut detail_jobs: Vec<DetailJob> = Vec::with_capacity(detail.jobs.len());
+    for job in &detail.jobs {
+        let job_events = events_by_job
+            .get(job.job_id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+
+        let mut detail_sh_events: Vec<DetailShEvent> = Vec::with_capacity(job_events.len());
+        for ev in job_events {
             detail_sh_events.push(DetailShEvent {
                 started_at_ms: ev.started_at_ms,
                 finished_at_ms: ev.finished_at_ms,
                 exit_code: ev.exit_code,
                 cmd: ev.cmd.clone(),
-                log_content,
+                log_content: log_results[log_idx].clone(),
             });
+            log_idx += 1;
         }
 
         detail_jobs.push(DetailJob {
