@@ -1,0 +1,15 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block nav %}
+<nav style="padding:14px 56px;border-bottom:1px solid var(--rule);font-family:var(--font-mono);font-size:14px;font-weight:500;letter-spacing:-0.2px;display:flex;justify-content:space-between;align-items:center">
+<div><span style="color:var(--mutedFaint)">quire</span> <span style="color:var(--rule2)">/</span> <span>{{ repo }}</span> <span style="color:var(--rule2)">/</span> <span style="color:var(--muted)">error</span></div>
+<div style="font-size:11px;color:var(--mutedFaint)">press [?] for shortcuts</div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<p style="color:var(--bad);font-family:var(--font-mono)">{{ title }}</p>
+<pre style="font-family:var(--font-mono);font-size:12px;background:var(--code);padding:14px 18px;overflow:auto">{{ detail }}</pre>
+{% endblock %}

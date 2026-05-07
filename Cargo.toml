@@ -8,6 +8,7 @@ name = "quire"
 path = "src/bin/quire/main.rs"
 
 [dependencies]
+askama = "*"
 axum = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"

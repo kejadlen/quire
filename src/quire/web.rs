@@ -4,25 +4,80 @@
 //! - `GET /repo/<name>/ci` — most-recent runs for a repo.
 //! - `GET /repo/<name>/ci/<run-id>` — per-run detail with jobs and logs.
 //!
-//! Server-rendered HTML. JavaScript-optional. Follows docs/STYLE_GUIDE.md.
+//! Server-rendered HTML via Askama templates. JavaScript-optional.
 
-use axum::extract::{Path as AxumPath, State};
-use axum::http::HeaderMap;
+use askama::Template;
+use axum::extract::{FromRequestParts, Path as AxumPath, State};
+use axum::http::request::Parts;
 use axum::response::Html;
+use jiff::Timestamp;
 use rusqlite::Connection;
 
 use crate::Quire;
 
-/// Extract the Remote-User header set by the reverse proxy.
-fn remote_user(headers: &HeaderMap) -> String {
-    headers
-        .get("Remote-User")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string()
+// ── Template structs ───────────────────────────────────────────────
+
+#[derive(askama::Template)]
+#[template(path = "ci/run_list.html")]
+struct RunListTemplate {
+    repo: String,
+    runs: Vec<RunListRow>,
 }
 
-// ── Run list page ──────────────────────────────────────────────────
+struct RunListRow {
+    id: String,
+    state_color: String,
+    sha_short: String,
+    ref_short: String,
+    queued: String,
+    duration: String,
+}
+
+#[derive(askama::Template)]
+#[template(path = "ci/run_detail.html")]
+struct RunDetailTemplate {
+    repo: String,
+    run: DetailRun,
+    jobs: Vec<DetailJob>,
+}
+
+struct DetailRun {
+    state: String,
+    state_color: String,
+    sha_short: String,
+    ref_short: String,
+    queued: String,
+    started: String,
+    finished: String,
+    duration: String,
+}
+
+struct DetailJob {
+    job_id: String,
+    state: String,
+    state_color: String,
+    duration: String,
+    exit_str: String,
+    sh_events: Vec<DetailShEvent>,
+}
+
+struct DetailShEvent {
+    index: usize,
+    duration: String,
+    exit_code: i32,
+    cmd_display: String,
+    log_content: String,
+}
+
+#[derive(askama::Template)]
+#[template(path = "error.html")]
+struct ErrorTemplate {
+    repo: String,
+    title: String,
+    detail: String,
+}
+
+// ── Data access structs (from DB rows) ─────────────────────────────
 
 struct RunRow {
     id: String,
@@ -34,24 +89,118 @@ struct RunRow {
     finished_at_ms: Option<i64>,
 }
 
-pub async fn run_list(
-    State(quire): State<Quire>,
-    AxumPath(repo): AxumPath<String>,
-    headers: HeaderMap,
-) -> Html<String> {
-    let _user = remote_user(&headers);
-    let repo_display = repo.trim_end_matches(".git");
-
-    let runs = match load_runs(&quire, &repo) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(repo = %repo, error = %e, "failed to load runs");
-            return Html(error_page("Failed to load runs", &e, repo_display));
-        }
-    };
-
-    Html(run_list_html(repo_display, &runs))
+struct JobRow {
+    job_id: String,
+    state: String,
+    exit_code: Option<i32>,
+    started_at_ms: Option<i64>,
+    finished_at_ms: Option<i64>,
 }
+
+struct ShEvent {
+    job_id: String,
+    started_at_ms: i64,
+    finished_at_ms: i64,
+    exit_code: i32,
+    cmd: String,
+}
+
+// ── Auth ───────────────────────────────────────────────────────────
+
+/// Identity extracted from the `Remote-User` header injected by the
+/// reverse proxy. Present means authenticated; absent means
+/// unauthenticated. Both are valid — individual handlers (or future
+/// middleware) decide whether to require auth.
+#[derive(Clone, Debug)]
+pub struct RemoteUser(pub Option<String>);
+
+impl RemoteUser {
+    /// Whether the request carries an authenticated identity.
+    pub fn is_authenticated(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// The username, if authenticated.
+    pub fn username(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for RemoteUser {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let user = parts
+            .headers
+            .get("Remote-User")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        Ok(RemoteUser(user))
+    }
+}
+
+fn state_color(state: &str) -> &'static str {
+    match state {
+        "complete" => "var(--ok)",
+        "failed" => "var(--bad)",
+        _ => "var(--muted)",
+    }
+}
+
+fn format_timestamp(ms: i64) -> String {
+    match Timestamp::from_millisecond(ms) {
+        Ok(ts) => {
+            let now = Timestamp::now();
+            let span = now.since(ts).unwrap_or_else(|_| jiff::Span::new());
+            let hours = span.get_hours().abs();
+            let minutes = span.get_minutes().abs();
+            if hours < 1 {
+                if minutes < 1 {
+                    "just now".to_string()
+                } else {
+                    format!("{minutes}m ago")
+                }
+            } else if hours < 24 {
+                format!("{hours}h ago")
+            } else {
+                ts.to_string()
+            }
+        }
+        Err(_) => format!("{ms}ms"),
+    }
+}
+
+fn format_duration(start: Option<i64>, end: Option<i64>) -> String {
+    match (start, end) {
+        (Some(s), Some(e)) => {
+            let ms = e - s;
+            if ms < 1000 {
+                format!("{ms}ms")
+            } else {
+                format!("{}s", ms / 1000)
+            }
+        }
+        _ => "—".to_string(),
+    }
+}
+
+fn format_duration_exact(start: i64, end: i64) -> String {
+    let ms = end - start;
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{}s", ms / 1000)
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+// ── Data loading ───────────────────────────────────────────────────
 
 fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>, String> {
     let db = Connection::open(quire.db_path()).map_err(|e| e.to_string())?;
@@ -81,89 +230,6 @@ fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>, String> {
         .map_err(|e| e.to_string())?;
 
     Ok(rows)
-}
-
-// ── Run detail page ────────────────────────────────────────────────
-
-struct JobRow {
-    job_id: String,
-    state: String,
-    exit_code: Option<i32>,
-    started_at_ms: Option<i64>,
-    finished_at_ms: Option<i64>,
-}
-
-struct ShEvent {
-    job_id: String,
-    started_at_ms: i64,
-    finished_at_ms: i64,
-    exit_code: i32,
-    cmd: String,
-}
-
-pub async fn run_detail(
-    State(quire): State<Quire>,
-    AxumPath((repo, run_id)): AxumPath<(String, String)>,
-    headers: HeaderMap,
-) -> Html<String> {
-    let _user = remote_user(&headers);
-    let repo_display = repo.trim_end_matches(".git");
-
-    let result = load_run_detail(&quire, &repo, &run_id);
-    let (run, jobs, sh_events) = match result {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
-            return Html(error_page("Failed to load run", &e, repo_display));
-        }
-    };
-
-    // Load CRI log contents for each sh event.
-    let runs_base = quire.base_dir().join("runs").join(&repo);
-    let mut log_contents: std::collections::HashMap<(String, usize), String> =
-        std::collections::HashMap::new();
-    for (idx, ev) in sh_events.iter().enumerate() {
-        // Only load for events matching the current job.
-        let sh_n = sh_index_for_event(&sh_events, &ev.job_id, idx);
-        let key = (ev.job_id.clone(), sh_n);
-        if log_contents.contains_key(&key) {
-            continue;
-        }
-        let log_path = runs_base
-            .join(&run_id)
-            .join("jobs")
-            .join(&ev.job_id)
-            .join(format!("sh-{sh_n}.log"));
-        if log_path.exists() {
-            match fs_err::read_to_string(&log_path) {
-                Ok(content) => {
-                    log_contents.insert(key, content);
-                }
-                Err(e) => {
-                    tracing::warn!(path = %log_path.display(), error = %e, "failed to read CRI log");
-                }
-            }
-        }
-    }
-
-    Html(run_detail_html(
-        repo_display,
-        &run,
-        &jobs,
-        &sh_events,
-        &log_contents,
-    ))
-}
-
-/// Determine the 1-based sh index for an event within its job.
-fn sh_index_for_event(events: &[ShEvent], job_id: &str, event_idx: usize) -> usize {
-    let mut n = 0;
-    for (i, ev) in events.iter().enumerate() {
-        if ev.job_id == job_id && i <= event_idx {
-            n += 1;
-        }
-    }
-    n
 }
 
 fn load_run_detail(
@@ -239,309 +305,170 @@ fn load_run_detail(
     Ok((run, jobs, sh_events))
 }
 
-// ── HTML rendering ─────────────────────────────────────────────────
-
-fn run_list_html(repo: &str, runs: &[RunRow]) -> String {
-    let rows_html = if runs.is_empty() {
-        r#"<tr><td colspan="5" style="padding:16px;color:var(--muted)">no runs yet</td></tr>"#
-            .to_string()
-    } else {
-        runs.iter()
-            .map(|r| {
-                let state_color = match r.state.as_str() {
-                    "complete" => "var(--ok)",
-                    "failed" => "var(--bad)",
-                    _ => "var(--muted)",
-                };
-                let sha_short = &r.sha[..r.sha.len().min(8)];
-                let ref_short = r.ref_name.trim_start_matches("refs/heads/");
-                let queued = format_timestamp(r.queued_at_ms);
-                let duration = format_duration(r.started_at_ms, r.finished_at_ms);
-                format!(
-                    r#"<tr>
-  <td style="padding:6px 8px"><span style="display:inline-block;width:6px;height:6px;border-radius:3px;background:{state_color}"></span></td>
-  <td style="padding:6px 8px"><a href="/repo/{repo}/ci/{id}" style="color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--rule2)">{sha_short}</a></td>
-  <td style="padding:6px 8px">{ref_short}</td>
-  <td style="padding:6px 8px">{queued}</td>
-  <td style="padding:6px 8px">{duration}</td>
-</tr>"#,
-                    repo = repo,
-                    id = r.id,
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let style = css();
-    let nav = top_nav(repo, "ci");
-    let foot = footer();
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ci · {repo}</title>
-<style>{style}</style>
-</head>
-<body>
-{nav}
-<main style="padding:22px 56px 32px">
-<h2 style="font-family:var(--font-mono);font-size:19px;font-weight:600;margin:0 0 16px">ci runs</h2>
-<table style="width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:12.5px;line-height:1.6">
-<thead>
-<tr style="border-bottom:1px solid var(--rule2)">
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)"></th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">sha</th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">ref</th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">queued</th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">duration</th>
-</tr>
-</thead>
-<tbody style="border-top:1px solid var(--rule)">
-{rows_html}
-</tbody>
-</table>
-</main>
-{foot}
-</body>
-</html>"#,
-    )
+/// Determine the 1-based sh index for an event within its job.
+fn sh_index_for_event(events: &[ShEvent], job_id: &str, event_idx: usize) -> usize {
+    let mut n = 0;
+    for (i, ev) in events.iter().enumerate() {
+        if ev.job_id == job_id && i <= event_idx {
+            n += 1;
+        }
+    }
+    n
 }
 
-fn run_detail_html(
-    repo: &str,
-    run: &RunRow,
-    jobs: &[JobRow],
-    sh_events: &[ShEvent],
-    log_contents: &std::collections::HashMap<(String, usize), String>,
-) -> String {
-    let state_color = match run.state.as_str() {
-        "complete" => "var(--ok)",
-        "failed" => "var(--bad)",
-        _ => "var(--muted)",
+// ── Handlers ───────────────────────────────────────────────────────
+
+pub async fn run_list(
+    State(quire): State<Quire>,
+    AxumPath(repo): AxumPath<String>,
+    user: RemoteUser,
+) -> Html<String> {
+    let _user = user;
+    let repo_display = repo.trim_end_matches(".git").to_string();
+
+    let runs = match load_runs(&quire, &repo) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(repo = %repo, error = %e, "failed to load runs");
+            let tmpl = ErrorTemplate {
+                repo: repo_display,
+                title: "Failed to load runs".to_string(),
+                detail: html_escape(&e),
+            };
+            return Html(tmpl.render().unwrap_or_default());
+        }
     };
-    let sha_short = &run.sha[..run.sha.len().min(8)];
-    let ref_short = run.ref_name.trim_start_matches("refs/heads/");
-    let queued = format_timestamp(run.queued_at_ms);
-    let started = run.started_at_ms.map_or("—".to_string(), format_timestamp);
-    let finished = run.finished_at_ms.map_or("—".to_string(), format_timestamp);
-    let duration = format_duration(run.started_at_ms, run.finished_at_ms);
 
-    let meta_html = format!(
-        r#"<div style="padding:16px 0;border-bottom:1px solid var(--rule)">
-<div style="font-family:var(--font-mono);font-size:15px;line-height:1.6">
-<span style="color:{state_color}">{state}</span> · <span style="color:var(--accent)">{sha_short}</span> · {ref_short}
-</div>
-<div style="font-family:var(--font-mono);font-size:12px;color:var(--mutedFaint);margin-top:4px">
-queued {queued} · started {started} · finished {finished} · {duration}
-</div>
-</div>"#,
-        state = run.state,
-    );
+    let template_runs: Vec<RunListRow> = runs
+        .iter()
+        .map(|r| RunListRow {
+            id: r.id.clone(),
+            state_color: state_color(&r.state).to_string(),
+            sha_short: r.sha[..r.sha.len().min(8)].to_string(),
+            ref_short: r.ref_name.trim_start_matches("refs/heads/").to_string(),
+            queued: format_timestamp(r.queued_at_ms),
+            duration: format_duration(r.started_at_ms, r.finished_at_ms),
+        })
+        .collect();
 
-    // Group sh_events by job and render.
-    let mut jobs_html = String::new();
-    for job in jobs {
-        let job_state_color = match job.state.as_str() {
-            "complete" => "var(--ok)",
-            "failed" => "var(--bad)",
-            _ => "var(--muted)",
-        };
-        let job_duration = format_duration(job.started_at_ms, job.finished_at_ms);
-        let exit_str = job
-            .exit_code
-            .map(|c| format!(" · exit {c}"))
-            .unwrap_or_default();
+    let tmpl = RunListTemplate {
+        repo: repo_display,
+        runs: template_runs,
+    };
+    Html(tmpl.render().unwrap_or_default())
+}
 
-        jobs_html.push_str(&format!(
-            r#"<div style="margin:24px 0 0">
-<div style="font-family:var(--font-mono);font-size:13px;font-weight:500;padding:8px 0;border-bottom:1px solid var(--rule2)">
-<span style="color:{job_state_color}">{job_state}</span> · {job_id} · {job_duration}{exit_str}
-</div>"#,
-            job_state = job.state,
-            job_id = job.job_id,
-        ));
+pub async fn run_detail(
+    State(quire): State<Quire>,
+    AxumPath((repo, run_id)): AxumPath<(String, String)>,
+    user: RemoteUser,
+) -> Html<String> {
+    let _user = user;
+    let repo_display = repo.trim_end_matches(".git").to_string();
 
+    let result = load_run_detail(&quire, &repo, &run_id);
+    let (run, jobs, sh_events) = match result {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
+            let tmpl = ErrorTemplate {
+                repo: repo_display,
+                title: "Failed to load run".to_string(),
+                detail: html_escape(&e),
+            };
+            return Html(tmpl.render().unwrap_or_default());
+        }
+    };
+
+    let sha_short = run.sha[..run.sha.len().min(8)].to_string();
+    let detail_run = DetailRun {
+        state: run.state.clone(),
+        state_color: state_color(&run.state).to_string(),
+        sha_short: sha_short.clone(),
+        ref_short: run.ref_name.trim_start_matches("refs/heads/").to_string(),
+        queued: format_timestamp(run.queued_at_ms),
+        started: run.started_at_ms.map_or("—".to_string(), format_timestamp),
+        finished: run.finished_at_ms.map_or("—".to_string(), format_timestamp),
+        duration: format_duration(run.started_at_ms, run.finished_at_ms),
+    };
+
+    // Load CRI log contents for each sh event.
+    let runs_base = quire.base_dir().join("runs").join(&repo);
+    let mut log_contents: std::collections::HashMap<(String, usize), String> =
+        std::collections::HashMap::new();
+    for (idx, ev) in sh_events.iter().enumerate() {
+        let sh_n = sh_index_for_event(&sh_events, &ev.job_id, idx);
+        let key = (ev.job_id.clone(), sh_n);
+        if log_contents.contains_key(&key) {
+            continue;
+        }
+        let log_path = runs_base
+            .join(&run_id)
+            .join("jobs")
+            .join(&ev.job_id)
+            .join(format!("sh-{sh_n}.log"));
+        if log_path.exists() {
+            match fs_err::read_to_string(&log_path) {
+                Ok(content) => {
+                    log_contents.insert(key, content);
+                }
+                Err(e) => {
+                    tracing::warn!(path = %log_path.display(), error = %e, "failed to read CRI log");
+                }
+            }
+        }
+    }
+
+    let mut detail_jobs: Vec<DetailJob> = Vec::new();
+    for job in &jobs {
         let job_shs: Vec<(usize, &ShEvent)> = sh_events
             .iter()
             .enumerate()
             .filter(|(_, e)| e.job_id == job.job_id)
             .collect();
 
+        let mut detail_sh_events: Vec<DetailShEvent> = Vec::new();
         for (global_idx, ev) in &job_shs {
-            let sh_n = sh_index_for_event(sh_events, &ev.job_id, *global_idx);
-            let ev_duration = format_duration(Some(ev.started_at_ms), Some(ev.finished_at_ms));
+            let sh_n = sh_index_for_event(&sh_events, &ev.job_id, *global_idx);
             let cmd_display = if ev.cmd.len() > 120 {
                 &ev.cmd[..120]
             } else {
                 &ev.cmd
             };
 
-            jobs_html.push_str(&format!(
-                r#"<div style="margin:8px 0">
-<div style="font-family:var(--font-mono);font-size:11px;color:var(--mutedFaint);margin-bottom:2px">
-sh-{sh_n} · {ev_duration} · exit {exit_code}
-</div>
-<div style="font-family:var(--font-mono);font-size:12px;color:var(--muted);margin-bottom:4px">
-{cmd_display}
-</div>"#,
-                exit_code = ev.exit_code,
-            ));
+            let log = log_contents
+                .get(&(ev.job_id.clone(), sh_n))
+                .map(|s| html_escape(s))
+                .unwrap_or_default();
 
-            if let Some(content) = log_contents.get(&(ev.job_id.clone(), sh_n)) {
-                let escaped = html_escape(content);
-                jobs_html.push_str(&format!(
-                    r#"<pre style="font-family:var(--font-mono);font-size:12px;line-height:1.65;background:var(--code);color:var(--ink);padding:10px 14px;border-left:2px solid var(--accent);overflow:auto;margin:0 0 8px">{escaped}</pre>"#
-                ));
-            }
-
-            jobs_html.push_str("</div>");
+            detail_sh_events.push(DetailShEvent {
+                index: sh_n,
+                duration: format_duration_exact(ev.started_at_ms, ev.finished_at_ms),
+                exit_code: ev.exit_code,
+                cmd_display: cmd_display.to_string(),
+                log_content: log,
+            });
         }
 
-        jobs_html.push_str("</div>");
+        detail_jobs.push(DetailJob {
+            job_id: job.job_id.clone(),
+            state: job.state.clone(),
+            state_color: state_color(&job.state).to_string(),
+            duration: format_duration(job.started_at_ms, job.finished_at_ms),
+            exit_str: job
+                .exit_code
+                .map(|c| format!(" · exit {c}"))
+                .unwrap_or_default(),
+            sh_events: detail_sh_events,
+        });
     }
 
-    if jobs.is_empty() {
-        jobs_html =
-            r#"<div style="padding:16px 0;color:var(--muted)">no jobs recorded</div>"#.to_string();
-    }
-
-    let style = css();
-    let nav = top_nav(repo, &format!("ci · {sha_short}"));
-    let foot = footer();
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ci · {repo} · {sha_short}</title>
-<style>{style}</style>
-</head>
-<body>
-{nav}
-<main style="padding:22px 56px 32px">
-{meta_html}
-{jobs_html}
-</main>
-{foot}
-</body>
-</html>"#,
-    )
-}
-
-fn error_page(title: &str, detail: &str, repo: &str) -> String {
-    let escaped = html_escape(detail);
-    let style = css();
-    let nav = top_nav(repo, "error");
-    let foot = footer();
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{title}</title>
-<style>{style}</style>
-</head>
-<body>
-{nav}
-<main style="padding:22px 56px 32px">
-<p style="color:var(--bad);font-family:var(--font-mono)">{title}</p>
-<pre style="font-family:var(--font-mono);font-size:12px;background:var(--code);padding:14px 18px;overflow:auto">{escaped}</pre>
-</main>
-{foot}
-</body>
-</html>"#,
-    )
-}
-
-// ── Shared HTML components ─────────────────────────────────────────
-
-fn top_nav(repo: &str, page: &str) -> String {
-    format!(
-        r#"<nav style="padding:14px 56px;border-bottom:1px solid var(--rule);font-family:var(--font-mono);font-size:14px;font-weight:500;letter-spacing:-0.2px;display:flex;justify-content:space-between;align-items:center">
-<div><span style="color:var(--mutedFaint)">quire</span> <span style="color:var(--rule2)">/</span> <span>{repo}</span> <span style="color:var(--rule2)">/</span> <span style="color:var(--muted)">{page}</span></div>
-<div style="font-size:11px;color:var(--mutedFaint)">press [?] for shortcuts</div>
-</nav>"#
-    )
-}
-
-fn footer() -> String {
-    r#"<footer style="padding:16px 56px 24px;border-top:1px solid var(--rule);font-family:var(--font-mono);font-size:11px;color:var(--mutedFaint);letter-spacing:0.2px;display:flex;justify-content:space-between">
-<span>quire</span>
-<span>?</span>
-</footer>"#
-        .to_string()
-}
-
-fn css() -> &'static str {
-    // Paper palette, light variant.
-    r#":root {
-  --font-humanist: "iA Writer Quattro", "iA Writer Quattro V", -apple-system, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --bg: #f8f4ea;
-  --ink: #1d1a15;
-  --muted: #6b6257;
-  --mutedFaint: #9a9184;
-  --rule: #ddd4c1;
-  --rule2: #c7bfae;
-  --code: #efe8d6;
-  --accent: #3a3a3a;
-  --ok: #4a7a3a;
-  --bad: #9a3a28;
-}
-body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--font-humanist); font-size:15px; line-height:1.6; }
-a { color:var(--accent); }
-pre { white-space:pre-wrap; word-break:break-word; }"#
-}
-
-// ── Helpers ────────────────────────────────────────────────────────
-
-fn format_timestamp(ms: i64) -> String {
-    use jiff::Timestamp;
-    match Timestamp::from_millisecond(ms) {
-        Ok(ts) => {
-            let now = Timestamp::now();
-            let span = now.since(ts).unwrap_or_else(|_| jiff::Span::new());
-            let hours = span.get_hours().abs();
-            let minutes = span.get_minutes().abs();
-            if hours < 1 {
-                if minutes < 1 {
-                    "just now".to_string()
-                } else {
-                    format!("{minutes}m ago")
-                }
-            } else if hours < 24 {
-                format!("{hours}h ago")
-            } else {
-                ts.to_string()
-            }
-        }
-        Err(_) => format!("{ms}ms"),
-    }
-}
-
-fn format_duration(start: Option<i64>, end: Option<i64>) -> String {
-    match (start, end) {
-        (Some(s), Some(e)) => {
-            let ms = e - s;
-            if ms < 1000 {
-                format!("{ms}ms")
-            } else {
-                format!("{}s", ms / 1000)
-            }
-        }
-        _ => "—".to_string(),
-    }
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    let tmpl = RunDetailTemplate {
+        repo: repo_display,
+        run: detail_run,
+        jobs: detail_jobs,
+    };
+    Html(tmpl.render().unwrap_or_default())
 }
 
 // ── Router ─────────────────────────────────────────────────────────
@@ -558,24 +485,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_list_html_renders_empty() {
-        let html = run_list_html("test.git", &[]);
+    fn run_list_template_renders_empty() {
+        let tmpl = RunListTemplate {
+            repo: "test.git".to_string(),
+            runs: vec![],
+        };
+        let html = tmpl.render().unwrap();
         assert!(html.contains("no runs yet"));
         assert!(html.contains("ci · test.git"));
     }
 
     #[test]
-    fn run_list_html_renders_runs() {
-        let runs = vec![RunRow {
-            id: "abc123".to_string(),
-            state: "complete".to_string(),
-            sha: "deadbeef".to_string(),
-            ref_name: "refs/heads/main".to_string(),
-            queued_at_ms: 1000,
-            started_at_ms: Some(2000),
-            finished_at_ms: Some(3000),
-        }];
-        let html = run_list_html("test.git", &runs);
+    fn run_list_template_renders_runs() {
+        let tmpl = RunListTemplate {
+            repo: "test.git".to_string(),
+            runs: vec![RunListRow {
+                id: "abc123".to_string(),
+                state_color: "var(--ok)".to_string(),
+                sha_short: "deadbeef".to_string(),
+                ref_short: "main".to_string(),
+                queued: "just now".to_string(),
+                duration: "1s".to_string(),
+            }],
+        };
+        let html = tmpl.render().unwrap();
         assert!(html.contains("deadbeef"));
         assert!(html.contains("main"));
         assert!(html.contains("/repo/test.git/ci/abc123"));
