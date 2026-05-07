@@ -15,9 +15,7 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::{DockerLifecycle, RunMeta};
-use crate::secret::SecretString;
-
-use super::redact::{SecretRegistry, redact};
+use crate::secret::{SecretRegistry, SecretString, redact};
 /// Per-sh timing: (index, started_at, finished_at).
 pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
@@ -202,7 +200,7 @@ impl Runtime {
     /// Errors if the name isn't declared or the secret's source
     /// can't be read.
     pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
-        self.registry.borrow_mut().resolve(name)
+        self.registry.borrow_mut().resolve(name).map_err(Into::into)
     }
 
     /// Run `cmd` with `opts` and record its output against the

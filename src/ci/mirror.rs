@@ -253,7 +253,7 @@ mod tests {
     use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
     use crate::ci::run::RunMeta;
     use crate::ci::runtime::{ExecutorRuntime, RuntimeHandle};
-    use crate::secret::SecretString;
+    use crate::secret::{Error as SecretError, SecretString};
 
     /// Set up a bare git repo with one commit. Returns the tempdir,
     /// the bare repo path, and the head SHA.
@@ -617,7 +617,7 @@ mod tests {
         runtime.leave_job();
 
         assert!(
-            matches!(err, Error::UnknownSecret(ref name) if name == "missing"),
+            matches!(err, Error::Secret(SecretError::UnknownSecret(ref name)) if name == "missing"),
             "expected UnknownSecret(\"missing\"), got: {err:?}"
         );
     }

@@ -80,9 +80,6 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
-
-    #[error("unknown secret: {0:?}")]
-    UnknownSecret(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

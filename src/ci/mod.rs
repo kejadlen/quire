@@ -6,7 +6,6 @@ pub(crate) mod docker;
 pub(crate) mod logs;
 mod mirror;
 mod pipeline;
-mod redact;
 mod registration;
 mod run;
 mod runtime;
@@ -15,7 +14,6 @@ pub(crate) mod error;
 
 pub use error::{Error, Result};
 pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
-pub use redact::{SecretRegistry, redact};
 pub use run::{Executor, Run, RunMeta, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.

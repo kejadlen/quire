@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -15,6 +16,9 @@ pub enum Error {
     /// type), we can store a structured error instead of a string.
     #[error("secret resolution failed: {0}")]
     Resolve(String),
+
+    #[error("unknown secret: {0:?}")]
+    UnknownSecret(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -134,6 +138,140 @@ impl<'de> serde::Deserialize<'de> for SecretString {
 
         Ok(Self(source))
     }
+}
+
+// ── Secret registry and redaction ───────────────────────────────
+
+/// Opaque wrapper for a revealed secret value. No Debug impl.
+struct Revealed(String);
+
+impl Revealed {
+    fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+// Explicitly no Debug impl — revealed values must never be printed.
+
+/// Per-run secret store: holds declared secrets and their revealed
+/// values for both lookup and redaction.
+///
+/// Constructed with the declared secrets from global config.
+/// As `(secret :name)` is called during CI execution, values are
+/// revealed and cached for redaction via [`redact`].
+///
+/// Lifetime is bounded to a single CI run. Do not carry a registry
+/// across runs — values from previous runs would contaminate
+/// redaction of unrelated output.
+pub struct SecretRegistry {
+    /// name → declared secret (lazy reveal).
+    declared: HashMap<String, SecretString>,
+    /// name → revealed value (opaque, zeroed on drop).
+    /// Populated on first `(secret :name)` call.
+    revealed: HashMap<String, Revealed>,
+}
+
+impl std::fmt::Debug for SecretRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretRegistry")
+            .field("declared", &self.declared.keys().collect::<Vec<_>>())
+            .field("revealed", &self.revealed.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl From<HashMap<String, SecretString>> for SecretRegistry {
+    fn from(declared: HashMap<String, SecretString>) -> Self {
+        Self {
+            declared,
+            revealed: HashMap::new(),
+        }
+    }
+}
+
+impl From<Vec<(String, SecretString)>> for SecretRegistry {
+    fn from(pairs: Vec<(String, SecretString)>) -> Self {
+        Self::from(pairs.into_iter().collect::<HashMap<_, _>>())
+    }
+}
+
+impl From<Vec<(&str, &str)>> for SecretRegistry {
+    fn from(pairs: Vec<(&str, &str)>) -> Self {
+        let declared: HashMap<String, SecretString> = pairs
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), SecretString::from(v)))
+            .collect();
+        Self::from(declared)
+    }
+}
+
+impl SecretRegistry {
+    /// Resolve a declared secret by name, caching the revealed value
+    /// for redaction. Returns `Err` if the name isn't declared or
+    /// the source can't be read.
+    ///
+    /// Values shorter than 8 characters are returned to the caller
+    /// but not registered for redaction — the false-positive rate on
+    /// common short strings like "true" or "yes" is too high. A warn
+    /// is emitted so an operator can see why a short token is showing
+    /// up unredacted in CI output.
+    pub fn resolve(&mut self, name: &str) -> Result<String> {
+        let secret = self
+            .declared
+            .get(name)
+            .ok_or_else(|| Error::UnknownSecret(name.to_string()))?;
+        let value = secret.reveal()?.to_string();
+        if value.len() >= 8 {
+            self.revealed
+                .insert(name.to_string(), Revealed::new(value.clone()));
+        } else {
+            tracing::warn!(
+                secret = %name,
+                length = value.len(),
+                "secret value is shorter than the 8-byte minimum and will not be redacted from CI output"
+            );
+        }
+        Ok(value)
+    }
+
+    /// Return revealed (name, value) pairs sorted by value length
+    /// descending so longest matches are replaced first (prevents
+    /// partial replacement of overlapping secrets). Equal-length
+    /// values tiebreak on name, so two names that map to the same
+    /// value redact deterministically.
+    fn entries(&self) -> Vec<(&str, &str)> {
+        let mut entries: Vec<_> = self
+            .revealed
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+        entries
+    }
+
+    pub fn has_redactions(&self) -> bool {
+        !self.revealed.is_empty()
+    }
+}
+
+/// Replace any revealed secret value in `text` with `{{ name }}`.
+///
+/// Longest values are replaced first to prevent partial matches.
+/// Returns the input unchanged when no secrets have been revealed.
+pub fn redact(text: &str, registry: &SecretRegistry) -> String {
+    if !registry.has_redactions() {
+        return text.to_string();
+    }
+    let mut result = text.to_string();
+    for (name, value) in registry.entries() {
+        let replacement = format!("{{{{ {} }}}}", name);
+        result = result.replace(value, &replacement);
+    }
+    result
 }
 
 #[cfg(test)]

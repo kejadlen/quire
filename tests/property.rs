@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use hegel::TestCase;
 use hegel::generators::{integers, just, text, vecs};
 use hegel::one_of;
-use quire::ci::{SecretRegistry, redact};
 use quire::event::{PushEvent, PushRef};
-use quire::secret::SecretString;
+use quire::secret::{SecretRegistry, SecretString, redact};
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 
