@@ -9,9 +9,9 @@
 {% block content %}
 <div class="ci-meta">
   <div class="ci-meta-primary">
-    <span class="{{ run.state_class() }}">{{ run.state }}</span>
-    · <span class="c-accent">{{ run.sha_short() }}</span>
+    <span class="c-accent">{{ run.sha_short() }}</span>
     · {{ run.ref_short() }}
+    · <span class="{{ run.state_class() }}">{{ run.state }}</span>
   </div>
   <div class="ci-meta-secondary">
     queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
@@ -24,8 +24,8 @@
 {% for job in jobs %}
 <div class="ci-job">
   <div class="ci-job-header">
-    <span class="{{ job.state_class() }}">{{ job.state }}</span>
-    · {{ job.job_id }} · {{ job.duration_display() }}{{ job.exit_display() }}
+    {{ job.job_id }} · {{ job.duration_display() }}{{ job.exit_display() }}
+    · <span class="{{ job.state_class() }}">{{ job.state }}</span>
   </div>
   {% for sh in job.sh_events %}
   <div class="ci-sh">
