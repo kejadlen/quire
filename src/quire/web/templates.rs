@@ -164,6 +164,10 @@ impl DetailRun {
         self.finished_at_ms.is_some()
     }
 
+    pub fn is_terminal(&self) -> bool {
+        self.state == "complete" || self.state == "failed"
+    }
+
     pub fn duration_display(&self) -> String {
         format::format_duration(self.started_at_ms, self.finished_at_ms)
     }

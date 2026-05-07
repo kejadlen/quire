@@ -14,10 +14,15 @@
     · <span class="ci-state-label {{ run.state_class() }}"><span class="ci-status-dot {{ run.state_class() }}"></span> {{ run.state }}</span>
   </div>
   <div class="ci-meta-secondary">
+    {% if run.is_terminal() %}
     queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
-    · started {% if run.has_started() %}<time title="{{ run.started_iso() }}">{{ run.started_display() }}</time>{% else %}{{ run.started_display() }}{% endif %}
-    · finished {% if run.has_finished() %}<time title="{{ run.finished_iso() }}">{{ run.finished_display() }}</time>{% else %}{{ run.finished_display() }}{% endif %}
-    · {{ run.duration_display() }}
+    · ran <span title="started {{ run.started_iso() }}\nfinished {{ run.finished_iso() }}">{{ run.duration_display() }}</span>
+    {% elif run.has_started() %}
+    queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+    · started <time title="{{ run.started_iso() }}">{{ run.started_display() }}</time>
+    {% else %}
+    queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+    {% endif %}
   </div>
 </div>
 

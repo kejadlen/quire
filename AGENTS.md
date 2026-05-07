@@ -4,6 +4,8 @@
 
 The backlog lives in the `ranger` CLI, not GitHub Issues. Use `ranger` to read and update tasks.
 
+The backlog shifts between sessions and even within a session — tasks get reordered, retitled, moved between states, closed, or added by the user without notice. Before acting on a task you remember (or one referenced earlier in the conversation), re-run `ranger task show <key>` and confirm state, ordering, and description against ground truth. Do not trust earlier `ranger task list` output to still be accurate; refetch when placement matters (e.g. moving to top/back of ready).
+
 ## Before committing
 
 Always run `just all` and verify everything passes before committing. No exceptions — this is not optional. If you commit without running it, you will break the build.
