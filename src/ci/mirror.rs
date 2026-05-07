@@ -2,6 +2,13 @@
 //! job, whose Rust run-fn tags the pushed commit and `git push`es
 //! the configured refs (or the trigger ref) plus the tag.
 //!
+//! `:refs` serves double duty: it gates whether the mirror job runs
+//! at all (trigger filter) and controls what gets pushed (push
+//! filter). If the trigger ref is not in `:refs`, the job is a
+//! no-op — no tag is created, no push is attempted. When `:refs` is
+//! empty (the default), the trigger ref is used for the push and
+//! the mirror always runs.
+//!
 //! Lives at the ci-feature layer rather than under `lua/` because
 //! mirror is a CI capability that happens to be exposed via the
 //! Lua DSL — most of its body is git plumbing, and it produces a
@@ -59,6 +66,15 @@ impl MirrorJob {
             .expect("quire/push table absent from quire/mirror inputs view");
         let sha: String = push_table.get("sha")?;
         let pushed_ref: String = push_table.get("ref")?;
+
+        // Gate: if :refs is set, only run when the trigger ref matches.
+        if !self.refs.is_empty() && !self.refs.contains(&pushed_ref) {
+            tracing::info!(
+                ref_name = %pushed_ref,
+                "skipping mirror — trigger ref not in :refs"
+            );
+            return Ok(());
+        };
         let git_dir: String = push_table.get("git-dir")?;
 
         let secret = rt.secret(&self.secret)?;
@@ -505,12 +521,12 @@ mod tests {
     }
 
     #[test]
-    fn mirror_pushes_listed_refs_when_refs_set() {
+    fn mirror_pushes_listed_refs_when_trigger_ref_matches() {
         let (_dir, bare, sha) = bare_repo();
         let pushed_at: jiff::Timestamp = "2026-05-01T12:00:00Z".parse().unwrap();
         let meta = RunMeta {
             sha,
-            r#ref: "refs/heads/feature".to_string(),
+            r#ref: "refs/heads/main".to_string(),
             pushed_at,
         };
 
@@ -520,9 +536,8 @@ mod tests {
             SecretString::from_plain("fake_token"),
         );
 
-        // :refs is set explicitly. Even though the trigger ref is
-        // `refs/heads/feature`, the mirror should push the listed
-        // refs verbatim.
+        // :refs is set and the trigger ref matches, so the mirror
+        // should push the listed refs verbatim.
         let source = r#"(local ci (require :quire.ci))
 (ci.mirror "https://github.com/example/repo.git"
   {:secret :github_token
@@ -543,10 +558,52 @@ mod tests {
             cmd.contains("refs/heads/main") && cmd.contains("refs/heads/release"),
             "push cmd should list configured refs, got: {cmd}"
         );
-        assert!(
-            !cmd.contains("refs/heads/feature"),
-            "push cmd should not include the trigger ref when :refs is set, got: {cmd}"
+    }
+
+    #[test]
+    fn mirror_skips_when_trigger_ref_not_in_refs() {
+        let (_dir, bare, _sha) = bare_repo();
+        let pushed_at: jiff::Timestamp = "2026-05-01T12:00:00Z".parse().unwrap();
+        let meta = RunMeta {
+            sha: "abc123".to_string(),
+            r#ref: "refs/heads/feature".to_string(),
+            pushed_at,
+        };
+
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "github_token".to_string(),
+            SecretString::from_plain("fake_token"),
         );
+
+        // Trigger ref is feature, but :refs only lists main — mirror
+        // should be a no-op.
+        let source = r#"(local ci (require :quire.ci))
+(ci.mirror "https://github.com/example/repo.git"
+  {:secret :github_token
+   :tag (fn [_] "v1")
+   :refs ["refs/heads/main"]})"#;
+        let (runtime, run_fn) = mirror_run_fn(source, secrets, &meta, &bare);
+
+        runtime.enter_job("quire/mirror");
+        run_fn(&runtime).expect("mirror should succeed (no-op)");
+        runtime.leave_job();
+
+        let outputs = runtime.take_outputs();
+        assert_eq!(
+            outputs.get("quire/mirror").map(|v| v.len()).unwrap_or(0),
+            0,
+            "no outputs should be recorded for a skipped mirror"
+        );
+
+        // No tag should have been created.
+        let tag_output = std::process::Command::new("git")
+            .args(["tag", "-l"])
+            .current_dir(&bare)
+            .output()
+            .expect("git tag -l");
+        let tags = String::from_utf8(tag_output.stdout).expect("utf8");
+        assert!(tags.trim().is_empty(), "no tags should exist: {tags}");
     }
 
     #[test]
