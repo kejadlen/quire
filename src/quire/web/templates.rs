@@ -4,9 +4,9 @@ use askama::Template;
 
 use super::format;
 
-/// The package version, exposed to every template for the footer.
+/// The build version, exposed to every template for the footer.
 fn pkg_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    env!("QUIRE_VERSION")
 }
 
 /// A navigation breadcrumb entry.
