@@ -34,6 +34,14 @@ pub async fn stylesheet() -> Response {
         .into_response()
 }
 
+/// True when the error is "query returned no rows" (i.e. resource not found).
+fn is_no_rows(err: &crate::error::Error) -> bool {
+    matches!(
+        err,
+        crate::error::Error::Sql(rusqlite::Error::QueryReturnedNoRows)
+    )
+}
+
 /// Read a CRI log file, returning empty on NotFound and on any other
 /// error after logging it.
 async fn read_log(path: &std::path::Path) -> String {
@@ -119,6 +127,7 @@ pub async fn run_detail(
     let result = db::load_run_detail(&quire, &repo_name, &run_id);
     let detail = match result {
         Ok(d) => d,
+        Err(ref e) if is_no_rows(e) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(repo = %repo, run_id = %run_id, error = %display_chain(&e), "failed to load run detail");
             return render_error(
@@ -378,18 +387,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_detail_returns_empty_for_unknown_repo() {
+    async fn run_detail_returns_404_for_missing_run() {
         let env = TestEnv::new();
         let app = env.app();
-        // Valid UUID but repo has no runs — the DB query returns no row,
-        // which triggers a 500 "failed to load run detail".
-        // This tests the full pipeline with a real DB.
+        // Valid UUID but no run exists — should return 404, not 500.
         let req = Request::builder()
             .uri(&format!("/example/ci/{UUID1}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        // No run inserted, so query_row returns Err.
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
