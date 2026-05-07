@@ -1,0 +1,9 @@
+running 3 tests
+..F
+
+FAILURES:
+  quire::ci::test_ignored_failure
+
+assertion failed: expected ok, got err
+
+2 passed; 1 failed

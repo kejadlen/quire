@@ -424,79 +424,85 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
 }
 
 fn write_log_artifacts(quire: &Quire) -> Result<()> {
-    let runs_base = quire.base_dir().join("runs").join("example.git");
+    let b = quire.base_dir().join("runs").join("example.git");
 
     // Run 1 — complete, clean build output.
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000001",
+        &b,
+        run_id(1),
         "build",
         1,
-        "   Compiling quire v0.1.0\n    Finished `release` profile [optimized] target(s) in 1.4s\n",
+        include_str!("fixtures/run-1-build-1.log"),
     );
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000001",
+        &b,
+        run_id(1),
         "build",
         2,
-        "    Checking quire v0.1.0\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.5s\n",
+        include_str!("fixtures/run-1-build-2.log"),
     );
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000001",
+        &b,
+        run_id(1),
         "test",
         1,
-        "running 42 tests\n..........................................\n\n42 passed; 0 failed; 0 ignored\n",
+        include_str!("fixtures/run-1-test-1.log"),
     );
 
     // Run 2 — failed, test output with failures.
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000002",
+        &b,
+        run_id(2),
         "build",
         1,
-        "   Compiling quire v0.1.0\n    Finished `release` profile [optimized] target(s) in 2.0s\n",
+        include_str!("fixtures/run-2-build-1.log"),
     );
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000002",
+        &b,
+        run_id(2),
         "test",
         1,
-        "running 42 tests\n.........................................F\n\nFAILURES:\n  quire::web::tests::run_list_template_renders_runs\n\n39 passed; 1 failed; 2 ignored\n",
+        include_str!("fixtures/run-2-test-1.log"),
     );
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000002",
+        &b,
+        run_id(2),
         "test",
         2,
-        "running 3 tests\n..F\n\nFAILURES:\n  quire::ci::test_ignored_failure\n\nassertion failed: expected ok, got err\n\n2 passed; 1 failed\n",
+        include_str!("fixtures/run-2-test-2.log"),
     );
 
     // Run 7 — orphaned, long output that was interrupted.
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000007",
+        &b,
+        run_id(7),
         "build",
         1,
-        "   Compiling quire v0.1.0\n    Finished `release` profile [optimized] target(s) in 3.0s\n",
+        include_str!("fixtures/run-7-build-1.log"),
     );
-    let mut long_test_output = String::from("running 200 tests\n");
-    for i in 0..150 {
-        long_test_output.push('.');
-        if (i + 1) % 80 == 0 {
-            long_test_output.push('\n');
-        }
-    }
-    long_test_output.push_str("\n\n150 passed; 50 untested; container died (exit 137: OOM)\n");
     write_sh_log(
-        &runs_base,
-        "aaaaaaaa-0000-0000-0000-000000000007",
+        &b,
+        run_id(7),
         "test",
         1,
-        &long_test_output,
+        include_str!("fixtures/run-7-test-1.log"),
     );
 
     Ok(())
+}
+
+/// Short-hand for the seed run UUIDs (1-indexed).
+fn run_id(n: u8) -> &'static str {
+    match n {
+        1 => "aaaaaaaa-0000-0000-0000-000000000001",
+        2 => "aaaaaaaa-0000-0000-0000-000000000002",
+        3 => "aaaaaaaa-0000-0000-0000-000000000003",
+        4 => "aaaaaaaa-0000-0000-0000-000000000004",
+        5 => "aaaaaaaa-0000-0000-0000-000000000005",
+        6 => "aaaaaaaa-0000-0000-0000-000000000006",
+        7 => "aaaaaaaa-0000-0000-0000-000000000007",
+        _ => panic!("no seed run with index {n}"),
+    }
 }
 
 fn write_sh_log(

@@ -1,0 +1,7 @@
+running 42 tests
+.........................................F
+
+FAILURES:
+  quire::web::tests::run_list_template_renders_runs
+
+39 passed; 1 failed; 2 ignored
