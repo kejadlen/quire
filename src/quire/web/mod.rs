@@ -12,18 +12,18 @@ pub mod format;
 pub mod handlers;
 pub mod templates;
 
-use axum::middleware;
-
 use crate::Quire;
 
+/// Bare CI routes without any auth middleware.
+///
+/// The caller decides whether to layer auth on top (e.g.
+/// `.layer(middleware::from_fn(auth::require_auth))`).
 pub fn router(quire: Quire) -> axum::Router {
-    let ci_routes = axum::Router::new()
+    axum::Router::new()
         .route("/{repo}/ci", axum::routing::get(handlers::run_list))
         .route(
             "/{repo}/ci/{run_id}",
             axum::routing::get(handlers::run_detail),
         )
-        .layer(middleware::from_fn(auth::require_auth));
-
-    ci_routes.with_state(quire)
+        .with_state(quire)
 }

@@ -8,12 +8,23 @@ use quire::Quire;
 /// Base timestamp for seed data: 2026-05-06T12:00:00Z.
 const BASE_MS: i64 = 1746532800000;
 
-/// Seed the quire database with realistic CI run data.
+/// Seed a tempdir with realistic CI run data and return a `Quire` pointing at it.
 ///
-/// Wipes any existing data and inserts a fixed corpus of runs covering
-/// every interesting state (complete, failed, active, pending, superseded)
-/// with matching on-disk log artifacts. Idempotent — same input, same output.
-pub fn seed(quire: &Quire) -> Result<()> {
+/// Creates a fresh tempdir under `std::env::temp_dir()`, inserts a fixed corpus
+/// of runs covering every interesting state (complete, failed, active, pending,
+/// superseded) with matching on-disk log artifacts. Idempotent — same input,
+/// same output.
+pub fn seed() -> Result<Quire> {
+    let dir = tempfile::tempdir()
+        .into_diagnostic()
+        .context("failed to create tempdir")?;
+
+    // Leak the TempDir so it outlives the function. The server will
+    // clean up on shutdown, or the OS will when the process exits.
+    let base_dir = dir.keep();
+    tracing::info!(path = %base_dir.display(), "seeded tempdir");
+
+    let quire = Quire::new(base_dir);
     let db_path = quire.db_path();
 
     // Open and migrate.
@@ -24,22 +35,17 @@ pub fn seed(quire: &Quire) -> Result<()> {
         .into_diagnostic()
         .context("failed to run migrations")?;
 
-    // Wipe existing seed data (if any).
-    db.execute_batch("DELETE FROM sh_events; DELETE FROM jobs; DELETE FROM runs;")
-        .into_diagnostic()
-        .context("failed to wipe existing data")?;
-
     insert_runs(&db)?;
     insert_jobs(&db)?;
     insert_sh_events(&db)?;
-    write_log_artifacts(quire)?;
+    write_log_artifacts(&quire)?;
 
     let run_count: i64 = db
         .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
         .into_diagnostic()?;
 
     tracing::info!(%run_count, "seeded database");
-    Ok(())
+    Ok(quire)
 }
 
 fn insert_runs(db: &rusqlite::Connection) -> Result<()> {

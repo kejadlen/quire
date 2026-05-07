@@ -208,10 +208,16 @@ async fn main() -> Result<()> {
 
     match command {
         Commands::Serve { seed } => {
-            if seed {
-                commands::dev::seed(&quire)?;
-            }
-            commands::serve::run(&quire).await?
+            let quire = if seed { commands::dev::seed()? } else { quire };
+            let ci_routes = quire::quire::web::router(quire.clone());
+            let ci_routes = if seed {
+                ci_routes
+            } else {
+                ci_routes.layer(axum::middleware::from_fn(
+                    quire::quire::web::auth::require_auth,
+                ))
+            };
+            commands::serve::run(&quire, ci_routes).await?
         }
         Commands::Exec { command } => commands::exec::run(&quire, command).await?,
         Commands::Hook { hook_name } => commands::hook::run(&quire, hook_name).await?,

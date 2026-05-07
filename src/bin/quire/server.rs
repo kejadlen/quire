@@ -17,7 +17,7 @@ async fn index() -> String {
     format!("quire {}\n", crate::VERSION)
 }
 
-pub async fn run(quire: &Quire) -> Result<()> {
+pub async fn run(quire: &Quire, ci_routes: axum::Router) -> Result<()> {
     let addr: SocketAddr = ([0, 0, 0, 0], 3000).into();
 
     // Set up event socket.
@@ -55,7 +55,7 @@ pub async fn run(quire: &Quire) -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/", get(index))
-        .merge(quire::quire::web::router(quire.clone()));
+        .merge(ci_routes);
 
     tracing::info!(%addr, "starting HTTP server");
 
