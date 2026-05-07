@@ -634,6 +634,57 @@ mod tests {
     }
 
     #[test]
+    fn sh_redacts_secret_in_recorded_output() {
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "github_token".to_string(),
+            SecretString::from_plain("ghp_long_secret_value"),
+        );
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :go [:quire/push]
+  (fn [{: sh : secret}]
+    (let [tok (secret :github_token)]
+      (sh ["echo" tok]))))"#;
+        let (runtime, run_fn) = rt(source, secrets);
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+
+        // Mark a current job so sh records into outputs. for_test seeds
+        // an empty inputs map, so enter_job would panic; bypass the
+        // assertion by writing the field directly.
+        *runtime.current_job.borrow_mut() = Some("go".to_string());
+
+        let value: mlua::Value = run_fn.call(handle).expect("sh call");
+        let returned: ShOutput = runtime.lua().from_value(value).expect("decode");
+
+        // The Lua caller still sees the raw value — echo printed it.
+        assert!(returned.stdout.contains("ghp_long_secret_value"));
+
+        // The recorded copy is redacted.
+        let outputs = runtime.take_outputs();
+        let recorded = outputs
+            .get("go")
+            .and_then(|v| v.first())
+            .expect("recorded sh output for 'go'");
+        assert!(
+            !recorded.stdout.contains("ghp_long_secret_value"),
+            "recorded stdout must not contain raw secret: {}",
+            recorded.stdout
+        );
+        assert!(
+            recorded.stdout.contains("{{ github_token }}"),
+            "recorded stdout must contain redaction marker: {}",
+            recorded.stdout
+        );
+        assert!(
+            !recorded.cmd.contains("ghp_long_secret_value"),
+            "recorded cmd must not contain raw secret: {}",
+            recorded.cmd
+        );
+    }
+
+    #[test]
     fn sh_runs_argv_and_captures_stdout() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
