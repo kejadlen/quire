@@ -32,7 +32,10 @@ pub struct ShEvent {
 }
 
 pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
-    let db = quire.db_pool().lock().expect("db mutex poisoned");
+    let db = quire
+        .db_pool()
+        .lock()
+        .map_err(|_| crate::error::Error::Io(std::io::Error::other("db mutex poisoned")))?;
     let mut stmt = db.prepare(
         "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
          FROM runs WHERE repo = ?1
@@ -65,7 +68,10 @@ pub struct RunDetail {
 }
 
 pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDetail> {
-    let db = quire.db_pool().lock().expect("db mutex poisoned");
+    let db = quire
+        .db_pool()
+        .lock()
+        .map_err(|_| crate::error::Error::Io(std::io::Error::other("db mutex poisoned")))?;
 
     let run = db.query_row(
         "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms

@@ -89,9 +89,10 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    let runs = match db::load_runs(&quire, &repo_name) {
-        Ok(r) => r,
-        Err(e) => {
+    let q = quire.clone();
+    let runs = match tokio::task::spawn_blocking(move || db::load_runs(&q, &repo_name)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             tracing::error!(repo = %repo, error = %display_chain(&e), "failed to load runs");
             return render_error(
                 repo_display,
@@ -99,6 +100,10 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
                 "Failed to load runs",
                 display_chain(&e).to_string(),
             );
+        }
+        Err(_) => {
+            tracing::error!("spawn_blocking task panicked");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
@@ -137,11 +142,14 @@ pub async fn run_detail(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let result = db::load_run_detail(&quire, &repo_name, &run_id);
-    let detail = match result {
-        Ok(d) => d,
-        Err(ref e) if is_no_rows(e) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => {
+    let q = quire.clone();
+    let rn = repo_name.clone();
+    let ri = run_id.clone();
+    let detail = match tokio::task::spawn_blocking(move || db::load_run_detail(&q, &rn, &ri)).await
+    {
+        Ok(Ok(d)) => d,
+        Ok(Err(ref e)) if is_no_rows(e) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(e)) => {
             tracing::error!(repo = %repo, run_id = %run_id, error = %display_chain(&e), "failed to load run detail");
             return render_error(
                 repo_display,
@@ -149,6 +157,10 @@ pub async fn run_detail(
                 "Failed to load run",
                 display_chain(&e).to_string(),
             );
+        }
+        Err(_) => {
+            tracing::error!("spawn_blocking task panicked");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
