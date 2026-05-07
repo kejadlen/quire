@@ -129,14 +129,13 @@ pub async fn run_detail(
             .join("jobs")
             .join(&ev.job_id)
             .join(format!("sh-{sh_n}.log"));
-        if log_path.exists() {
-            match fs_err::read_to_string(&log_path) {
-                Ok(content) => {
-                    log_contents.insert(key, content);
-                }
-                Err(e) => {
-                    tracing::warn!(path = %log_path.display(), error = %e, "failed to read CRI log");
-                }
+        match fs_err::tokio::read_to_string(&log_path).await {
+            Ok(content) => {
+                log_contents.insert(key, content);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %log_path.display(), error = %e, "failed to read CRI log");
             }
         }
     }

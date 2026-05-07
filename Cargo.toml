@@ -12,7 +12,7 @@ askama = "*"
 axum = "*"
 clap = { version = "*", features = ["derive", "env"] }
 clap_complete = "*"
-fs-err = "*"
+fs-err = { version = "*", features = ["tokio"] }
 jiff = { version = "*", features = ["serde"] }
 miette = { version = "*", features = ["fancy"] }
 mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
