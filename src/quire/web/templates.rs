@@ -4,6 +4,11 @@ use askama::Template;
 
 use super::format;
 
+/// The package version, exposed to every template for the footer.
+fn pkg_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 // ── Run list ───────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -12,6 +17,12 @@ pub struct RunListTemplate {
     pub repo: String,
     pub crumbs: Vec<String>,
     pub runs: Vec<RunListRow>,
+}
+
+impl RunListTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
 }
 
 pub struct RunListRow {
@@ -63,6 +74,12 @@ pub struct RunDetailTemplate {
     pub crumbs: Vec<String>,
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
+}
+
+impl RunDetailTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
 }
 
 pub struct DetailRun {
@@ -197,4 +214,10 @@ pub struct ErrorTemplate {
     pub crumbs: Vec<String>,
     pub title: String,
     pub detail: String,
+}
+
+impl ErrorTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
 }
