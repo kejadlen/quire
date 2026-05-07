@@ -88,14 +88,16 @@ impl SecretRegistry {
 
     /// Return revealed (name, value) pairs sorted by value length
     /// descending so longest matches are replaced first (prevents
-    /// partial replacement of overlapping secrets).
+    /// partial replacement of overlapping secrets). Equal-length
+    /// values tiebreak on name, so two names that map to the same
+    /// value redact deterministically.
     fn entries(&self) -> Vec<(&str, &str)> {
         let mut entries: Vec<_> = self
             .revealed
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        entries.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
+        entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
         entries
     }
 
@@ -250,5 +252,17 @@ mod tests {
         // No resolve — no redactions registered.
         let input = "contains ghp_long_secret_value but not resolved";
         assert_eq!(redact(input, &reg), input);
+    }
+
+    #[test]
+    fn redact_tiebreaks_equal_length_by_name() {
+        // Two names with the same revealed value: alphabetical name wins.
+        let mut reg = SecretRegistry::new(plain_secrets(&[
+            ("zzz_late", "samevalue"),
+            ("aaa_early", "samevalue"),
+        ]));
+        reg.resolve("zzz_late").unwrap();
+        reg.resolve("aaa_early").unwrap();
+        assert_eq!(redact("samevalue", &reg), "{{ aaa_early }}");
     }
 }
