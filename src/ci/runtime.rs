@@ -151,11 +151,6 @@ impl Runtime {
         self.pipeline.job(id)
     }
 
-    /// Borrow the run's materialized workspace path.
-    pub(super) fn workspace(&self) -> &std::path::Path {
-        &self.workspace
-    }
-
     /// In docker mode, return the `(container_id, work_dir)` used to
     /// route `(sh …)` through `docker exec`. Host mode returns `None`.
     pub(super) fn docker_target(&self) -> Option<(&str, &str)> {
