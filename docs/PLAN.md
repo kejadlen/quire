@@ -14,7 +14,7 @@ The **host** does auth and network plumbing. The **container** is pure quire.
 **Container-side:**
 
 1. **`quire` binary** — serves as both the HTTP server (`quire serve`) and the dispatch target (`quire exec <cmd>` invoked from the host's ForceCommand via `docker exec`). No sshd inside. Git hooks installed in each repo via `hook.<n>.command` config call back into the binary as `quire hook <n>`.
-2. **CI runner** — separate long-running process (same binary, different subcommand: `quire ci-runner`), watches for new run directories under `runs/`, executes them. Sandboxing (via bubblewrap) is optional and deferred — single-user personal use doesn't warrant it; revisit if CI ever runs code I haven't written.
+2. **CI runner** — a long-lived tokio task inside `quire serve` (not a separate process or subcommand). Wakes on a `tokio::sync::Notify` from the push-event listener and reads pending runs from SQLite. Sandboxing (via bubblewrap) is optional and deferred — single-user personal use doesn't warrant it; revisit if CI ever runs code I haven't written.
 3. **Git** — invoked as a subprocess by both the dispatch path (`git-receive-pack`, `git-upload-pack` invoked from `quire exec`) and the hooks.
 
 **Access matrix:**
@@ -32,13 +32,7 @@ Stripping is load-bearing: without it, anyone could impersonate anyone by settin
 
 **Why this shape.** SSH pass-through from host to container is a requirement (host sshd on 22 can't coexist with a second sshd bound to the same port). Once the host is doing auth for SSH, running another sshd in the container is redundant at best and confusing at worst. Putting web auth at the reverse proxy — rather than building it into quire — means the auth scheme can change (basic → OAuth → SSO) without touching the container, and quire's HTTP layer stays small and focused.
 
-**Try to avoid a database entirely.** Run history lives on disk as one directory per run. Refs and repo metadata are in the git repos themselves. Per-repo config is Fennel on disk. The threshold for reaching for SQLite is "the filesystem approach is visibly causing problems" — not "I vaguely feel like querying would be nice." Likely triggers, ordered by probability:
-
-1. CI concurrency control that outgrows a lock file.
-2. Aggregate queries across repos (e.g. "all failed runs this week").
-3. Full-text search over commit messages or file content.
-
-CI is the most likely to force the issue first.
+**SQLite for CI state, filesystem for everything else.** Refs and repo metadata are in the git repos themselves. Per-repo config is Fennel on disk. CI run/job state lives in SQLite at `/var/quire/quire.db` — the filesystem approach for runs hit the predicted "concurrency + aggregate queries" wall first, and the migration was a contained change. Migrations live under `migrations/` and are embedded into the binary via `include_str!`. Future tables (config snapshots, hook event audit, etc.) live in the same database.
 
 ## Volume layout
 
@@ -58,7 +52,7 @@ One volume mounted into the container:
       workspace/                 # materialized checkout
       jobs/
         <job-id>/
-          log.yml                # per-job sh output logs
+          sh-<n>.log             # one CRI-format log file per (sh ...) call
   config.fnl                 # global config
 ```
 
@@ -138,7 +132,7 @@ Write the quire binary's `hook` subcommand as a no-op that logs what it was invo
 
 ### 4. Explicit repo creation
 
-`ssh git@host quire new <name>` → `quire exec` → `quire new <name>`. Creates a bare repo under `repos/`, validates the name (no `..`, one level of grouping max, no reserved names), sets `hook.<name>.command` configs. Also: `quire list`, `quire rm`, basic ops. All accessed via the same ssh-dispatch path.
+`ssh git@host quire repo new <name>` → `quire exec` → `quire repo new <name>`. Creates a bare repo under `repos/`, validates the name (no `..`, one level of grouping max, no reserved names), sets `hook.<name>.command` configs. Also: `quire repo list`, `quire repo rm`, basic ops. All accessed via the same ssh-dispatch path.
 
 ### 5. GitHub mirror via CI job
 
@@ -156,15 +150,15 @@ Per-file history following renames (`git log --follow`), compare-between-refs, b
 
 ### 8. Fennel CI MVP
 
-Embed Lua via `mlua`, ship Fennel compiler as a Lua module. Define a small standard library (`pipeline`, `on`, `step`, `sh`, `artifact`, `cache`, `matrix`, `env`) as a Fennel module. Compile-and-eval `.quire/ci.fnl` at run-trigger time. Steps run directly as subprocesses; per-run tempdir; network on by default.
+Embed Lua via `mlua`, ship Fennel compiler as a Lua module. Compile-and-eval `.quire/ci.fnl` at run-trigger time. The pipeline DSL is `(ci.image ...)`, `(ci.job ...)`, and `(ci.mirror ...)` — see `docs/CI-FENNEL.md` for the spec and `docs/CI.md` for the runtime. Each `(sh ...)` call `docker exec`s into a per-run container; per-run network policy is whatever the image's network namespace allows.
 
-Sandboxing is deliberately not in the MVP. Since every pipeline is code I'm writing for my own projects, "the CI step can do anything a logged-in me can do in the container" is the right threat model. If that changes (running untrusted forks, for example, or sharing the instance), re-introduce bubblewrap wrapping behind a per-pipeline `(sandbox true)` opt-in.
+Sandboxing of `ci.fnl` evaluation is deliberately not in the MVP. Since every pipeline is code I'm writing for my own projects, "the CI step can do anything a logged-in me can do in the container" is the right threat model. If that changes (running untrusted forks, for example, or sharing the instance), re-introduce bubblewrap wrapping behind a per-pipeline opt-in.
 
-Post-receive hook materializes a new run directory under `runs/<repo>/<id>/` with `meta.fnl` in a `queued` state. The CI runner process picks it up and executes.
+The post-receive hook sends a JSON push event over `/var/quire/server.sock`; a listener task in `quire serve` parses the event, inserts a `pending` row into `runs`, and signals the runner. The hook never touches `runs/` directly.
 
 ### 9. Run history + artifacts
 
-One directory per run, `meta.fnl` storing status, ref, sha, pipeline source, timings. Artifact retention policy: last 10 runs per repo, or 30 days, whichever is longer. Web UI for run list and run detail with streaming log. Run list reads directory entries and parses meta files — fine at single-user scale. Re-evaluate if cross-repo aggregate queries become something I want, or if CI concurrency needs a real queue.
+Run state lives in the `runs` and `jobs` tables in `quire.db`; the filesystem holds the per-run workspace and per-`(sh ...)` log files only. Artifact retention policy: last 10 runs per repo, or 30 days, whichever is longer. Web UI for run list and run detail with streaming log. Run list reads from SQLite; log streaming tails the per-`(sh ...)` CRI log files on disk.
 
 ### 10. Email notifications
 
@@ -179,9 +173,8 @@ What triggers a notification, per-repo-configurable in `.quire/config.fnl`:
 The minimal config to enable failure-and-recovery emails:
 
 ```fennel
-(notifications
-  :to ["alpha@example.com"]
-  :on [:ci-failed :ci-fixed])
+{:notifications {:to ["alpha@example.com"]
+                 :on [:ci-failed :ci-fixed]}}
 ```
 
 Global config has the SMTP connection details and a default `:to` list that per-repo config can override.
@@ -199,7 +192,7 @@ Keyboard navigation in the web UI. Atom feeds for recent commits (public, subjec
 - **Mirror to GitHub via CI job.** Mirroring is expressed as a `.quire/ci.fnl` job that shells out `git push` with a token from the global `:secrets` map. No per-repo deploy keys, no in-process mirror logic.
 - **Web visibility: public by default, per-repo opt-outs.** Repos are public (they go to GitHub anyway); CI logs require auth. Per-repo `(private true)` and `(public_runs true)` flags cover the exceptions.
 - **Trust the proxy-injected identity header.** `Remote-User` is trusted because the reverse proxy is the only ingress. Proxy must strip any client-supplied version before injecting its own — this is the security-critical invariant.
-- **Explicit repo creation, not implicit on first push.** `ssh git@host quire new <n>`. No magic, no shims parsing first pushes.
+- **Explicit repo creation, not implicit on first push.** `ssh git@host quire repo new <name>`. No magic, no shims parsing first pushes.
 - **Hooks via `hook.<n>.command` config.** Git 2.54+ (the version we build into the container image). No shim scripts on disk; `hook.<n>.command = /usr/local/bin/quire hook <n>`. Set at creation time.
 - **Post-receive hook sends push events over Unix socket.** The post-receive hook sends a JSON push event over a Unix domain socket (`/var/quire/server.sock`) to `quire serve`. The server dispatches CI triggers. The hook exits fast. When the server isn't running, the hook prints a warning and exits cleanly.
 - **No reverse-direction mirroring.** quire is the source of truth; GitHub is the replica.
@@ -217,7 +210,7 @@ Keyboard navigation in the web UI. Atom feeds for recent commits (public, subjec
 - **CI network policy.** Default on (you'll want it for `cargo`, `npm`), with a per-pipeline `(network false)` opt-out. Or default off with explicit `(network true)`? Default on is more ergonomic; default off is more principled.
 - **Artifact size limits.** Probably want a per-run cap (1 GB?) and a per-repo cap (10 GB?). Values TBD after real use.
 - **Push-time feedback for CI.** When post-receive kicks off CI, should the push block until the run starts (not completes)? Probably yes, so the client sees "CI run #42 queued" in push output.
-- **Secrets for CI.** Injected from container env or loaded from a file on the volume. Since CI is unsandboxed, there's no meaningful isolation story anyway — any pipeline step has full access to whatever the CI runner has. Env is simplest; punt encrypted-at-rest to "if I ever want it.** Resolved secret values are redacted from CI output surfaces (run logs, recorded command strings, DB columns) by a per-run registry. Values shorter than 8 characters are not redacted (false-positive risk). Replacement format is `{{ name }}`. Tracing/application logs are not covered in v1 — audit existing trace call sites instead.
+- **Secrets for CI.** Declared in the global `:secrets` map, exposed to jobs via `(secret :name)`. Each value is either a plain string or a `{:file "/run/secrets/<name>"}` reference (Docker-secrets convention; one trailing newline stripped on read). Resolved values are redacted from CI output surfaces — run logs, recorded command strings, the `sh_events.cmd` column — by a per-run registry that replaces matches with `{{ name }}`. Values shorter than 8 bytes are not registered (false-positive risk; a `WARN` trace event names the skip). Tracing/application logs are not covered in v1 — audit existing trace call sites instead. Encrypted-at-rest for the secrets file is deferred until there's a reason.
 - **Backup story.** `tar` the data volume. Deploy keys are in the volume, so they travel with the backup — convenient but also means the backup is sensitive. Worth thinking about encryption-at-rest for the backup, not just the source volume. Defer, but don't forget.
 - **`docker exec` performance.** Each git push spawns a new `docker exec`. Container startup is not involved (the container is already running), but there's still some latency — tens to hundreds of milliseconds. Probably fine for interactive use, possibly noticeable if something scripts many pushes. Measure, don't optimize preemptively.
 - **Reverse-proxy auth scheme.** Which auth mechanism does the proxy actually run? Candidates:
