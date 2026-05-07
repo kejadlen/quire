@@ -62,9 +62,11 @@ impl SecretRegistry {
     /// for redaction. Returns `Err` if the name isn't declared or
     /// the source can't be read.
     ///
-    /// Values shorter than 8 characters are cached for lookup but
-    /// not registered for redaction (high false-positive rate on
-    /// common short strings like "set", "yes", "true", "no").
+    /// Values shorter than 8 characters are returned to the caller
+    /// but not registered for redaction — the false-positive rate on
+    /// common short strings like "true" or "yes" is too high. A warn
+    /// is emitted so an operator can see why a short token is showing
+    /// up unredacted in CI output.
     pub fn resolve(&mut self, name: &str) -> super::error::Result<String> {
         let secret = self
             .declared
@@ -74,6 +76,12 @@ impl SecretRegistry {
         if value.len() >= 8 {
             self.revealed
                 .insert(name.to_string(), Revealed::new(value.clone()));
+        } else {
+            tracing::warn!(
+                secret = %name,
+                length = value.len(),
+                "secret value is shorter than the 8-byte minimum and will not be redacted from CI output"
+            );
         }
         Ok(value)
     }
