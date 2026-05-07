@@ -183,7 +183,6 @@ impl DetailJob {
 }
 
 pub struct DetailShEvent {
-    pub index: usize,
     pub started_at_ms: i64,
     pub finished_at_ms: i64,
     pub exit_code: i32,

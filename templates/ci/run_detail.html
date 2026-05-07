@@ -29,10 +29,9 @@
   </div>
   {% for sh in job.sh_events %}
   <div class="ci-sh">
-    <div class="ci-sh-meta">
-      sh-{{ sh.index }} · {{ sh.duration_display() }} · exit {{ sh.exit_code }}
+    <div class="ci-sh-cmd">
+      {{ sh.cmd_display() }} <span class="ci-sh-meta">{{ sh.duration_display() }}{% if sh.exit_code != 0 %} · exit {{ sh.exit_code }}{% endif %}</span>
     </div>
-    <div class="ci-sh-cmd">{{ sh.cmd_display() }}</div>
     {% if !sh.log_content.is_empty() %}
     <pre class="ci-sh-log">{{ sh.log_content }}</pre>
     {% endif %}

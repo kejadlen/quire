@@ -3,12 +3,16 @@
 use askama::Template;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 
 use super::db;
 use super::templates::*;
 use crate::Quire;
 use crate::error::display_chain;
+
+pub async fn repo_redirect(AxumPath(repo): AxumPath<String>) -> Redirect {
+    Redirect::temporary(&format!("/{}/ci", repo.trim_end_matches(".git")))
+}
 
 /// Render a template into an HTML response, returning 500 on render failure.
 fn render<T: Template>(tmpl: &T) -> Response {
@@ -156,7 +160,6 @@ pub async fn run_detail(
                 None => String::new(),
             };
             detail_sh_events.push(DetailShEvent {
-                index: sh_n,
                 started_at_ms: ev.started_at_ms,
                 finished_at_ms: ev.finished_at_ms,
                 exit_code: ev.exit_code,
