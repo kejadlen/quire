@@ -32,9 +32,14 @@ file surfaces as a Fennel parse or eval error with source labels.
 
 ## Per-repo config
 
-Mirroring is handled by CI jobs defined in `.quire/ci.fnl`. Per-repo
-config at `.quire/config.fnl` is reserved for future use (notifications,
-visibility settings, etc.).
+Files quire reads from a checked-in `.quire/` directory in the working
+tree:
+
+- `.quire/ci.fnl` — pipeline definition (jobs, image, mirror).
+- `.quire/Dockerfile` — image built per run when the CI executor is
+  `docker` and no other image is supplied.
+- `.quire/config.fnl` — reserved for future use (notifications,
+  visibility settings, etc.); not yet read.
 
 ## SecretString values
 
