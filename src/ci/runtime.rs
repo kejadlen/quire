@@ -205,15 +205,6 @@ impl Runtime {
         self.registry.borrow_mut().resolve(name)
     }
 
-    /// Borrow the secret registry for redaction.
-    ///
-    /// Used by run.rs to audit DB columns; kept even though
-    /// current callers access the registry through the sh path.
-    #[allow(dead_code)]
-    pub(super) fn registry(&self) -> std::cell::Ref<'_, SecretRegistry> {
-        self.registry.borrow()
-    }
-
     /// Run `cmd` with `opts` and record its output against the
     /// current job (if one is active). Non-zero exits come back in
     /// `:exit`, not as `Err`.
