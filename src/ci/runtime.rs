@@ -215,12 +215,28 @@ impl Runtime {
     pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> super::error::Result<ShOutput> {
         let started_at = Timestamp::now();
         let output = match self.docker_target() {
-            None => cmd.run(opts, &self.workspace)?,
+            None => {
+                let program = cmd.program().to_string();
+                cmd.run(opts, &self.workspace).map_err(|e| {
+                    super::error::Error::CommandSpawnFailed {
+                        program,
+                        cwd: self.workspace.clone(),
+                        source: e,
+                    }
+                })?
+            }
             Some((container_id, work_dir)) => {
                 let wrapped = Cmd::wrap_in_docker_exec(cmd, container_id, work_dir, &opts);
+                let program = wrapped.program().to_string();
                 // env was embedded into the docker exec argv; clear it
                 // so it isn't also set on the host `docker` process.
-                wrapped.run(ShOpts::default(), &self.workspace)?
+                wrapped
+                    .run(ShOpts::default(), &self.workspace)
+                    .map_err(|e| super::error::Error::CommandSpawnFailed {
+                        program,
+                        cwd: self.workspace.clone(),
+                        source: e,
+                    })?
             }
         };
         let finished_at = Timestamp::now();
@@ -390,6 +406,13 @@ impl From<Cmd> for std::process::Command {
 }
 
 impl Cmd {
+    pub fn program(&self) -> &str {
+        match self {
+            Cmd::Shell(_) => "sh",
+            Cmd::Argv { program, .. } => program,
+        }
+    }
+
     /// Spawn this command with the given options, blocking until exit,
     /// and capture the result. Inherits the runner's env with
     /// `opts.env` merged on top. `cwd` becomes the child's working

@@ -10,7 +10,7 @@ use crate::secret;
 /// Errors produced by CI operations.
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
-    #[error("io error: {0}")]
+    #[error("io error")]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
@@ -72,6 +72,14 @@ pub enum Error {
 
     #[error(transparent)]
     Secret(#[from] secret::Error),
+
+    #[error("command spawn failed: {program} in {cwd}")]
+    CommandSpawnFailed {
+        program: String,
+        cwd: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("unknown secret: {0:?}")]
     UnknownSecret(String),
