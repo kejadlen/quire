@@ -61,12 +61,25 @@ pub fn format_duration_exact(start: i64, end: i64) -> String {
 }
 
 fn format_ms_duration(ms: i64) -> String {
-    let ms = ms.max(0);
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else {
-        format!("{}s", ms / 1000)
+    let total_secs = (ms.max(0)) / 1000;
+    if total_secs == 0 {
+        return format!("{}ms", ms.max(0));
     }
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+    if hours > 0 {
+        let days = hours / 24;
+        let hours = hours % 24;
+        if days > 0 {
+            return format!("{days}d {hours}h");
+        }
+        return format!("{hours}h {mins}m");
+    }
+    if mins > 0 {
+        return format!("{mins}m {secs}s");
+    }
+    format!("{secs}s")
 }
 
 /// Map a CI run/job state string to a CSS colour class.
@@ -93,6 +106,21 @@ mod tests {
     #[test]
     fn format_duration_shows_seconds() {
         assert_eq!(format_duration(Some(0), Some(3500)), "3s");
+    }
+
+    #[test]
+    fn format_duration_shows_minutes_and_seconds() {
+        assert_eq!(format_duration(Some(0), Some(125_000)), "2m 5s");
+    }
+
+    #[test]
+    fn format_duration_shows_hours_and_minutes() {
+        assert_eq!(format_duration(Some(0), Some(3665_000)), "1h 1m");
+    }
+
+    #[test]
+    fn format_duration_shows_days_and_hours() {
+        assert_eq!(format_duration(Some(0), Some(90_000_000)), "1d 1h");
     }
 
     #[test]
