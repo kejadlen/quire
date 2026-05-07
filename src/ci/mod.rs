@@ -132,7 +132,14 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 
     let db_path = quire.db_path();
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(&repo, &db_path, event.pushed_at, push_ref, &secrets) {
+        if let Err(e) = trigger_ref(
+            &repo,
+            &db_path,
+            event.pushed_at,
+            push_ref,
+            &secrets,
+            run::Executor::Docker,
+        ) {
             tracing::error!(
                 repo = %event.repo,
                 sha = %push_ref.new_sha, // cov-excl-line
@@ -150,6 +157,7 @@ fn trigger_ref(
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     secrets: &HashMap<String, crate::secret::SecretString>,
+    executor: run::Executor,
 ) -> error::Result<()> {
     let ci = repo.ci();
 
@@ -188,7 +196,7 @@ fn trigger_ref(
         secrets.clone(),
         &repo.path(),
         &workspace,
-        run::Executor::Host,
+        executor,
     )?;
     Ok(())
 }
@@ -366,6 +374,7 @@ mod tests {
             pushed_at,
             &push_ref,
             &HashMap::new(),
+            run::Executor::Host,
         )
         .expect("trigger_ref should succeed");
 
@@ -399,6 +408,7 @@ mod tests {
             pushed_at,
             &push_ref,
             &HashMap::new(),
+            run::Executor::Host,
         )
         .expect("should succeed without ci.fnl");
     }
@@ -422,6 +432,7 @@ mod tests {
             pushed_at,
             &push_ref,
             &HashMap::new(),
+            run::Executor::Host,
         );
         assert!(result.is_err(), "invalid pipeline should fail");
     }
