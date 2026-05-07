@@ -3,7 +3,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=QUIRE_VERSION");
     let version = std::env::var("QUIRE_VERSION").unwrap_or_else(|_| {
-        let date = cmd("date", &["-u", "+%Y-%m-%d"]);
+        let date = cmd("date", &["-u", "+%Y.%m.%d"]);
         let change = cmd(
             "jj",
             &[
