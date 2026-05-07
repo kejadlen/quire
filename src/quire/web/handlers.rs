@@ -10,8 +10,16 @@ use super::templates::*;
 use crate::Quire;
 use crate::error::display_chain;
 
-pub async fn repo_redirect(AxumPath(repo): AxumPath<String>) -> Redirect {
-    Redirect::temporary(&format!("/{}/ci", repo.trim_end_matches(".git")))
+pub async fn repo_redirect(
+    State(quire): State<Quire>,
+    AxumPath(repo): AxumPath<String>,
+) -> Response {
+    let repo_name = db::resolve_repo_name(&repo);
+    match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => {}
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    }
+    Redirect::temporary(&format!("/{}/ci", repo.trim_end_matches(".git"))).into_response()
 }
 
 /// Render a template into an HTML response, returning 500 on render failure.
@@ -76,9 +84,10 @@ fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -
 pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    if quire.repo(&repo_name).is_err() {
-        return StatusCode::NOT_FOUND.into_response();
-    }
+    match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => {}
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
 
     let runs = match db::load_runs(&quire, &repo_name) {
         Ok(r) => r,
@@ -120,7 +129,11 @@ pub async fn run_detail(
 ) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    if quire.repo(&repo_name).is_err() || !db::is_valid_run_id(&run_id) {
+    match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => {}
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if !db::is_valid_run_id(&run_id) {
         return StatusCode::NOT_FOUND.into_response();
     }
 
@@ -340,7 +353,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_list_returns_empty_for_unknown_repo() {
+    async fn run_list_returns_404_for_unknown_repo() {
         let env = TestEnv::new();
         let app = env.app();
         let req = Request::builder()
@@ -348,8 +361,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        // Unknown repo still has a valid name — returns empty run list.
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

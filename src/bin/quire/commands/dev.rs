@@ -25,6 +25,12 @@ pub fn seed() -> Result<Quire> {
     tracing::info!(path = %base_dir.display(), "seeded tempdir");
 
     let quire = Quire::new(base_dir);
+
+    // Create the repos dir + a bare repo so the web view resolves the repo.
+    let bare_repo = quire.repos_dir().join("example.git");
+    fs_err::create_dir_all(&bare_repo)
+        .into_diagnostic()
+        .context("failed to create bare repo dir")?;
     let db_path = quire.db_path();
 
     // Open and migrate.
