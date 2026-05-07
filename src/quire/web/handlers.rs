@@ -47,6 +47,9 @@ pub async fn run_list(
     let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
+    if quire.repo(&repo_name).is_err() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
     let runs = match db::load_runs(&quire, &repo_name) {
         Ok(r) => r,
@@ -90,6 +93,9 @@ pub async fn run_detail(
     let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
+    if quire.repo(&repo_name).is_err() || !db::is_valid_run_id(&run_id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
     let result = db::load_run_detail(&quire, &repo_name, &run_id);
     let (run, jobs, sh_events) = match result {
@@ -119,6 +125,10 @@ pub async fn run_detail(
     let mut log_contents: std::collections::HashMap<(String, usize), String> =
         std::collections::HashMap::new();
     for (idx, ev) in sh_events.iter().enumerate() {
+        if !db::is_safe_path_segment(&ev.job_id) {
+            tracing::warn!(job_id = %ev.job_id, "skipping CRI log read for unsafe job_id");
+            continue;
+        }
         let sh_n = db::sh_index_for_event(&sh_events, &ev.job_id, idx);
         let key = (ev.job_id.clone(), sh_n);
         if log_contents.contains_key(&key) {
