@@ -17,6 +17,8 @@ use super::pipeline::{Job, Pipeline};
 use super::run::{DockerLifecycle, RunMeta};
 use crate::secret::SecretString;
 
+use super::redact::{SecretRegistry, redact};
+
 /// Per-sh timing: (index, started_at, finished_at).
 pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
@@ -62,6 +64,8 @@ pub(super) struct Runtime {
     pub(super) sh_timings: RefCell<HashMap<String, ShTimings>>,
     /// Per-job sh call counter for assigning sequential indices.
     sh_counter: RefCell<HashMap<String, usize>>,
+    /// Per-run secret registry for output redaction.
+    registry: RefCell<SecretRegistry>,
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
     workspace: std::path::PathBuf,
@@ -129,6 +133,7 @@ impl Runtime {
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
             sh_counter: RefCell::new(HashMap::new()),
+            registry: RefCell::new(SecretRegistry::new()),
             workspace,
             executor,
         }
@@ -194,6 +199,15 @@ impl Runtime {
         std::mem::take(&mut *self.sh_timings.borrow_mut())
     }
 
+    /// Borrow the secret registry for redaction.
+    ///
+    /// Used by run.rs to audit DB columns; kept even though
+    /// current callers access the registry through the sh path.
+    #[allow(dead_code)]
+    pub(super) fn registry(&self) -> std::cell::Ref<'_, SecretRegistry> {
+        self.registry.borrow()
+    }
+
     /// Resolve a declared secret by name. Errors if the name isn't
     /// declared or the secret's source can't be read.
     pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
@@ -252,7 +266,15 @@ impl Runtime {
                 .borrow_mut()
                 .entry(job.clone())
                 .or_default()
-                .push(output.clone());
+                .push({
+                    let reg = self.registry.borrow();
+                    ShOutput {
+                        exit: output.exit,
+                        stdout: redact(&output.stdout, &reg),
+                        stderr: redact(&output.stderr, &reg),
+                        cmd: redact(&output.cmd, &reg),
+                    }
+                });
             self.sh_timings
                 .borrow_mut()
                 .entry(job.clone())
@@ -277,6 +299,7 @@ impl Runtime {
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
             sh_counter: RefCell::new(HashMap::new()),
+            registry: RefCell::new(SecretRegistry::new()),
             workspace: std::env::current_dir().expect("cwd"),
             executor: ExecutorRuntime::Host,
         }
@@ -324,7 +347,9 @@ impl IntoLua for RuntimeHandle {
             "secret",
             lua.create_function(|lua, name: String| {
                 let rt = runtime(lua)?;
-                rt.secret(&name).map_err(mlua::Error::external)
+                let value = rt.secret(&name).map_err(mlua::Error::external)?;
+                rt.registry.borrow_mut().register(&name, &value);
+                Ok(value)
             })?,
         )?;
 
