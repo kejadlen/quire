@@ -23,7 +23,7 @@
     <tr>
       <td><span class="ci-status-dot {{ run.state_class() }}"></span></td>
       <td><a href="/{{ repo }}/ci/{{ run.id }}" class="ci-commit-link">{{ run.sha_short() }}</a></td>
-      <td>{{ run.ref_short() }}</td>
+      <td>{{ run.branch_short() }}</td>
       <td><time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time></td>
       <td>{{ run.duration_display() }}</td>
     </tr>

@@ -55,11 +55,6 @@ pub fn format_duration(start: Option<i64>, end: Option<i64>) -> String {
     }
 }
 
-/// Duration between exact start/end millisecond timestamps.
-pub fn format_duration_exact(start: i64, end: i64) -> String {
-    format_ms_duration(end - start)
-}
-
 fn format_ms_duration(ms: i64) -> String {
     let total_secs = (ms.max(0)) / 1000;
     if total_secs == 0 {

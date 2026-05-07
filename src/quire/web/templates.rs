@@ -68,7 +68,7 @@ impl RunListRow {
         &self.sha[..self.sha.len().min(8)]
     }
 
-    pub fn ref_short(&self) -> &str {
+    pub fn branch_short(&self) -> &str {
         self.ref_name.trim_start_matches("refs/heads/")
     }
 
@@ -120,7 +120,7 @@ impl DetailRun {
         &self.sha[..self.sha.len().min(8)]
     }
 
-    pub fn ref_short(&self) -> &str {
+    pub fn branch_short(&self) -> &str {
         self.ref_name.trim_start_matches("refs/heads/")
     }
 
@@ -202,7 +202,7 @@ pub struct DetailShEvent {
 
 impl DetailShEvent {
     pub fn duration_display(&self) -> String {
-        format::format_duration_exact(self.started_at_ms, self.finished_at_ms)
+        format::format_duration(Some(self.started_at_ms), Some(self.finished_at_ms))
     }
 
     pub fn cmd_display(&self) -> &str {
