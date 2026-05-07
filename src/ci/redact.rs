@@ -224,4 +224,30 @@ mod tests {
         let mut reg = SecretRegistry::new(plain_secrets(&[("key", "hunter2")]));
         assert_eq!(reg.resolve("key").unwrap(), "hunter2");
     }
+
+    #[test]
+    fn redact_is_idempotent() {
+        let mut reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_long_secret_value")]));
+        reg.resolve("token").unwrap();
+        let input = "hello ghp_long_secret_value world";
+        let first = redact(input, &reg);
+        let second = redact(&first, &reg);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn redact_preserves_non_matching_text() {
+        let mut reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_long_secret_value")]));
+        reg.resolve("token").unwrap();
+        let input = "nothing to see here";
+        assert_eq!(redact(input, &reg), input);
+    }
+
+    #[test]
+    fn redact_with_no_resolves_is_identity() {
+        let reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_long_secret_value")]));
+        // No resolve — no redactions registered.
+        let input = "contains ghp_long_secret_value but not resolved";
+        assert_eq!(redact(input, &reg), input);
+    }
 }

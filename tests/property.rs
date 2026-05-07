@@ -86,3 +86,30 @@ fn secret_string_from_file_strips_one_trailing_newline(tc: TestCase) {
     let expected = content.strip_suffix('\n').unwrap_or(&content).to_string();
     assert_eq!(revealed, expected);
 }
+
+#[hegel::test]
+fn push_event_repo_round_trips_json(tc: TestCase) {
+    // Verify that arbitrary repo names survive JSON serialization.
+    let mut event = tc.draw(push_event());
+    event.repo = tc.draw(text());
+    let json = serde_json::to_string(&event).expect("serialize");
+    let parsed: PushEvent = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(event, parsed);
+}
+
+#[hegel::test]
+fn push_event_updated_refs_is_subtractive(tc: TestCase) {
+    // updated_refs() can only remove refs (zero-sha deletions),
+    // never add or reorder them.
+    let event = tc.draw(push_event());
+    let kept = event.updated_refs();
+    assert!(kept.len() <= event.refs.len());
+    for kept_ref in &kept {
+        assert!(
+            event
+                .refs
+                .iter()
+                .any(|r| r.r#ref == kept_ref.r#ref && r.new_sha == kept_ref.new_sha)
+        );
+    }
+}
