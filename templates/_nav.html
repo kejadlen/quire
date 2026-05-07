@@ -14,7 +14,11 @@
     <a class="nav-repo" href="/{{ repo }}/ci">{{ repo }}</a>
     {% for crumb in crumbs %}
     <span class="sep">/</span>
-    <span class="nav-crumb">{{ crumb }}</span>
+    {% if let Some(href) = crumb.href %}
+    <a class="nav-crumb" href="{{ href }}">{{ crumb.label }}</a>
+    {% else %}
+    <span class="nav-crumb">{{ crumb.label }}</span>
+    {% endif %}
     {% endfor %}
   </div>
 </nav>

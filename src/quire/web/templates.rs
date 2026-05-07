@@ -9,13 +9,37 @@ fn pkg_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// A navigation breadcrumb entry.
+///
+/// When `href` is `Some`, the crumb renders as a clickable link.
+pub struct Crumb {
+    pub label: String,
+    pub href: Option<String>,
+}
+
+impl Crumb {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            href: None,
+        }
+    }
+
+    pub fn with_href(label: impl Into<String>, href: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            href: Some(href.into()),
+        }
+    }
+}
+
 // ── Run list ───────────────────────────────────────────────────────
 
 #[derive(Template)]
 #[template(path = "ci/run_list.html")]
 pub struct RunListTemplate {
     pub repo: String,
-    pub crumbs: Vec<String>,
+    pub crumbs: Vec<Crumb>,
     pub runs: Vec<RunListRow>,
 }
 
@@ -67,7 +91,7 @@ impl RunListRow {
 #[template(path = "ci/run_detail.html")]
 pub struct RunDetailTemplate {
     pub repo: String,
-    pub crumbs: Vec<String>,
+    pub crumbs: Vec<Crumb>,
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
 }
@@ -194,7 +218,7 @@ impl DetailShEvent {
 #[template(path = "error.html")]
 pub struct ErrorTemplate {
     pub repo: String,
-    pub crumbs: Vec<String>,
+    pub crumbs: Vec<Crumb>,
     pub title: String,
     pub detail: String,
 }
