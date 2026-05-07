@@ -5,7 +5,6 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 
-use super::auth::RemoteUser;
 use super::db;
 use super::templates::*;
 use crate::Quire;
@@ -39,12 +38,7 @@ fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -
     }
 }
 
-pub async fn run_list(
-    State(quire): State<Quire>,
-    AxumPath(repo): AxumPath<String>,
-    user: RemoteUser,
-) -> Response {
-    let _user = user;
+pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
     if quire.repo(&repo_name).is_err() {
@@ -88,9 +82,7 @@ pub async fn run_list(
 pub async fn run_detail(
     State(quire): State<Quire>,
     AxumPath((repo, run_id)): AxumPath<(String, String)>,
-    user: RemoteUser,
 ) -> Response {
-    let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
     if quire.repo(&repo_name).is_err() || !db::is_valid_run_id(&run_id) {
