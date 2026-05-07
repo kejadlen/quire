@@ -622,21 +622,24 @@ pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Res
         .arg(git_dir)
         .args(["archive", sha])
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
     let archive_stdout = archive.stdout.take().expect("piped stdout");
 
-    let mut tar = Command::new("tar")
+    let tar = Command::new("tar")
         .args(["-x", "-C"])
         .arg(workspace)
         .stdin(Stdio::from(archive_stdout))
+        .stderr(Stdio::piped())
         .spawn()?;
 
-    let tar_status = tar.wait()?;
-    let archive_status = archive.wait()?;
-    if !archive_status.success() || !tar_status.success() {
+    let tar_output = tar.wait_with_output()?;
+    let archive_output = archive.wait_with_output()?;
+    if !archive_output.status.success() || !tar_output.status.success() {
         return Err(Error::WorkspaceMaterializationFailed {
             source: std::io::Error::other(format!(
-                "git archive exited {archive_status}, tar exited {tar_status}"
+                "git archive exited {}, tar exited {}",
+                archive_output.status, tar_output.status
             )),
         });
     }
