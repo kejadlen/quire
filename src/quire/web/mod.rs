@@ -20,6 +20,7 @@ use crate::Quire;
 /// `.layer(middleware::from_fn(auth::require_auth))`).
 pub fn router(quire: Quire) -> axum::Router {
     axum::Router::new()
+        .route("/style.css", axum::routing::get(handlers::stylesheet))
         .route("/{repo}", axum::routing::get(handlers::repo_redirect))
         .route("/{repo}/ci", axum::routing::get(handlers::run_list))
         .route(

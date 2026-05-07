@@ -2,7 +2,7 @@
 
 use askama::Template;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 
 use super::db;
@@ -23,6 +23,15 @@ fn render<T: Template>(tmpl: &T) -> Response {
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
+}
+
+/// Serve the compiled-in stylesheet.
+pub async fn stylesheet() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../../../static/style.css"),
+    )
+        .into_response()
 }
 
 /// Read a CRI log file, returning empty on NotFound and on any other
