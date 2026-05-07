@@ -18,7 +18,6 @@ use super::run::{DockerLifecycle, RunMeta};
 use crate::secret::SecretString;
 
 use super::redact::{SecretRegistry, redact};
-
 /// Per-sh timing: (index, started_at, finished_at).
 pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
@@ -55,7 +54,10 @@ pub(super) enum ExecutorRuntime {
 /// from a VM without one error.
 pub(super) struct Runtime {
     pipeline: Pipeline,
-    pub(super) secrets: HashMap<String, SecretString>,
+    /// Unified secret store: holds declared secrets and their revealed
+    /// values for both lookup and redaction. No Debug impl on the
+    /// registry; Runtime must not derive Debug either.
+    pub(super) registry: RefCell<SecretRegistry>,
     pub(super) inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
     pub(super) current_job: RefCell<Option<String>>,
     pub(super) outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
@@ -64,8 +66,6 @@ pub(super) struct Runtime {
     pub(super) sh_timings: RefCell<HashMap<String, ShTimings>>,
     /// Per-job sh call counter for assigning sequential indices.
     sh_counter: RefCell<HashMap<String, usize>>,
-    /// Per-run secret registry for output redaction.
-    registry: RefCell<SecretRegistry>,
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
     workspace: std::path::PathBuf,
@@ -127,13 +127,12 @@ impl Runtime {
 
         Self {
             pipeline,
-            secrets,
             inputs,
+            registry: RefCell::new(SecretRegistry::new(secrets)),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
             sh_counter: RefCell::new(HashMap::new()),
-            registry: RefCell::new(SecretRegistry::new()),
             workspace,
             executor,
         }
@@ -199,6 +198,13 @@ impl Runtime {
         std::mem::take(&mut *self.sh_timings.borrow_mut())
     }
 
+    /// Resolve a declared secret by name, caching it for redaction.
+    /// Errors if the name isn't declared or the secret's source
+    /// can't be read.
+    pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
+        self.registry.borrow_mut().resolve(name)
+    }
+
     /// Borrow the secret registry for redaction.
     ///
     /// Used by run.rs to audit DB columns; kept even though
@@ -206,16 +212,6 @@ impl Runtime {
     #[allow(dead_code)]
     pub(super) fn registry(&self) -> std::cell::Ref<'_, SecretRegistry> {
         self.registry.borrow()
-    }
-
-    /// Resolve a declared secret by name. Errors if the name isn't
-    /// declared or the secret's source can't be read.
-    pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
-        let secret = self
-            .secrets
-            .get(name)
-            .ok_or_else(|| super::error::Error::UnknownSecret(name.to_string()))?;
-        Ok(secret.reveal()?.to_string())
     }
 
     /// Run `cmd` with `opts` and record its output against the
@@ -293,13 +289,12 @@ impl Runtime {
     fn for_test(pipeline: Pipeline, secrets: HashMap<String, SecretString>) -> Self {
         Self {
             pipeline,
-            secrets,
+            registry: RefCell::new(SecretRegistry::new(secrets)),
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
             sh_counter: RefCell::new(HashMap::new()),
-            registry: RefCell::new(SecretRegistry::new()),
             workspace: std::env::current_dir().expect("cwd"),
             executor: ExecutorRuntime::Host,
         }
@@ -347,9 +342,7 @@ impl IntoLua for RuntimeHandle {
             "secret",
             lua.create_function(|lua, name: String| {
                 let rt = runtime(lua)?;
-                let value = rt.secret(&name).map_err(mlua::Error::external)?;
-                rt.registry.borrow_mut().register(&name, &value);
-                Ok(value)
+                rt.secret(&name).map_err(mlua::Error::external)
             })?,
         )?;
 
