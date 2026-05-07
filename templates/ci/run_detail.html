@@ -11,7 +11,7 @@
   <div class="ci-meta-primary">
     <span class="c-accent">{{ run.sha_short() }}</span>
     · {{ run.branch_short() }}
-    · <span class="{{ run.state_class() }}">{{ run.state }}</span>
+    · <span class="ci-state-label {{ run.state_class() }}"><span class="ci-status-dot {{ run.state_class() }}"></span> {{ run.state }}</span>
   </div>
   <div class="ci-meta-secondary">
     queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
@@ -25,7 +25,7 @@
 <div class="ci-job">
   <div class="ci-job-header">
     {{ job.job_id }} · {{ job.duration_display() }}{% if let Some(code) = job.exit_code_filter_nonzero() %} · exit {{ code }}{% endif %}
-    · <span class="{{ job.state_class() }}">{{ job.state }}</span>
+    · <span class="ci-state-label {{ job.state_class() }}"><span class="ci-status-dot {{ job.state_class() }}"></span> {{ job.state }}</span>
   </div>
   {% for sh in job.sh_events %}
   <div class="ci-sh">
