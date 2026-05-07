@@ -5,35 +5,28 @@
 //! replaces the previous split between `Runtime.secrets` and a
 //! separate redaction registry.
 //!
-//! Revealed values are stored opaquely (no [`Debug`] impl, manual
-//! [`Drop`] that overwrites bytes) to avoid re-introducing the secret
-//! in debug output or core dumps. This mirrors the protections in
-//! `crate::secret::SecretString`.
+//! [`Revealed`] is an opaque wrapper without a [`Debug`] impl, so a
+//! revealed value can't accidentally land in `tracing::debug!` or a
+//! panic message. That's the only memory-side protection here: copies
+//! made earlier in the pipeline (the `String` returned by `reveal`,
+//! Lua VM internals, intermediate `format!` allocations) aren't
+//! zeroized, so the registry is best thought of as preventing
+//! accidental display, not preventing memory disclosure.
 
 use std::collections::HashMap;
 
 use crate::secret::SecretString;
 
-/// Opaque wrapper for a revealed secret value.
-/// Zeroes its heap buffer on drop. No Debug impl.
-struct Revealed(Vec<u8>);
+/// Opaque wrapper for a revealed secret value. No Debug impl.
+struct Revealed(String);
 
 impl Revealed {
     fn new(value: String) -> Self {
-        Self(value.into_bytes())
+        Self(value)
     }
 
     fn as_str(&self) -> &str {
-        // Values were constructed from valid UTF-8 strings.
-        std::str::from_utf8(&self.0).unwrap_or("")
-    }
-}
-
-impl Drop for Revealed {
-    fn drop(&mut self) {
-        for byte in self.0.iter_mut() {
-            *byte = 0;
-        }
+        &self.0
     }
 }
 
