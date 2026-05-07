@@ -8,6 +8,7 @@ use axum::response::{Html, IntoResponse, Response};
 use super::db;
 use super::templates::*;
 use crate::Quire;
+use crate::error::display_chain;
 
 /// Render a template into an HTML response, returning 500 on render failure.
 fn render<T: Template>(tmpl: &T) -> Response {
@@ -48,12 +49,12 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
     let runs = match db::load_runs(&quire, &repo_name) {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(repo = %repo, error = %e, "failed to load runs");
+            tracing::error!(repo = %repo, error = %display_chain(&e), "failed to load runs");
             return render_error(
                 repo_display,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to load runs",
-                e,
+                display_chain(&e).to_string(),
             );
         }
     };
@@ -93,12 +94,12 @@ pub async fn run_detail(
     let (run, jobs, sh_events) = match result {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
+            tracing::error!(repo = %repo, run_id = %run_id, error = %display_chain(&e), "failed to load run detail");
             return render_error(
                 repo_display,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to load run",
-                e,
+                display_chain(&e).to_string(),
             );
         }
     };

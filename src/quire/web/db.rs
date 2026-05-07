@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-use crate::Quire;
+use crate::{Quire, Result};
 
 /// Raw run row from the database.
 pub struct RunRow {
@@ -33,16 +33,14 @@ pub struct ShEvent {
     pub cmd: String,
 }
 
-pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>, String> {
-    let db = Connection::open(quire.db_path()).map_err(|e| e.to_string())?;
-    let mut stmt = db
-        .prepare(
-            "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
-             FROM runs WHERE repo = ?1
-             ORDER BY queued_at_ms DESC
-             LIMIT 50",
-        )
-        .map_err(|e| e.to_string())?;
+pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
+    let db = Connection::open(quire.db_path())?;
+    let mut stmt = db.prepare(
+        "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
+         FROM runs WHERE repo = ?1
+         ORDER BY queued_at_ms DESC
+         LIMIT 50",
+    )?;
 
     let rows = stmt
         .query_map(rusqlite::params![repo], |row| {
@@ -55,10 +53,8 @@ pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>, String> {
                 started_at_ms: row.get(5)?,
                 finished_at_ms: row.get(6)?,
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(rows)
 }
@@ -67,35 +63,31 @@ pub fn load_run_detail(
     quire: &Quire,
     repo: &str,
     run_id: &str,
-) -> Result<(RunRow, Vec<JobRow>, Vec<ShEvent>), String> {
-    let db = Connection::open(quire.db_path()).map_err(|e| e.to_string())?;
+) -> Result<(RunRow, Vec<JobRow>, Vec<ShEvent>)> {
+    let db = Connection::open(quire.db_path())?;
 
-    let run = db
-        .query_row(
-            "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
-             FROM runs WHERE id = ?1 AND repo = ?2",
-            rusqlite::params![run_id, repo],
-            |row| {
-                Ok(RunRow {
-                    id: row.get(0)?,
-                    state: row.get(1)?,
-                    sha: row.get(2)?,
-                    ref_name: row.get(3)?,
-                    queued_at_ms: row.get(4)?,
-                    started_at_ms: row.get(5)?,
-                    finished_at_ms: row.get(6)?,
-                })
-            },
-        )
-        .map_err(|e| e.to_string())?;
+    let run = db.query_row(
+        "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
+         FROM runs WHERE id = ?1 AND repo = ?2",
+        rusqlite::params![run_id, repo],
+        |row| {
+            Ok(RunRow {
+                id: row.get(0)?,
+                state: row.get(1)?,
+                sha: row.get(2)?,
+                ref_name: row.get(3)?,
+                queued_at_ms: row.get(4)?,
+                started_at_ms: row.get(5)?,
+                finished_at_ms: row.get(6)?,
+            })
+        },
+    )?;
 
-    let mut job_stmt = db
-        .prepare(
-            "SELECT job_id, state, exit_code, started_at_ms, finished_at_ms
-             FROM jobs WHERE run_id = ?1
-             ORDER BY rowid",
-        )
-        .map_err(|e| e.to_string())?;
+    let mut job_stmt = db.prepare(
+        "SELECT job_id, state, exit_code, started_at_ms, finished_at_ms
+         FROM jobs WHERE run_id = ?1
+         ORDER BY rowid",
+    )?;
 
     let jobs = job_stmt
         .query_map(rusqlite::params![run_id], |row| {
@@ -106,18 +98,14 @@ pub fn load_run_detail(
                 started_at_ms: row.get(3)?,
                 finished_at_ms: row.get(4)?,
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut sh_stmt = db
-        .prepare(
-            "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd
-             FROM sh_events WHERE run_id = ?1
-             ORDER BY job_id, started_at_ms",
-        )
-        .map_err(|e| e.to_string())?;
+    let mut sh_stmt = db.prepare(
+        "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd
+         FROM sh_events WHERE run_id = ?1
+         ORDER BY job_id, started_at_ms",
+    )?;
 
     let sh_events = sh_stmt
         .query_map(rusqlite::params![run_id], |row| {
@@ -128,10 +116,8 @@ pub fn load_run_detail(
                 exit_code: row.get(3)?,
                 cmd: row.get(4)?,
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok((run, jobs, sh_events))
 }
