@@ -64,7 +64,7 @@ fn updated_refs_excludes_only_zero_sha_deletions(tc: TestCase) {
 #[hegel::test]
 fn secret_string_debug_never_leaks_plain_value(tc: TestCase) {
     let value = tc.draw(text());
-    let secret = SecretString::from_plain(value.clone());
+    let secret = SecretString::from(value.clone());
     let debug = format!("{secret:?}");
     assert_eq!(debug, "SecretString(\"<redacted>\")");
 }
@@ -84,7 +84,7 @@ fn secret_string_from_file_strips_one_trailing_newline(tc: TestCase) {
     let path = dir.path().join("secret");
     fs_err::write(&path, &content).expect("write");
 
-    let revealed = SecretString::from_file(&path)
+    let revealed = SecretString::from(path.clone())
         .reveal()
         .expect("reveal")
         .to_string();
@@ -124,7 +124,7 @@ fn push_event_updated_refs_is_subtractive(tc: TestCase) {
 fn plain_secrets(pairs: &[(&str, &str)]) -> HashMap<String, SecretString> {
     pairs
         .iter()
-        .map(|(k, v)| (k.to_string(), SecretString::from_plain(*v)))
+        .map(|(k, v)| (k.to_string(), SecretString::from(*v)))
         .collect()
 }
 
@@ -153,7 +153,7 @@ fn resolved_registry(tc: TestCase) -> SecretRegistry {
     let entries = tc.draw(unique_secret_entries());
     let mut map = HashMap::new();
     for (name, value) in &entries {
-        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+        map.insert(name.clone(), SecretString::from(value.clone()));
     }
     let mut reg = SecretRegistry::new(map);
     // Resolve all secrets so they're registered for redaction.
@@ -169,7 +169,7 @@ fn text_with_secrets(tc: TestCase) -> (SecretRegistry, String) {
     let mut map = HashMap::new();
     let mut long_values: Vec<String> = Vec::new();
     for (name, value) in &entries {
-        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+        map.insert(name.clone(), SecretString::from(value.clone()));
         if value.len() >= MIN_REDACT_LEN {
             long_values.push(value.clone());
         }
@@ -198,7 +198,7 @@ fn redact_never_contains_revealed_long_values(tc: TestCase) {
     let mut map = HashMap::new();
     let mut long_values: Vec<String> = Vec::new();
     for (name, value) in &entries {
-        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+        map.insert(name.clone(), SecretString::from(value.clone()));
         if value.len() >= MIN_REDACT_LEN {
             long_values.push(value.clone());
         }
@@ -256,7 +256,7 @@ fn redact_unresolved_registry_is_identity(tc: TestCase) {
     let entries = tc.draw(unique_secret_entries());
     let map: HashMap<String, SecretString> = entries
         .into_iter()
-        .map(|(k, v)| (k, SecretString::from_plain(v)))
+        .map(|(k, v)| (k, SecretString::from(v)))
         .collect();
     let reg = SecretRegistry::new(map);
     let text = tc.draw(text());
@@ -286,7 +286,7 @@ fn redact_output_never_shows_long_secret_values(tc: TestCase) {
     let entries = tc.draw(unique_secret_entries());
     let mut map = HashMap::new();
     for (name, value) in &entries {
-        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+        map.insert(name.clone(), SecretString::from(value.clone()));
     }
     let mut reg = SecretRegistry::new(map);
     for (name, _) in &entries {

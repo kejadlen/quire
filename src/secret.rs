@@ -87,18 +87,25 @@ impl std::fmt::Debug for SecretString {
     }
 }
 
-impl SecretString {
-    /// Build from a plain string literal.
-    pub fn from_plain(value: impl Into<String>) -> Self {
-        Self(SecretSource::Plain(value.into()))
+impl From<String> for SecretString {
+    fn from(value: String) -> Self {
+        Self(SecretSource::Plain(value))
     }
+}
 
+impl From<&str> for SecretString {
+    fn from(value: &str) -> Self {
+        Self(SecretSource::Plain(value.to_string()))
+    }
+}
+
+impl From<PathBuf> for SecretString {
     /// Build from a file path. Contents are read lazily on first [`reveal`].
     ///
     /// [`reveal`]: SecretString::reveal
-    pub fn from_file(path: impl Into<PathBuf>) -> Self {
+    fn from(path: PathBuf) -> Self {
         Self(SecretSource::File {
-            path: path.into(),
+            path,
             resolved: OnceLock::new(),
         })
     }
@@ -135,7 +142,7 @@ mod tests {
 
     #[test]
     fn debug_redacts_value() {
-        let secret = SecretString::from_plain("super_secret_password");
+        let secret = SecretString::from("super_secret_password");
         let debug_output = format!("{secret:?}");
         assert_eq!(debug_output, "SecretString(\"<redacted>\")");
         assert!(
@@ -146,13 +153,13 @@ mod tests {
 
     #[test]
     fn reveal_returns_plain_value() {
-        let secret = SecretString::from_plain("plain_value");
+        let secret = SecretString::from("plain_value");
         assert_eq!(secret.reveal().unwrap(), "plain_value");
     }
 
     #[test]
     fn clone_preserves_plain_value() {
-        let secret = SecretString::from_plain("clonable");
+        let secret = SecretString::from("clonable");
         let cloned = secret.clone();
         assert_eq!(cloned.reveal().unwrap(), "clonable");
     }
@@ -163,7 +170,7 @@ mod tests {
         let path = dir.path().join("token");
         fs_err::write(&path, "initial\n").expect("write");
 
-        let secret = SecretString::from_file(&path);
+        let secret = SecretString::from(path.clone());
         assert_eq!(secret.reveal().unwrap(), "initial");
 
         // Overwrite the file — cached value should not change.
@@ -177,7 +184,7 @@ mod tests {
         let path = dir.path().join("secret");
         fs_err::write(&path, "line1\nline2\n").expect("write");
 
-        let secret = SecretString::from_file(&path);
+        let secret = SecretString::from(path.clone());
         assert_eq!(secret.reveal().unwrap(), "line1\nline2");
     }
 
@@ -189,13 +196,13 @@ mod tests {
         // Any additional trailing newlines are part of the secret.
         fs_err::write(&path, "value\n\n\n").expect("write");
 
-        let secret = SecretString::from_file(&path);
+        let secret = SecretString::from(path.clone());
         assert_eq!(secret.reveal().unwrap(), "value\n\n");
     }
 
     #[test]
     fn reveal_errors_on_missing_file() {
-        let secret = SecretString::from_file(PathBuf::from("/no/such/file/ever").as_path());
+        let secret = SecretString::from(PathBuf::from("/no/such/file/ever"));
         let err = secret.reveal().unwrap_err();
         assert!(
             matches!(err, Error::Resolve(_)),
@@ -209,7 +216,7 @@ mod tests {
         let path = dir.path().join("pw");
         fs_err::write(&path, "initial\n").expect("write");
 
-        let original = SecretString::from_file(&path);
+        let original = SecretString::from(path.clone());
         assert_eq!(original.reveal().unwrap(), "initial");
 
         // Overwrite after the original cached "initial". The clone gets a fresh

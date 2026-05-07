@@ -138,7 +138,7 @@ mod tests {
     fn plain_secrets(pairs: &[(&str, &str)]) -> HashMap<String, SecretString> {
         pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), SecretString::from_plain(*v)))
+            .map(|(k, v)| (k.to_string(), SecretString::from(*v)))
             .collect()
     }
 

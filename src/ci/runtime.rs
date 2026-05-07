@@ -591,7 +591,7 @@ mod tests {
         let mut secrets = HashMap::new();
         secrets.insert(
             "github_token".to_string(),
-            SecretString::from_plain("ghp_test_value"),
+            SecretString::from("ghp_test_value"),
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :grab [:quire/push] (fn [{: secret}] (secret :github_token)))"#;
@@ -638,7 +638,7 @@ mod tests {
         let mut secrets = HashMap::new();
         secrets.insert(
             "github_token".to_string(),
-            SecretString::from_plain("ghp_long_secret_value"),
+            SecretString::from("ghp_long_secret_value"),
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push]

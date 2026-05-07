@@ -481,10 +481,7 @@ mod tests {
         };
 
         let mut secrets = HashMap::new();
-        secrets.insert(
-            "github_token".to_string(),
-            SecretString::from_plain("fake_token"),
-        );
+        secrets.insert("github_token".to_string(), SecretString::from("fake_token"));
 
         let source = r#"(local ci (require :quire.ci))
 (ci.mirror "https://github.com/example/repo.git"
@@ -531,10 +528,7 @@ mod tests {
         };
 
         let mut secrets = HashMap::new();
-        secrets.insert(
-            "github_token".to_string(),
-            SecretString::from_plain("fake_token"),
-        );
+        secrets.insert("github_token".to_string(), SecretString::from("fake_token"));
 
         // :refs is set and the trigger ref matches, so the mirror
         // should push the listed refs verbatim.
@@ -571,10 +565,7 @@ mod tests {
         };
 
         let mut secrets = HashMap::new();
-        secrets.insert(
-            "github_token".to_string(),
-            SecretString::from_plain("fake_token"),
-        );
+        secrets.insert("github_token".to_string(), SecretString::from("fake_token"));
 
         // Trigger ref is feature, but :refs only lists main — mirror
         // should be a no-op.
