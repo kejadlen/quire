@@ -40,8 +40,8 @@ Quire's data lives under one volume:
   config.fnl       global config; see docs/config.md for the schema
 ```
 
-Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `PLAN.md` for the reference layout, `docs/config.md` for the global and per-repo Fennel schemas.
+Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `docs/PLAN.md` for the reference layout, `docs/config.md` for the global and per-repo Fennel schemas.
 
 ## Status
 
-Early development. SSH dispatch, repo management, Fennel config loading, and mirror push via event socket work; web view, CI, and notifications are still ahead. See `PLAN.md` for the build sequence and open questions.
+Early development. SSH dispatch, repo management, Fennel config loading, and mirror push via event socket work; web view, CI, and notifications are still ahead. See `docs/PLAN.md` for the build sequence and open questions.
