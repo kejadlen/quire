@@ -1,6 +1,43 @@
 :root {
+  /* @link https://utopia.fyi/type/calculator?c=360,18,1.2,1240,20,1.25,5,2,&s=0.75,1.5|2|3|4|6,s-l&g=s,l,xl,12 */
+  --step--2: clamp(0.7813rem, 0.7736rem + 0.0341vw, 0.8rem);
+  --step--1: clamp(0.9375rem, 0.9119rem + 0.1136vw, 1rem);
+  --step-0: clamp(1.125rem, 1.0739rem + 0.2273vw, 1.25rem);
+  --step-1: clamp(1.35rem, 1.2631rem + 0.3864vw, 1.5625rem);
+  --step-2: clamp(1.62rem, 1.4837rem + 0.6057vw, 1.9531rem);
+  --step-3: clamp(1.944rem, 1.7405rem + 0.9044vw, 2.4414rem);
+  --step-4: clamp(2.3328rem, 2.0387rem + 1.3072vw, 3.0518rem);
+  --step-5: clamp(2.7994rem, 2.384rem + 1.8461vw, 3.8147rem);
+
+  /* @link https://utopia.fyi/space/calculator?c=360,18,1.2,1240,20,1.25,5,2,&s=0.75|0.5|0.25,1.5|2|3|4|6,s-l&g=s,l,xl,12 */
+  --space-3xs: clamp(0.3125rem, 0.3125rem + 0vw, 0.3125rem);
+  --space-2xs: clamp(0.5625rem, 0.5369rem + 0.1136vw, 0.625rem);
+  --space-xs: clamp(0.875rem, 0.8494rem + 0.1136vw, 0.9375rem);
+  --space-s: clamp(1.125rem, 1.0739rem + 0.2273vw, 1.25rem);
+  --space-m: clamp(1.6875rem, 1.6108rem + 0.3409vw, 1.875rem);
+  --space-l: clamp(2.25rem, 2.1477rem + 0.4545vw, 2.5rem);
+  --space-xl: clamp(3.375rem, 3.2216rem + 0.6818vw, 3.75rem);
+  --space-2xl: clamp(4.5rem, 4.2955rem + 0.9091vw, 5rem);
+  --space-3xl: clamp(6.75rem, 6.4432rem + 1.3636vw, 7.5rem);
+
+  /* One-up pairs */
+  --space-3xs-2xs: clamp(0.3125rem, 0.1847rem + 0.5682vw, 0.625rem);
+  --space-2xs-xs: clamp(0.5625rem, 0.4091rem + 0.6818vw, 0.9375rem);
+  --space-xs-s: clamp(0.875rem, 0.7216rem + 0.6818vw, 1.25rem);
+  --space-s-m: clamp(1.125rem, 0.8182rem + 1.3636vw, 1.875rem);
+  --space-m-l: clamp(1.6875rem, 1.3551rem + 1.4773vw, 2.5rem);
+  --space-l-xl: clamp(2.25rem, 1.6364rem + 2.7273vw, 3.75rem);
+  --space-xl-2xl: clamp(3.375rem, 2.7102rem + 2.9545vw, 5rem);
+  --space-2xl-3xl: clamp(4.5rem, 3.2727rem + 5.4545vw, 7.5rem);
+
+  /* Custom pairs */
+  --space-s-l: clamp(1.125rem, 0.5625rem + 2.5vw, 2.5rem);
+
+  /* Fonts */
   --font-humanist: "iA Writer Quattro", "iA Writer Quattro V", -apple-system, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Light palette */
   --bg: #f8f4ea;
   --ink: #1d1a15;
   --muted: #6b6257;
@@ -18,7 +55,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-humanist);
-  font-size: 15px;
+  font-size: var(--step-0);
   line-height: 1.6;
 }
 
@@ -28,10 +65,10 @@ pre { white-space: pre-wrap; word-break: break-word; }
 /* Layout */
 
 .page-nav {
-  padding: 14px 56px;
+  padding: var(--space-xs) var(--space-xl);
   border-bottom: 1px solid var(--rule);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: var(--step--1);
   font-weight: 500;
   letter-spacing: -0.2px;
   display: flex;
@@ -39,22 +76,22 @@ pre { white-space: pre-wrap; word-break: break-word; }
   align-items: center;
 }
 
-.page-nav .nav-bar { display: flex; align-items: center; gap: 6px; }
+.page-nav .nav-bar { display: flex; align-items: center; gap: var(--space-3xs); }
 .page-nav .nav-wordmark,
-.page-nav .nav-repo { color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.page-nav .nav-repo { color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: var(--space-3xs); }
 .page-nav .q-mark { color: var(--ink); display: block; }
 .page-nav .nav-crumb { color: var(--muted); }
 .page-nav a.nav-crumb { text-decoration: none; }
 .page-nav a.nav-crumb:hover { color: var(--accent); }
 .page-nav .sep { color: var(--rule2); }
 
-.page-main { padding: 22px 56px 32px; }
+.page-main { padding: var(--space-m) var(--space-xl) var(--space-l); }
 
 .page-footer {
-  padding: 16px 56px 24px;
+  padding: var(--space-s) var(--space-xl) var(--space-m);
   border-top: 1px solid var(--rule);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--step--2);
   color: var(--mutedFaint);
   letter-spacing: 0.2px;
   display: flex;
@@ -65,30 +102,30 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 .ci-heading {
   font-family: var(--font-mono);
-  font-size: 19px;
+  font-size: var(--step-1);
   font-weight: 600;
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-s);
 }
 
 .ci-table {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--step--1);
   line-height: 1.6;
 }
 
 .ci-table thead th {
   text-align: left;
-  padding: 6px 8px;
+  padding: var(--space-3xs) var(--space-2xs);
   font-weight: 400;
   color: var(--mutedFaint);
 }
 
 .ci-table thead tr { border-bottom: 1px solid var(--rule2); }
 .ci-table tbody { border-top: 1px solid var(--rule); }
-.ci-table td { padding: 6px 8px; }
-.ci-table .empty { padding: 16px; color: var(--muted); }
+.ci-table td { padding: var(--space-3xs) var(--space-2xs); }
+.ci-table .empty { padding: var(--space-s); color: var(--muted); }
 
 .ci-status-dot {
   display: inline-block;
@@ -101,7 +138,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .ci-state-label {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-3xs);
 }
 
 .ci-commit-link {
@@ -113,71 +150,71 @@ pre { white-space: pre-wrap; word-break: break-word; }
 /* CI run detail */
 
 .ci-meta {
-  padding: 16px 0;
+  padding: var(--space-s) 0;
   border-bottom: 1px solid var(--rule);
 }
 
 .ci-meta-primary {
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: var(--step-0);
   line-height: 1.6;
 }
 
 .ci-meta-secondary {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--step--1);
   color: var(--mutedFaint);
-  margin-top: 4px;
+  margin-top: var(--space-3xs);
 }
 
 /* CI jobs */
 
 .ci-job {
-  margin: 24px 0 0;
+  margin: var(--space-m) 0 0;
 }
 
 .ci-job-header {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--step--1);
   font-weight: 500;
-  padding: 8px 0;
+  padding: var(--space-2xs) 0;
   border-bottom: 1px solid var(--rule2);
 }
 
 .ci-sh {
-  margin: 8px 0;
+  margin: var(--space-2xs) 0;
 }
 
 .ci-sh-meta {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--step--2);
   color: var(--mutedFaint);
-  margin-bottom: 2px;
+  margin-bottom: var(--space-3xs);
 }
 
 .ci-sh-cmd {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--step--1);
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-3xs);
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-xs);
 }
 
 .ci-sh-log {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--step--1);
   line-height: 1.65;
   background: var(--code);
   color: var(--ink);
-  padding: 10px 14px;
+  padding: var(--space-2xs) var(--space-xs);
   border-left: 2px solid var(--accent);
   overflow: auto;
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2xs);
 }
 
-.ci-empty { padding: 16px 0; color: var(--muted); }
+.ci-empty { padding: var(--space-s) 0; color: var(--muted); }
 
 /* Error page */
 
@@ -188,9 +225,9 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 .error-detail {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--step--1);
   background: var(--code);
-  padding: 14px 18px;
+  padding: var(--space-xs) var(--space-s);
   overflow: auto;
 }
 
