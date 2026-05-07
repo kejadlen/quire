@@ -155,7 +155,7 @@ The reason this is the chosen path rather than "subprocess + rlimit, no bwrap" �
 5. **Start the run container.** `docker run -d --rm --mount type=bind,src=<run-dir>,dst=/work -w /work <image> sleep infinity`. Container ID written to the `runs` row. The run's container hosts every `(sh ...)` call from every job in the run.
 6. **Per ready job:** invoke its run-fn in topological order. Each `(sh ...)` call inside the run-fn issues `docker exec` (no TTY) into the run container, captures stdout/stderr and exit code, and returns `{exit, stdout, stderr, cmd}` to Lua.
 7. **Tear down the run container.** `docker stop` + `docker rm`. Even on error paths — no orphaned containers if a run-fn errors. `container_stopped_at_ms` written to the `runs` row.
-8. **Aggregate.** Write final status via `UPDATE runs SET state = 'complete'` (or `'failed'`). Per-job logs are written to `jobs/<job-id>/log.yml` on disk before the final transition.
+8. **Aggregate.** Write final status via `UPDATE runs SET state = 'complete'` (or `'failed'`). Per-`(sh ...)` log files are written to `jobs/<job-id>/sh-<n>.log` on disk before the final transition.
 
 ## Run record schema
 
@@ -171,13 +171,15 @@ runs/<repo>/<run-id>/
   workspace/               # materialized checkout
   jobs/
     <job-id>/
-      log.yml              # per-job sh output logs
+      sh-<n>.log           # one CRI-format log file per (sh ...) call
 ```
 
-Two principles fall out:
-
-* **Immutable vs. mutable files are separate.** `meta.json` is written once and never touched. Readers (the web UI) can cache `meta.json` indefinitely and only re-read `state.json`.
-* **Append-only JSONL.** Each `log.jsonl` is one structured event per line, written as bytes arrive. The web UI tails the file directly — no extra protocol needed for streaming. Crash-safe: if `quire serve` dies mid-run, the file is valid JSONL up to the last complete line. Non-UTF-8 stdout/stderr bytes are recorded with `encoding: "base64"` rather than silently substituted with U+FFFD. Live tailing can still go through a `tokio::sync::broadcast` channel for sub-second latency, but the file is the source of truth.
+Per-`(sh ...)` log files are written in [k8s CRI log
+format](https://github.com/kubernetes/cri-api) — each line is
+`<RFC3339 ts> <stream> F <content>`, where stream is `stdout` or
+`stderr` and `F` marks a full line. One file per `(sh ...)` call
+keeps writes append-only and lets the web UI stream a single sh's
+output without parsing a multiplexed stream.
 
 ## Sandbox backend — the real fork in the road
 
