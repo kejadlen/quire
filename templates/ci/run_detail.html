@@ -24,7 +24,7 @@
 {% for job in jobs %}
 <div class="ci-job">
   <div class="ci-job-header">
-    {{ job.job_id }} · {{ job.duration_display() }}{{ job.exit_display() }}
+    {{ job.job_id }} · {{ job.duration_display() }}{% if let Some(code) = job.exit_code_filter_nonzero() %} · exit {{ code }}{% endif %}
     · <span class="{{ job.state_class() }}">{{ job.state }}</span>
   </div>
   {% for sh in job.sh_events %}

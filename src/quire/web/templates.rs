@@ -187,10 +187,8 @@ impl DetailJob {
         format::format_duration(self.started_at_ms, self.finished_at_ms)
     }
 
-    pub fn exit_display(&self) -> String {
-        self.exit_code
-            .map(|c| format!(" · exit {c}"))
-            .unwrap_or_default()
+    pub fn exit_code_filter_nonzero(&self) -> Option<i32> {
+        self.exit_code.filter(|&c| c != 0)
     }
 }
 
