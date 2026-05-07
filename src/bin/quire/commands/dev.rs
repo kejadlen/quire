@@ -5,8 +5,11 @@ use rusqlite::params;
 
 use quire::Quire;
 
-/// Base timestamp for seed data: 2026-05-06T12:00:00Z.
-const BASE_MS: i64 = 1746532800000;
+/// Anchor timestamp for seed data: captured at seed time so relative
+/// displays like "3m ago" stay realistic regardless of wall clock.
+fn base_ms() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
+}
 
 /// Seed a tempdir with realistic CI run data and return a `Quire` pointing at it.
 ///
@@ -65,9 +68,9 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "complete",
             "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             "refs/heads/main",
-            BASE_MS,
-            Some(BASE_MS + 1000),
-            Some(BASE_MS + 5000),
+            base_ms(),
+            Some(base_ms() + 1000),
+            Some(base_ms() + 5000),
         ),
         // Failed run — one job failed.
         (
@@ -75,9 +78,9 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "failed",
             "cafebabecafebabecafebabecafebabecafebabe",
             "refs/heads/main",
-            BASE_MS - 600_000,
-            Some(BASE_MS - 600_000 + 1000),
-            Some(BASE_MS - 600_000 + 8000),
+            base_ms() - 600_000,
+            Some(base_ms() - 600_000 + 1000),
+            Some(base_ms() - 600_000 + 8000),
         ),
         // Superseded run — pushed then rebased.
         (
@@ -85,9 +88,9 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "superseded",
             "1111111111111111111111111111111111111111",
             "refs/heads/feature",
-            BASE_MS - 1_200_000,
-            Some(BASE_MS - 1_200_000 + 1000),
-            Some(BASE_MS - 1_200_000 + 2000),
+            base_ms() - 1_200_000,
+            Some(base_ms() - 1_200_000 + 1000),
+            Some(base_ms() - 1_200_000 + 2000),
         ),
         // Active run — still running.
         (
@@ -95,8 +98,8 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "active",
             "2222222222222222222222222222222222222222",
             "refs/heads/main",
-            BASE_MS - 5000,
-            Some(BASE_MS - 4000),
+            base_ms() - 5000,
+            Some(base_ms() - 4000),
             None,
         ),
         // Pending run — queued but not started.
@@ -105,7 +108,7 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "pending",
             "3333333333333333333333333333333333333333",
             "refs/heads/main",
-            BASE_MS - 1000,
+            base_ms() - 1000,
             None,
             None,
         ),
@@ -115,9 +118,9 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "complete",
             "4444444444444444444444444444444444444444",
             "refs/heads/v2",
-            BASE_MS - 3_600_000,
-            Some(BASE_MS - 3_600_000 + 2000),
-            Some(BASE_MS - 3_600_000 + 12000),
+            base_ms() - 3_600_000,
+            Some(base_ms() - 3_600_000 + 2000),
+            Some(base_ms() - 3_600_000 + 12000),
         ),
         // Failed run — orphaned (container died).
         (
@@ -125,9 +128,9 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             "failed",
             "5555555555555555555555555555555555555555",
             "refs/heads/main",
-            BASE_MS - 7_200_000,
-            Some(BASE_MS - 7_200_000 + 1000),
-            Some(BASE_MS - 7_200_000 + 60000),
+            base_ms() - 7_200_000,
+            Some(base_ms() - 7_200_000 + 1000),
+            Some(base_ms() - 7_200_000 + 60000),
         ),
     ];
 
@@ -166,16 +169,16 @@ fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
             "build",
             "complete",
             Some(0),
-            BASE_MS + 1000,
-            Some(BASE_MS + 3000),
+            base_ms() + 1000,
+            Some(base_ms() + 3000),
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000001",
             "test",
             "complete",
             Some(0),
-            BASE_MS + 3000,
-            Some(BASE_MS + 5000),
+            base_ms() + 3000,
+            Some(base_ms() + 5000),
         ),
         // Run 2 (failed): one pass, one fail.
         (
@@ -183,16 +186,16 @@ fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
             "build",
             "complete",
             Some(0),
-            BASE_MS - 600_000 + 1000,
-            Some(BASE_MS - 600_000 + 3000),
+            base_ms() - 600_000 + 1000,
+            Some(base_ms() - 600_000 + 3000),
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000002",
             "test",
             "failed",
             Some(1),
-            BASE_MS - 600_000 + 3000,
-            Some(BASE_MS - 600_000 + 8000),
+            base_ms() - 600_000 + 3000,
+            Some(base_ms() - 600_000 + 8000),
         ),
         // Run 3 (superseded): one job started then cancelled.
         (
@@ -200,8 +203,8 @@ fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
             "build",
             "complete",
             Some(0),
-            BASE_MS - 1_200_000 + 1000,
-            Some(BASE_MS - 1_200_000 + 2000),
+            base_ms() - 1_200_000 + 1000,
+            Some(base_ms() - 1_200_000 + 2000),
         ),
         // Run 4 (active): build running.
         (
@@ -209,7 +212,7 @@ fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
             "build",
             "active",
             None,
-            BASE_MS - 4000,
+            base_ms() - 4000,
             None,
         ),
         // Run 5 (pending): nothing started.
@@ -220,24 +223,24 @@ fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
             "lint",
             "complete",
             Some(0),
-            BASE_MS - 3_600_000 + 2000,
-            Some(BASE_MS - 3_600_000 + 4000),
+            base_ms() - 3_600_000 + 2000,
+            Some(base_ms() - 3_600_000 + 4000),
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000006",
             "build",
             "complete",
             Some(0),
-            BASE_MS - 3_600_000 + 4000,
-            Some(BASE_MS - 3_600_000 + 8000),
+            base_ms() - 3_600_000 + 4000,
+            Some(base_ms() - 3_600_000 + 8000),
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000006",
             "test",
             "complete",
             Some(0),
-            BASE_MS - 3_600_000 + 8000,
-            Some(BASE_MS - 3_600_000 + 12000),
+            base_ms() - 3_600_000 + 8000,
+            Some(base_ms() - 3_600_000 + 12000),
         ),
         // Run 7 (failed, orphaned): build passed, test was running when container died.
         (
@@ -245,16 +248,16 @@ fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
             "build",
             "complete",
             Some(0),
-            BASE_MS - 7_200_000 + 1000,
-            Some(BASE_MS - 7_200_000 + 4000),
+            base_ms() - 7_200_000 + 1000,
+            Some(base_ms() - 7_200_000 + 4000),
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000007",
             "test",
             "failed",
             Some(137),
-            BASE_MS - 7_200_000 + 4000,
-            Some(BASE_MS - 7_200_000 + 60000),
+            base_ms() - 7_200_000 + 4000,
+            Some(base_ms() - 7_200_000 + 60000),
         ),
     ];
 
@@ -286,16 +289,16 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000001",
             "build",
-            BASE_MS + 1000,
-            BASE_MS + 2500,
+            base_ms() + 1000,
+            base_ms() + 2500,
             0,
             "cargo build --release",
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000001",
             "build",
-            BASE_MS + 2500,
-            BASE_MS + 3000,
+            base_ms() + 2500,
+            base_ms() + 3000,
             0,
             "cargo clippy -- -D warnings",
         ),
@@ -303,8 +306,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000001",
             "test",
-            BASE_MS + 3000,
-            BASE_MS + 4800,
+            base_ms() + 3000,
+            base_ms() + 4800,
             0,
             "cargo test --workspace",
         ),
@@ -312,8 +315,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000002",
             "build",
-            BASE_MS - 600_000 + 1000,
-            BASE_MS - 600_000 + 3000,
+            base_ms() - 600_000 + 1000,
+            base_ms() - 600_000 + 3000,
             0,
             "cargo build --release",
         ),
@@ -321,16 +324,16 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000002",
             "test",
-            BASE_MS - 600_000 + 3000,
-            BASE_MS - 600_000 + 5000,
+            base_ms() - 600_000 + 3000,
+            base_ms() - 600_000 + 5000,
             0,
             "cargo test --workspace",
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000002",
             "test",
-            BASE_MS - 600_000 + 5000,
-            BASE_MS - 600_000 + 8000,
+            base_ms() - 600_000 + 5000,
+            base_ms() - 600_000 + 8000,
             1,
             "cargo test -- --ignored",
         ),
@@ -338,8 +341,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000003",
             "build",
-            BASE_MS - 1_200_000 + 1000,
-            BASE_MS - 1_200_000 + 2000,
+            base_ms() - 1_200_000 + 1000,
+            base_ms() - 1_200_000 + 2000,
             0,
             "cargo build --release",
         ),
@@ -347,16 +350,16 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000004",
             "build",
-            BASE_MS - 4000,
-            BASE_MS - 2000,
+            base_ms() - 4000,
+            base_ms() - 2000,
             0,
             "cargo build --release",
         ),
         (
             "aaaaaaaa-0000-0000-0000-000000000004",
             "build",
-            BASE_MS - 2000,
-            BASE_MS - 1000,
+            base_ms() - 2000,
+            base_ms() - 1000,
             0,
             "cargo clippy -- -D warnings",
         ),
@@ -364,8 +367,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000006",
             "lint",
-            BASE_MS - 3_600_000 + 2000,
-            BASE_MS - 3_600_000 + 4000,
+            base_ms() - 3_600_000 + 2000,
+            base_ms() - 3_600_000 + 4000,
             0,
             "cargo fmt --check",
         ),
@@ -373,8 +376,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000006",
             "build",
-            BASE_MS - 3_600_000 + 4000,
-            BASE_MS - 3_600_000 + 8000,
+            base_ms() - 3_600_000 + 4000,
+            base_ms() - 3_600_000 + 8000,
             0,
             "cargo build --release",
         ),
@@ -382,8 +385,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000006",
             "test",
-            BASE_MS - 3_600_000 + 8000,
-            BASE_MS - 3_600_000 + 12000,
+            base_ms() - 3_600_000 + 8000,
+            base_ms() - 3_600_000 + 12000,
             0,
             "cargo test --workspace",
         ),
@@ -391,8 +394,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000007",
             "build",
-            BASE_MS - 7_200_000 + 1000,
-            BASE_MS - 7_200_000 + 4000,
+            base_ms() - 7_200_000 + 1000,
+            base_ms() - 7_200_000 + 4000,
             0,
             "cargo build --release",
         ),
@@ -400,8 +403,8 @@ fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
         (
             "aaaaaaaa-0000-0000-0000-000000000007",
             "test",
-            BASE_MS - 7_200_000 + 4000,
-            BASE_MS - 7_200_000 + 60000,
+            base_ms() - 7_200_000 + 4000,
+            base_ms() - 7_200_000 + 60000,
             137,
             "cargo test --workspace",
         ),
