@@ -198,13 +198,6 @@ fn format_duration_exact(start: i64, end: i64) -> String {
     }
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 // ── Data loading ───────────────────────────────────────────────────
 
 fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>, String> {
@@ -351,7 +344,7 @@ pub async fn run_list(
                 repo: repo_display.clone(),
                 page: "error".to_string(),
                 title: "Failed to load runs".to_string(),
-                detail: html_escape(&e),
+                detail: e,
             };
             return Html(tmpl.render().unwrap_or_default());
         }
@@ -395,7 +388,7 @@ pub async fn run_detail(
                 repo: repo_display.clone(),
                 page: "error".to_string(),
                 title: "Failed to load run".to_string(),
-                detail: html_escape(&e),
+                detail: e,
             };
             return Html(tmpl.render().unwrap_or_default());
         }
@@ -459,7 +452,7 @@ pub async fn run_detail(
 
             let log = log_contents
                 .get(&(ev.job_id.clone(), sh_n))
-                .map(|s| html_escape(s))
+                .map(|s| s.to_string())
                 .unwrap_or_default();
 
             detail_sh_events.push(DetailShEvent {
@@ -555,12 +548,6 @@ mod tests {
         assert!(html.contains("deadbeef"));
         assert!(html.contains("main"));
         assert!(html.contains("/test.git/ci/abc123"));
-    }
-
-    #[test]
-    fn html_escape_escapes_special_chars() {
-        assert_eq!(html_escape("<script>"), "&lt;script&gt;");
-        assert_eq!(html_escape("a&b"), "a&amp;b");
     }
 
     #[test]
