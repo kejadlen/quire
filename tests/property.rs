@@ -1,10 +1,15 @@
+use std::collections::HashMap;
+
 use hegel::TestCase;
 use hegel::generators::{integers, just, text, vecs};
 use hegel::one_of;
+use quire::ci::{SecretRegistry, redact};
 use quire::event::{PushEvent, PushRef};
 use quire::secret::SecretString;
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
+
+const MIN_REDACT_LEN: usize = 8;
 
 #[hegel::composite]
 fn push_ref(tc: TestCase) -> PushRef {
@@ -112,4 +117,209 @@ fn push_event_updated_refs_is_subtractive(tc: TestCase) {
                 .any(|r| r.r#ref == kept_ref.r#ref && r.new_sha == kept_ref.new_sha)
         );
     }
+}
+
+// ── Secret registry helpers ──────────────────────────────────────
+
+fn plain_secrets(pairs: &[(&str, &str)]) -> HashMap<String, SecretString> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), SecretString::from_plain(*v)))
+        .collect()
+}
+
+/// Generate a secret name from an index.
+fn secret_name(i: usize) -> String {
+    format!("secret_{i}")
+}
+
+#[hegel::composite]
+fn unique_secret_entries(tc: TestCase) -> Vec<(String, String)> {
+    let count = tc.draw(integers::<usize>().min_value(1).max_value(8));
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+    for i in 0..count {
+        let value = tc.draw(text().alphabet("abcdefghijklmnopqrstuvwxyz0123456789"));
+        let name = secret_name(i);
+        if seen.insert(name.clone()) {
+            entries.push((name, value));
+        }
+    }
+    entries
+}
+
+#[hegel::composite]
+fn resolved_registry(tc: TestCase) -> SecretRegistry {
+    let entries = tc.draw(unique_secret_entries());
+    let mut map = HashMap::new();
+    for (name, value) in &entries {
+        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+    }
+    let mut reg = SecretRegistry::new(map);
+    // Resolve all secrets so they're registered for redaction.
+    for (name, _) in &entries {
+        let _ = reg.resolve(name);
+    }
+    reg
+}
+
+#[hegel::composite]
+fn text_with_secrets(tc: TestCase) -> (SecretRegistry, String) {
+    let entries = tc.draw(unique_secret_entries());
+    let mut map = HashMap::new();
+    let mut long_values: Vec<String> = Vec::new();
+    for (name, value) in &entries {
+        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+        if value.len() >= MIN_REDACT_LEN {
+            long_values.push(value.clone());
+        }
+    }
+    let mut reg = SecretRegistry::new(map);
+    for (name, _) in &entries {
+        let _ = reg.resolve(name);
+    }
+
+    // Build text that intersperses random noise with secret values.
+    let mut body = tc.draw(text());
+    for (_, value) in &entries {
+        if value.len() >= MIN_REDACT_LEN {
+            body.push_str(value);
+            body.push_str(&tc.draw(text()));
+        }
+    }
+    (reg, body)
+}
+
+// ── Secret registry property tests ────────────────────────────────
+
+#[hegel::test]
+fn redact_never_contains_revealed_long_values(tc: TestCase) {
+    let entries = tc.draw(unique_secret_entries());
+    let mut map = HashMap::new();
+    let mut long_values: Vec<String> = Vec::new();
+    for (name, value) in &entries {
+        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+        if value.len() >= MIN_REDACT_LEN {
+            long_values.push(value.clone());
+        }
+    }
+    let mut reg = SecretRegistry::new(map);
+    for (name, _) in &entries {
+        let _ = reg.resolve(name);
+    }
+
+    // Build text containing all the long values.
+    let mut body = tc.draw(text());
+    for value in &long_values {
+        body.push_str(value);
+        body.push_str(&tc.draw(text()));
+    }
+    let result = redact(&body, &reg);
+    for value in &long_values {
+        assert!(
+            !result.contains(value),
+            "redacted text still contains secret value: {value}"
+        );
+    }
+}
+
+#[hegel::test]
+fn redact_is_idempotent(tc: TestCase) {
+    let (reg, text) = tc.draw(text_with_secrets());
+    let first = redact(&text, &reg);
+    let second = redact(&first, &reg);
+    assert_eq!(first, second);
+}
+
+#[hegel::test]
+fn redact_preserves_text_without_secrets(tc: TestCase) {
+    let reg = tc.draw(resolved_registry());
+    let text = tc.draw(text());
+    let result = redact(&text, &reg);
+    // If no secret value happens to appear in the random text, output is
+    // identical. This won't always hold (random text might contain a secret),
+    // so only assert when no redaction actually occurred.
+    if !reg.has_redactions() {
+        assert_eq!(result, text);
+    }
+}
+
+#[hegel::test]
+fn redact_empty_registry_is_identity(tc: TestCase) {
+    let reg = SecretRegistry::new(HashMap::new());
+    let text = tc.draw(text());
+    assert_eq!(redact(&text, &reg), text);
+}
+
+#[hegel::test]
+fn redact_unresolved_registry_is_identity(tc: TestCase) {
+    let entries = tc.draw(unique_secret_entries());
+    let map: HashMap<String, SecretString> = entries
+        .into_iter()
+        .map(|(k, v)| (k, SecretString::from_plain(v)))
+        .collect();
+    let reg = SecretRegistry::new(map);
+    let text = tc.draw(text());
+    assert_eq!(redact(&text, &reg), text);
+}
+
+#[hegel::test]
+fn resolve_returns_consistent_value(tc: TestCase) {
+    let entries = tc.draw(unique_secret_entries());
+    let (name, value) = entries.into_iter().next().unwrap();
+    let mut reg = SecretRegistry::new(plain_secrets(&[(&name, &value)]));
+    let first = reg.resolve(&name).unwrap();
+    let second = reg.resolve(&name).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first, value);
+}
+
+#[hegel::test]
+fn resolve_unknown_name_errors(tc: TestCase) {
+    let name = tc.draw(text());
+    let mut reg = SecretRegistry::new(HashMap::new());
+    assert!(reg.resolve(&name).is_err());
+}
+
+#[hegel::test]
+fn redact_output_never_shows_long_secret_values(tc: TestCase) {
+    let entries = tc.draw(unique_secret_entries());
+    let mut map = HashMap::new();
+    for (name, value) in &entries {
+        map.insert(name.clone(), SecretString::from_plain(value.clone()));
+    }
+    let mut reg = SecretRegistry::new(map);
+    for (name, _) in &entries {
+        let _ = reg.resolve(name);
+    }
+
+    // Concatenate all secret values into one string.
+    let mut body = String::new();
+    for (_, value) in &entries {
+        body.push_str(value);
+        body.push(' ');
+    }
+    let result = redact(&body, &reg);
+
+    // No secret value >= 8 chars should survive.
+    for (_, value) in &entries {
+        if value.len() >= MIN_REDACT_LEN {
+            assert!(!result.contains(value), "long secret leaked: {value}");
+        }
+    }
+}
+
+#[hegel::test]
+fn short_secrets_are_never_redacted(tc: TestCase) {
+    // Generate values of 1-7 bytes. With ASCII alphabet, char count == byte count.
+    let value = tc.draw(text().alphabet("abcdefgh").max_size(7));
+    if value.is_empty() {
+        return;
+    }
+    let mut reg = SecretRegistry::new(plain_secrets(&[("short", &value)]));
+    let _ = reg.resolve("short");
+    let body = value.clone();
+    let result = redact(&body, &reg);
+    // Values < 8 bytes are never registered for redaction.
+    assert_eq!(result, body, "short secret was incorrectly redacted");
 }

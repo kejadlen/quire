@@ -50,6 +50,15 @@ pub struct SecretRegistry {
     revealed: HashMap<String, Revealed>,
 }
 
+impl std::fmt::Debug for SecretRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretRegistry")
+            .field("declared", &self.declared.keys().collect::<Vec<_>>())
+            .field("revealed", &self.revealed.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 impl SecretRegistry {
     pub fn new(declared: HashMap<String, SecretString>) -> Self {
         Self {
