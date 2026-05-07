@@ -77,8 +77,6 @@ impl MirrorJob {
         };
         let git_dir: String = push_table.get("git-dir")?;
 
-        let secret = rt.secret(&self.secret)?;
-
         let git_opts = ShOpts {
             env: HashMap::from([("GIT_DIR".to_string(), git_dir)]),
         };
@@ -99,22 +97,8 @@ impl MirrorJob {
             )));
         }
 
-        // Build the auth header. printf-into-base64 keeps the secret
-        // out of the argv (visible in `ps`); piping via $T is the
-        // smallest stdin-free alternative.
-        //
-        // Run via `Cmd::run` rather than `rt.sh` — we don't want the
-        // encoded token landing in recorded outputs.
-        let token_pair = format!("x-access-token:{secret}");
-        let encoded_output = Cmd::Shell("printf '%s' \"$T\" | base64 --wrap=0".to_string()).run(
-            ShOpts {
-                env: HashMap::from([("T".to_string(), token_pair)]),
-            },
-            rt.workspace(),
-        )?;
-        let auth_header = format!("Authorization: Basic {}", encoded_output.stdout.trim());
-
         // Push the configured refs (or the trigger ref, if none) plus the tag.
+        let auth_header = rt.secret(&self.secret)?;
         let mut push_args = vec![
             "-c".to_string(),
             format!("http.extraHeader={auth_header}"),
