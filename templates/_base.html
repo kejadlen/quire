@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}quire{% endblock %}</title>
-<style>{% include "_css.html" %}</style>
-</head>
-<body>
-{% block nav %}{% endblock %}
-<main class="page-main">
-{% block content %}{% endblock %}
-</main>
-{% include "_footer.html" %}
-</body>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}quire{% endblock %}</title>
+    <style>{% include "_css.html" %}</style>
+  </head>
+  <body>
+    {% block nav %}{% endblock %}
+    <main class="page-main">
+      {% block content %}{% endblock %}
+    </main>
+    {% include "_footer.html" %}
+  </body>
 </html>

@@ -8,8 +8,10 @@
 
 use askama::Template;
 use axum::extract::{FromRequestParts, Path as AxumPath, State};
+use axum::http::StatusCode;
 use axum::http::request::Parts;
-use axum::response::Html;
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Response};
 use jiff::Timestamp;
 use rusqlite::Connection;
 
@@ -21,6 +23,7 @@ use crate::Quire;
 #[template(path = "ci/run_list.html")]
 struct RunListTemplate {
     repo: String,
+    page: String,
     runs: Vec<RunListRow>,
 }
 
@@ -37,6 +40,7 @@ struct RunListRow {
 #[template(path = "ci/run_detail.html")]
 struct RunDetailTemplate {
     repo: String,
+    page: String,
     run: DetailRun,
     jobs: Vec<DetailJob>,
 }
@@ -73,6 +77,7 @@ struct DetailShEvent {
 #[template(path = "error.html")]
 struct ErrorTemplate {
     repo: String,
+    page: String,
     title: String,
     detail: String,
 }
@@ -316,6 +321,17 @@ fn sh_index_for_event(events: &[ShEvent], job_id: &str, event_idx: usize) -> usi
     n
 }
 
+/// Resolve a URL slug to the on-disk repo name.
+///
+/// URLs use clean names (`foo`), disk/DB use `foo.git`.
+fn resolve_repo_name(slug: &str) -> String {
+    if slug.ends_with(".git") {
+        slug.to_string()
+    } else {
+        format!("{slug}.git")
+    }
+}
+
 // ── Handlers ───────────────────────────────────────────────────────
 
 pub async fn run_list(
@@ -325,13 +341,15 @@ pub async fn run_list(
 ) -> Html<String> {
     let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
+    let repo_name = resolve_repo_name(&repo);
 
-    let runs = match load_runs(&quire, &repo) {
+    let runs = match load_runs(&quire, &repo_name) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(repo = %repo, error = %e, "failed to load runs");
             let tmpl = ErrorTemplate {
-                repo: repo_display,
+                repo: repo_display.clone(),
+                page: "error".to_string(),
                 title: "Failed to load runs".to_string(),
                 detail: html_escape(&e),
             };
@@ -353,6 +371,7 @@ pub async fn run_list(
 
     let tmpl = RunListTemplate {
         repo: repo_display,
+        page: "ci".to_string(),
         runs: template_runs,
     };
     Html(tmpl.render().unwrap_or_default())
@@ -365,14 +384,16 @@ pub async fn run_detail(
 ) -> Html<String> {
     let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
+    let repo_name = resolve_repo_name(&repo);
 
-    let result = load_run_detail(&quire, &repo, &run_id);
+    let result = load_run_detail(&quire, &repo_name, &run_id);
     let (run, jobs, sh_events) = match result {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
             let tmpl = ErrorTemplate {
-                repo: repo_display,
+                repo: repo_display.clone(),
+                page: "error".to_string(),
                 title: "Failed to load run".to_string(),
                 detail: html_escape(&e),
             };
@@ -393,7 +414,7 @@ pub async fn run_detail(
     };
 
     // Load CRI log contents for each sh event.
-    let runs_base = quire.base_dir().join("runs").join(&repo);
+    let runs_base = quire.base_dir().join("runs").join(&repo_name);
     let mut log_contents: std::collections::HashMap<(String, usize), String> =
         std::collections::HashMap::new();
     for (idx, ev) in sh_events.iter().enumerate() {
@@ -465,6 +486,7 @@ pub async fn run_detail(
 
     let tmpl = RunDetailTemplate {
         repo: repo_display,
+        page: format!("ci · {sha_short}"),
         run: detail_run,
         jobs: detail_jobs,
     };
@@ -474,10 +496,29 @@ pub async fn run_detail(
 // ── Router ─────────────────────────────────────────────────────────
 
 pub fn router(quire: Quire) -> axum::Router {
-    axum::Router::new()
-        .route("/repo/{repo}/ci", axum::routing::get(run_list))
-        .route("/repo/{repo}/ci/{run_id}", axum::routing::get(run_detail))
-        .with_state(quire)
+    let ci_routes = axum::Router::new()
+        .route("/{repo}/ci", axum::routing::get(run_list))
+        .route("/{repo}/ci/{run_id}", axum::routing::get(run_detail))
+        .layer(middleware::from_fn(require_auth));
+
+    ci_routes.with_state(quire)
+}
+
+/// Middleware that rejects unauthenticated requests.
+///
+/// CI routes require auth per the access matrix in PLAN.md.
+/// Returns 401 so the client knows auth is required.
+async fn require_auth(request: axum::extract::Request, next: Next) -> Response {
+    let user = request
+        .headers()
+        .get("Remote-User")
+        .and_then(|v| v.to_str().ok());
+
+    if user.is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    next.run(request).await
 }
 
 #[cfg(test)]
@@ -488,6 +529,7 @@ mod tests {
     fn run_list_template_renders_empty() {
         let tmpl = RunListTemplate {
             repo: "test.git".to_string(),
+            page: "ci".to_string(),
             runs: vec![],
         };
         let html = tmpl.render().unwrap();
@@ -499,9 +541,10 @@ mod tests {
     fn run_list_template_renders_runs() {
         let tmpl = RunListTemplate {
             repo: "test.git".to_string(),
+            page: "ci".to_string(),
             runs: vec![RunListRow {
                 id: "abc123".to_string(),
-                state_color: "var(--ok)".to_string(),
+                state_color: "c-ok".to_string(),
                 sha_short: "deadbeef".to_string(),
                 ref_short: "main".to_string(),
                 queued: "just now".to_string(),
@@ -511,7 +554,7 @@ mod tests {
         let html = tmpl.render().unwrap();
         assert!(html.contains("deadbeef"));
         assert!(html.contains("main"));
-        assert!(html.contains("/repo/test.git/ci/abc123"));
+        assert!(html.contains("/test.git/ci/abc123"));
     }
 
     #[test]
