@@ -36,12 +36,8 @@ pub struct RunListRow {
 }
 
 impl RunListRow {
-    pub fn state_class(&self) -> &str {
-        match self.state.as_str() {
-            "complete" => "c-ok",
-            "failed" => "c-bad",
-            _ => "c-muted",
-        }
+    pub fn state_class(&self) -> &'static str {
+        format::state_class(&self.state)
     }
 
     pub fn sha_short(&self) -> &str {
@@ -92,12 +88,8 @@ pub struct DetailRun {
 }
 
 impl DetailRun {
-    pub fn state_class(&self) -> &str {
-        match self.state.as_str() {
-            "complete" => "c-ok",
-            "failed" => "c-bad",
-            _ => "c-muted",
-        }
+    pub fn state_class(&self) -> &'static str {
+        format::state_class(&self.state)
     }
 
     pub fn sha_short(&self) -> &str {
@@ -163,12 +155,8 @@ pub struct DetailJob {
 }
 
 impl DetailJob {
-    pub fn state_class(&self) -> &str {
-        match self.state.as_str() {
-            "complete" => "c-ok",
-            "failed" => "c-bad",
-            _ => "c-muted",
-        }
+    pub fn state_class(&self) -> &'static str {
+        format::state_class(&self.state)
     }
 
     pub fn duration_display(&self) -> String {
@@ -196,11 +184,7 @@ impl DetailShEvent {
     }
 
     pub fn cmd_display(&self) -> &str {
-        if self.cmd.len() > 120 {
-            &self.cmd[..120]
-        } else {
-            &self.cmd
-        }
+        &self.cmd
     }
 }
 

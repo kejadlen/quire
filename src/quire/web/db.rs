@@ -1,7 +1,5 @@
 //! Data access structs and DB loading functions for the web view.
 
-use rusqlite::Connection;
-
 use crate::{Quire, Result};
 
 /// Raw run row from the database.
@@ -34,7 +32,7 @@ pub struct ShEvent {
 }
 
 pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
-    let db = Connection::open(quire.db_path())?;
+    let db = quire.db_pool().lock().expect("db mutex poisoned");
     let mut stmt = db.prepare(
         "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
          FROM runs WHERE repo = ?1
@@ -59,12 +57,15 @@ pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
     Ok(rows)
 }
 
-pub fn load_run_detail(
-    quire: &Quire,
-    repo: &str,
-    run_id: &str,
-) -> Result<(RunRow, Vec<JobRow>, Vec<ShEvent>)> {
-    let db = Connection::open(quire.db_path())?;
+/// Aggregated run detail from the database.
+pub struct RunDetail {
+    pub run: RunRow,
+    pub jobs: Vec<JobRow>,
+    pub sh_events: Vec<ShEvent>,
+}
+
+pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDetail> {
+    let db = quire.db_pool().lock().expect("db mutex poisoned");
 
     let run = db.query_row(
         "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
@@ -86,7 +87,7 @@ pub fn load_run_detail(
     let mut job_stmt = db.prepare(
         "SELECT job_id, state, exit_code, started_at_ms, finished_at_ms
          FROM jobs WHERE run_id = ?1
-         ORDER BY rowid",
+         ORDER BY started_at_ms IS NULL ASC, started_at_ms ASC, job_id ASC",
     )?;
 
     let jobs = job_stmt
@@ -119,7 +120,11 @@ pub fn load_run_detail(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    Ok((run, jobs, sh_events))
+    Ok(RunDetail {
+        run,
+        jobs,
+        sh_events,
+    })
 }
 
 /// Resolve a URL slug to the on-disk repo name.
@@ -158,6 +163,21 @@ pub fn is_safe_path_segment(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_repo_name_appends_git() {
+        assert_eq!(resolve_repo_name("foo"), "foo.git");
+    }
+
+    #[test]
+    fn resolve_repo_name_preserves_git_suffix() {
+        assert_eq!(resolve_repo_name("foo.git"), "foo.git");
+    }
+
+    #[test]
+    fn resolve_repo_name_handles_grouped_repo() {
+        assert_eq!(resolve_repo_name("work/proj"), "work/proj.git");
+    }
 
     #[test]
     fn run_id_accepts_uuid() {

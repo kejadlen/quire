@@ -37,5 +37,7 @@ walkdir = "*"
 [dev-dependencies]
 assert_cmd = "*"
 hegeltest = "*"
+http-body-util = "*"
 predicates = "*"
 serde_json = "*"
+tower = { version = "*", features = ["util"] }

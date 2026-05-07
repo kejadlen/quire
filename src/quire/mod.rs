@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use miette::{Context, IntoDiagnostic, Result, ensure};
 
@@ -147,6 +148,7 @@ impl Repo {
 #[derive(Clone)]
 pub struct Quire {
     base_dir: PathBuf,
+    db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
 }
 
 impl Default for Quire {
@@ -158,7 +160,10 @@ impl Default for Quire {
 impl Quire {
     /// Create a `Quire` rooted at the given base directory.
     pub fn new(base_dir: PathBuf) -> Self {
-        Self { base_dir }
+        Self {
+            base_dir,
+            db_pool: Arc::new(OnceLock::new()),
+        }
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -179,6 +184,17 @@ impl Quire {
 
     pub fn socket_path(&self) -> PathBuf {
         self.base_dir.join("server.sock")
+    }
+
+    /// Return the shared DB connection for the web view.
+    ///
+    /// Lazily initialises the connection on first call. Once open, the
+    /// same connection is reused for all subsequent requests.
+    pub fn db_pool(&self) -> &Mutex<rusqlite::Connection> {
+        self.db_pool.get_or_init(|| {
+            let conn = crate::db::open(&self.db_path()).expect("failed to open database");
+            Mutex::new(conn)
+        })
     }
 
     /// Load and parse the global Fennel config file.
@@ -345,9 +361,7 @@ mod tests {
     #[test]
     fn repo_from_path_valid() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let path = dir.path().join("repos").join("foo.git");
         let repo = q.repo_from_path(&path).expect("should resolve");
         assert_eq!(repo.path(), path);
@@ -356,9 +370,7 @@ mod tests {
     #[test]
     fn repo_from_path_outside_repos() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let path = PathBuf::from("/tmp/evil.git");
         assert!(q.repo_from_path(&path).is_err());
     }
@@ -366,9 +378,7 @@ mod tests {
     #[test]
     fn repo_from_path_rejects_bad_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let path = dir.path().join("repos").join("foo"); // missing .git
         assert!(q.repo_from_path(&path).is_err());
     }
@@ -379,9 +389,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         assert!(config.secrets.is_empty());
     }
@@ -390,9 +398,7 @@ mod tests {
     fn global_config_missing_file_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let err = q.global_config().unwrap_err();
         assert!(
             matches!(err, Error::ConfigNotFound(_)),
@@ -410,9 +416,7 @@ mod tests {
         )
         .expect("write");
 
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         let sentry = config.sentry.expect("sentry should be present");
         assert_eq!(sentry.dsn.reveal().unwrap(), "https://key@sentry.io/123");
@@ -424,9 +428,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         assert!(config.sentry.is_none());
     }
@@ -437,9 +439,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         assert!(config.secrets.is_empty());
     }
@@ -460,9 +460,7 @@ mod tests {
         )
         .expect("write");
 
-        let q = Quire {
-            base_dir: dir.path().to_path_buf(),
-        };
+        let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         assert_eq!(config.secrets.len(), 2);
         assert_eq!(

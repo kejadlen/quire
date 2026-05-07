@@ -189,3 +189,20 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .c-bad { color: var(--bad); }
 .c-muted { color: var(--muted); }
 .c-accent { color: var(--accent); }
+
+/* Dark palette — activates when the OS signals dark mode. */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1a15;
+    --ink: #e8e0d0;
+    --muted: #9a9184;
+    --mutedFaint: #6b6257;
+    --rule: #3a3530;
+    --rule2: #4a4540;
+    --code: #2a2520;
+    --accent: #c8c0b0;
+    --ok: #6aad5a;
+    --bad: #d45a48;
+  }
+}

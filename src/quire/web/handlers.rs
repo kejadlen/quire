@@ -108,7 +108,7 @@ pub async fn run_detail(
     }
 
     let result = db::load_run_detail(&quire, &repo_name, &run_id);
-    let (run, jobs, sh_events) = match result {
+    let detail = match result {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(repo = %repo, run_id = %run_id, error = %display_chain(&e), "failed to load run detail");
@@ -122,27 +122,27 @@ pub async fn run_detail(
     };
 
     let detail_run = DetailRun {
-        state: run.state,
-        sha: run.sha,
-        ref_name: run.ref_name,
-        queued_at_ms: run.queued_at_ms,
-        started_at_ms: run.started_at_ms,
-        finished_at_ms: run.finished_at_ms,
+        state: detail.run.state,
+        sha: detail.run.sha,
+        ref_name: detail.run.ref_name,
+        queued_at_ms: detail.run.queued_at_ms,
+        started_at_ms: detail.run.started_at_ms,
+        finished_at_ms: detail.run.finished_at_ms,
     };
 
     // Group sh events by job_id, preserving DB order so positional index
     // matches launch order.
     let mut events_by_job: std::collections::HashMap<&str, Vec<&db::ShEvent>> =
         std::collections::HashMap::new();
-    for ev in &sh_events {
+    for ev in &detail.sh_events {
         events_by_job.entry(&ev.job_id).or_default().push(ev);
     }
 
     let runs_base = quire.base_dir().join("runs").join(&repo_name);
     let job_dir_base = runs_base.join(&run_id).join("jobs");
 
-    let mut detail_jobs: Vec<DetailJob> = Vec::with_capacity(jobs.len());
-    for job in &jobs {
+    let mut detail_jobs: Vec<DetailJob> = Vec::with_capacity(detail.jobs.len());
+    for job in &detail.jobs {
         let job_events = events_by_job
             .get(job.job_id.as_str())
             .map(Vec::as_slice)
@@ -186,4 +186,198 @@ pub async fn run_detail(
         jobs: detail_jobs,
     };
     render(&tmpl)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use crate::Quire;
+
+    /// Build a test axum Router with the CI routes, backed by a tempdir.
+    struct TestEnv {
+        _dir: tempfile::TempDir,
+        quire: Quire,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let quire = Quire::new(dir.path().to_path_buf());
+
+            // Create repos dir + a bare repo so `quire.repo("example.git")` resolves.
+            let repos_dir = quire.repos_dir();
+            let bare = repos_dir.join("example.git");
+            fs_err::create_dir_all(&bare).expect("mkdir bare repo");
+
+            // Initialise DB with migrations.
+            let mut db = crate::db::open(&quire.db_path()).expect("db open");
+            crate::db::migrate(&mut db).expect("migrate");
+            drop(db);
+
+            Self { _dir: dir, quire }
+        }
+
+        fn insert_run(
+            &self,
+            id: &str,
+            state: &str,
+            sha: &str,
+            ref_name: &str,
+            queued: i64,
+            started: Option<i64>,
+            finished: Option<i64>,
+        ) {
+            let pool = self.quire.db_pool();
+            let db = pool.lock().expect("lock");
+            db.execute(
+                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
+                                  queued_at_ms, started_at_ms, finished_at_ms,
+                                  container_id, image_tag, build_started_at_ms, build_finished_at_ms,
+                                  container_started_at_ms, container_stopped_at_ms, workspace_path)
+                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?5, NULL, ?4, ?6, ?7, NULL, NULL, NULL, NULL, NULL, NULL, '/tmp/ws')",
+                rusqlite::params![id, ref_name, sha, queued, state, started, finished],
+            ).expect("insert run");
+        }
+
+        fn insert_job(
+            &self,
+            run_id: &str,
+            job_id: &str,
+            state: &str,
+            exit_code: Option<i32>,
+            started: Option<i64>,
+            finished: Option<i64>,
+        ) {
+            let pool = self.quire.db_pool();
+            let db = pool.lock().expect("lock");
+            db.execute(
+                "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![run_id, job_id, state, exit_code, started, finished],
+            )
+            .expect("insert job");
+        }
+
+        fn app(&self) -> axum::Router {
+            super::super::router(self.quire.clone())
+        }
+    }
+
+    const UUID1: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+    const SHA1: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+    #[tokio::test]
+    async fn repo_redirect_strips_git_and_redirects() {
+        let env = TestEnv::new();
+        let app = env.app();
+        let req = Request::builder()
+            .uri("/example")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert_eq!(loc, "/example/ci");
+    }
+
+    #[tokio::test]
+    async fn repo_redirect_strips_git_suffix() {
+        let env = TestEnv::new();
+        let app = env.app();
+        let req = Request::builder()
+            .uri("/example.git")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert_eq!(loc, "/example/ci");
+    }
+
+    #[tokio::test]
+    async fn run_list_returns_ok_for_known_repo() {
+        let env = TestEnv::new();
+        env.insert_run(
+            UUID1,
+            "complete",
+            SHA1,
+            "refs/heads/main",
+            1000,
+            Some(2000),
+            Some(3000),
+        );
+        let app = env.app();
+        let req = Request::builder()
+            .uri("/example/ci")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn run_list_returns_empty_for_unknown_repo() {
+        let env = TestEnv::new();
+        let app = env.app();
+        let req = Request::builder()
+            .uri("/nonexistent/ci")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Unknown repo still has a valid name — returns empty run list.
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn run_detail_returns_ok_for_existing_run() {
+        let env = TestEnv::new();
+        env.insert_run(
+            UUID1,
+            "complete",
+            SHA1,
+            "refs/heads/main",
+            1000,
+            Some(2000),
+            Some(3000),
+        );
+        env.insert_job(UUID1, "build", "complete", Some(0), Some(2000), Some(3000));
+        let app = env.app();
+        let req = Request::builder()
+            .uri(&format!("/example/ci/{UUID1}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn run_detail_returns_404_for_invalid_id() {
+        let env = TestEnv::new();
+        let app = env.app();
+        let req = Request::builder()
+            .uri("/example/ci/not-a-uuid")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_detail_returns_empty_for_unknown_repo() {
+        let env = TestEnv::new();
+        let app = env.app();
+        // Valid UUID but repo has no runs — the DB query returns no row,
+        // which triggers a 500 "failed to load run detail".
+        // This tests the full pipeline with a real DB.
+        let req = Request::builder()
+            .uri(&format!("/example/ci/{UUID1}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // No run inserted, so query_row returns Err.
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }

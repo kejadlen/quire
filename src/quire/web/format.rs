@@ -62,6 +62,18 @@ fn format_ms_duration(ms: i64) -> String {
     }
 }
 
+/// Map a CI run/job state string to a CSS colour class.
+///
+/// Centralised here so `RunListRow`, `DetailRun`, and `DetailJob`
+/// don't each carry their own identical match.
+pub fn state_class(state: &str) -> &'static str {
+    match state {
+        "complete" => "c-ok",
+        "failed" => "c-bad",
+        _ => "c-muted",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +120,22 @@ mod tests {
     fn relative_label_returns_none_past_a_day() {
         assert_eq!(relative_label(24 * 60 * 60), None);
         assert_eq!(relative_label(72 * 60 * 60), None);
+    }
+
+    #[test]
+    fn state_class_complete() {
+        assert_eq!(state_class("complete"), "c-ok");
+    }
+
+    #[test]
+    fn state_class_failed() {
+        assert_eq!(state_class("failed"), "c-bad");
+    }
+
+    #[test]
+    fn state_class_unknown_falls_through() {
+        assert_eq!(state_class("pending"), "c-muted");
+        assert_eq!(state_class("active"), "c-muted");
+        assert_eq!(state_class(""), "c-muted");
     }
 }
