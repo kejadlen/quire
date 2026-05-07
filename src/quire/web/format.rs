@@ -2,35 +2,42 @@
 
 use jiff::Timestamp;
 
-/// Relative time display (e.g. "3m ago", "2h ago", ISO if older than 24h).
+/// Relative time display (e.g. "3m ago", "2h ago", "4d ago", "3mo ago").
 pub fn format_timestamp_relative(ms: i64) -> String {
     let Ok(ts) = Timestamp::from_millisecond(ms) else {
         return format!("{ms}ms");
     };
     let diff_secs = Timestamp::now().duration_since(ts).as_secs().max(0);
-    match relative_label(diff_secs) {
-        Some(label) => label,
-        None => ts.to_string(),
-    }
+    relative_label(diff_secs)
 }
 
-/// Format a positive seconds-ago value as "Nm ago" / "Nh ago".
-///
-/// Returns `None` when the diff is at least 24 hours — caller renders
-/// an absolute timestamp instead.
-fn relative_label(secs: i64) -> Option<String> {
+/// Format a positive seconds-ago value as a human-friendly relative string.
+fn relative_label(secs: i64) -> String {
     let mins = secs / 60;
     let hours = mins / 60;
-    if hours >= 24 {
-        return None;
+    let days = hours / 24;
+    if days >= 365 {
+        let years = days / 365;
+        return format!("{years}y ago");
     }
-    if mins == 0 {
-        return Some("just now".to_string());
+    if days >= 30 {
+        let months = days / 30;
+        return format!("{months}mo ago");
     }
-    if hours == 0 {
-        return Some(format!("{mins}m ago"));
+    if days >= 7 {
+        let weeks = days / 7;
+        return format!("{weeks}w ago");
     }
-    Some(format!("{hours}h ago"))
+    if days >= 1 {
+        return format!("{days}d ago");
+    }
+    if hours >= 1 {
+        return format!("{hours}h ago");
+    }
+    if mins >= 1 {
+        return format!("{mins}m ago");
+    }
+    "just now".to_string()
 }
 
 /// ISO timestamp for title attributes.
@@ -100,26 +107,44 @@ mod tests {
 
     #[test]
     fn relative_label_just_now_under_a_minute() {
-        assert_eq!(relative_label(0).as_deref(), Some("just now"));
-        assert_eq!(relative_label(59).as_deref(), Some("just now"));
+        assert_eq!(relative_label(0), "just now");
+        assert_eq!(relative_label(59), "just now");
     }
 
     #[test]
     fn relative_label_minutes() {
-        assert_eq!(relative_label(60).as_deref(), Some("1m ago"));
-        assert_eq!(relative_label(59 * 60 + 59).as_deref(), Some("59m ago"));
+        assert_eq!(relative_label(60), "1m ago");
+        assert_eq!(relative_label(59 * 60 + 59), "59m ago");
     }
 
     #[test]
     fn relative_label_hours() {
-        assert_eq!(relative_label(60 * 60).as_deref(), Some("1h ago"));
-        assert_eq!(relative_label(23 * 60 * 60).as_deref(), Some("23h ago"));
+        assert_eq!(relative_label(60 * 60), "1h ago");
+        assert_eq!(relative_label(23 * 60 * 60), "23h ago");
     }
 
     #[test]
-    fn relative_label_returns_none_past_a_day() {
-        assert_eq!(relative_label(24 * 60 * 60), None);
-        assert_eq!(relative_label(72 * 60 * 60), None);
+    fn relative_label_days() {
+        assert_eq!(relative_label(24 * 60 * 60), "1d ago");
+        assert_eq!(relative_label(6 * 24 * 60 * 60), "6d ago");
+    }
+
+    #[test]
+    fn relative_label_weeks() {
+        assert_eq!(relative_label(7 * 24 * 60 * 60), "1w ago");
+        assert_eq!(relative_label(29 * 24 * 60 * 60), "4w ago");
+    }
+
+    #[test]
+    fn relative_label_months() {
+        assert_eq!(relative_label(30 * 24 * 60 * 60), "1mo ago");
+        assert_eq!(relative_label(364 * 24 * 60 * 60), "12mo ago");
+    }
+
+    #[test]
+    fn relative_label_years() {
+        assert_eq!(relative_label(365 * 24 * 60 * 60), "1y ago");
+        assert_eq!(relative_label(3 * 365 * 24 * 60 * 60), "3y ago");
     }
 
     #[test]
