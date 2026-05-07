@@ -1,6 +1,6 @@
 {% extends "_base.html" %}
 
-{% block title %}ci · {{ repo }} · {{ run.sha_short }}{% endblock %}
+{% block title %}ci · {{ repo }} · {{ run.sha_short() }}{% endblock %}
 
 {% block nav %}
 {% include "_nav.html" %}
@@ -9,27 +9,30 @@
 {% block content %}
 <div class="ci-meta">
   <div class="ci-meta-primary">
-    <span class="{{ run.state_color }}">{{ run.state }}</span>
-    · <span class="c-accent">{{ run.sha_short }}</span>
-    · {{ run.ref_short }}
+    <span class="{{ run.state_class() }}">{{ run.state }}</span>
+    · <span class="c-accent">{{ run.sha_short() }}</span>
+    · {{ run.ref_short() }}
   </div>
   <div class="ci-meta-secondary">
-    queued {{ run.queued }} · started {{ run.started }} · finished {{ run.finished }} · {{ run.duration }}
+    queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+    · started {% if run.has_started() %}<time title="{{ run.started_iso() }}">{{ run.started_display() }}</time>{% else %}{{ run.started_display() }}{% endif %}
+    · finished {% if run.has_finished() %}<time title="{{ run.finished_iso() }}">{{ run.finished_display() }}</time>{% else %}{{ run.finished_display() }}{% endif %}
+    · {{ run.duration_display() }}
   </div>
 </div>
 
 {% for job in jobs %}
 <div class="ci-job">
   <div class="ci-job-header">
-    <span class="{{ job.state_color }}">{{ job.state }}</span>
-    · {{ job.job_id }} · {{ job.duration }}{{ job.exit_str }}
+    <span class="{{ job.state_class() }}">{{ job.state }}</span>
+    · {{ job.job_id }} · {{ job.duration_display() }}{{ job.exit_display() }}
   </div>
   {% for sh in job.sh_events %}
   <div class="ci-sh">
     <div class="ci-sh-meta">
-      sh-{{ sh.index }} · {{ sh.duration }} · exit {{ sh.exit_code }}
+      sh-{{ sh.index }} · {{ sh.duration_display() }} · exit {{ sh.exit_code }}
     </div>
-    <div class="ci-sh-cmd">{{ sh.cmd_display }}</div>
+    <div class="ci-sh-cmd">{{ sh.cmd_display() }}</div>
     {% if !sh.log_content.is_empty() %}
     <pre class="ci-sh-log">{{ sh.log_content }}</pre>
     {% endif %}

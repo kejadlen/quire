@@ -1,8 +1,8 @@
 //! Read-only CI web view.
 //!
 //! Two pages:
-//! - `GET /repo/<name>/ci` — most-recent runs for a repo.
-//! - `GET /repo/<name>/ci/<run-id>` — per-run detail with jobs and logs.
+//! - `GET /<name>/ci` — most-recent runs for a repo.
+//! - `GET /<name>/ci/<run-id>` — per-run detail with jobs and logs.
 //!
 //! Server-rendered HTML via Askama templates. JavaScript-optional.
 
@@ -29,11 +29,42 @@ struct RunListTemplate {
 
 struct RunListRow {
     id: String,
-    state_color: String,
-    sha_short: String,
-    ref_short: String,
-    queued: String,
-    duration: String,
+    state: String,
+    sha: String,
+    ref_name: String,
+    queued_at_ms: i64,
+    started_at_ms: Option<i64>,
+    finished_at_ms: Option<i64>,
+}
+
+impl RunListRow {
+    fn state_class(&self) -> &str {
+        match self.state.as_str() {
+            "complete" => "c-ok",
+            "failed" => "c-bad",
+            _ => "c-muted",
+        }
+    }
+
+    fn sha_short(&self) -> &str {
+        &self.sha[..self.sha.len().min(8)]
+    }
+
+    fn ref_short(&self) -> &str {
+        self.ref_name.trim_start_matches("refs/heads/")
+    }
+
+    fn queued_relative(&self) -> String {
+        format_timestamp_relative(self.queued_at_ms)
+    }
+
+    fn queued_iso(&self) -> String {
+        format_timestamp_iso(self.queued_at_ms)
+    }
+
+    fn duration_display(&self) -> String {
+        format_duration(self.started_at_ms, self.finished_at_ms)
+    }
 }
 
 #[derive(askama::Template)]
@@ -47,30 +78,125 @@ struct RunDetailTemplate {
 
 struct DetailRun {
     state: String,
-    state_color: String,
-    sha_short: String,
-    ref_short: String,
-    queued: String,
-    started: String,
-    finished: String,
-    duration: String,
+    sha: String,
+    ref_name: String,
+    queued_at_ms: i64,
+    started_at_ms: Option<i64>,
+    finished_at_ms: Option<i64>,
+}
+
+impl DetailRun {
+    fn state_class(&self) -> &str {
+        match self.state.as_str() {
+            "complete" => "c-ok",
+            "failed" => "c-bad",
+            _ => "c-muted",
+        }
+    }
+
+    fn sha_short(&self) -> &str {
+        &self.sha[..self.sha.len().min(8)]
+    }
+
+    fn ref_short(&self) -> &str {
+        self.ref_name.trim_start_matches("refs/heads/")
+    }
+
+    fn queued_relative(&self) -> String {
+        format_timestamp_relative(self.queued_at_ms)
+    }
+
+    fn queued_iso(&self) -> String {
+        format_timestamp_iso(self.queued_at_ms)
+    }
+
+    fn started_display(&self) -> String {
+        self.started_at_ms
+            .map(format_timestamp_relative)
+            .unwrap_or_else(|| "—".to_string())
+    }
+
+    fn started_iso(&self) -> String {
+        self.started_at_ms
+            .map(format_timestamp_iso)
+            .unwrap_or_default()
+    }
+
+    fn has_started(&self) -> bool {
+        self.started_at_ms.is_some()
+    }
+
+    fn finished_display(&self) -> String {
+        self.finished_at_ms
+            .map(format_timestamp_relative)
+            .unwrap_or_else(|| "—".to_string())
+    }
+
+    fn finished_iso(&self) -> String {
+        self.finished_at_ms
+            .map(format_timestamp_iso)
+            .unwrap_or_default()
+    }
+
+    fn has_finished(&self) -> bool {
+        self.finished_at_ms.is_some()
+    }
+
+    fn duration_display(&self) -> String {
+        format_duration(self.started_at_ms, self.finished_at_ms)
+    }
 }
 
 struct DetailJob {
     job_id: String,
     state: String,
-    state_color: String,
-    duration: String,
-    exit_str: String,
+    exit_code: Option<i32>,
+    started_at_ms: Option<i64>,
+    finished_at_ms: Option<i64>,
     sh_events: Vec<DetailShEvent>,
+}
+
+impl DetailJob {
+    fn state_class(&self) -> &str {
+        match self.state.as_str() {
+            "complete" => "c-ok",
+            "failed" => "c-bad",
+            _ => "c-muted",
+        }
+    }
+
+    fn duration_display(&self) -> String {
+        format_duration(self.started_at_ms, self.finished_at_ms)
+    }
+
+    fn exit_display(&self) -> String {
+        self.exit_code
+            .map(|c| format!(" · exit {c}"))
+            .unwrap_or_default()
+    }
 }
 
 struct DetailShEvent {
     index: usize,
-    duration: String,
+    started_at_ms: i64,
+    finished_at_ms: i64,
     exit_code: i32,
-    cmd_display: String,
+    cmd: String,
     log_content: String,
+}
+
+impl DetailShEvent {
+    fn duration_display(&self) -> String {
+        format_duration_exact(self.started_at_ms, self.finished_at_ms)
+    }
+
+    fn cmd_display(&self) -> &str {
+        if self.cmd.len() > 120 {
+            &self.cmd[..120]
+        } else {
+            &self.cmd
+        }
+    }
 }
 
 #[derive(askama::Template)]
@@ -144,15 +270,9 @@ impl<S: Send + Sync> FromRequestParts<S> for RemoteUser {
     }
 }
 
-fn state_color(state: &str) -> &'static str {
-    match state {
-        "complete" => "c-ok",
-        "failed" => "c-bad",
-        _ => "c-muted",
-    }
-}
+// ── Formatting helpers ─────────────────────────────────────────────
 
-fn format_timestamp(ms: i64) -> String {
+fn format_timestamp_relative(ms: i64) -> String {
     match Timestamp::from_millisecond(ms) {
         Ok(ts) => {
             let now = Timestamp::now();
@@ -173,6 +293,12 @@ fn format_timestamp(ms: i64) -> String {
         }
         Err(_) => format!("{ms}ms"),
     }
+}
+
+fn format_timestamp_iso(ms: i64) -> String {
+    Timestamp::from_millisecond(ms)
+        .map(|ts| ts.to_string())
+        .unwrap_or_else(|_| format!("{ms}ms"))
 }
 
 fn format_duration(start: Option<i64>, end: Option<i64>) -> String {
@@ -341,7 +467,7 @@ pub async fn run_list(
         Err(e) => {
             tracing::error!(repo = %repo, error = %e, "failed to load runs");
             let tmpl = ErrorTemplate {
-                repo: repo_display.clone(),
+                repo: repo_display,
                 page: "error".to_string(),
                 title: "Failed to load runs".to_string(),
                 detail: e,
@@ -351,14 +477,15 @@ pub async fn run_list(
     };
 
     let template_runs: Vec<RunListRow> = runs
-        .iter()
+        .into_iter()
         .map(|r| RunListRow {
-            id: r.id.clone(),
-            state_color: state_color(&r.state).to_string(),
-            sha_short: r.sha[..r.sha.len().min(8)].to_string(),
-            ref_short: r.ref_name.trim_start_matches("refs/heads/").to_string(),
-            queued: format_timestamp(r.queued_at_ms),
-            duration: format_duration(r.started_at_ms, r.finished_at_ms),
+            id: r.id,
+            state: r.state,
+            sha: r.sha,
+            ref_name: r.ref_name,
+            queued_at_ms: r.queued_at_ms,
+            started_at_ms: r.started_at_ms,
+            finished_at_ms: r.finished_at_ms,
         })
         .collect();
 
@@ -385,7 +512,7 @@ pub async fn run_detail(
         Err(e) => {
             tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
             let tmpl = ErrorTemplate {
-                repo: repo_display.clone(),
+                repo: repo_display,
                 page: "error".to_string(),
                 title: "Failed to load run".to_string(),
                 detail: e,
@@ -394,16 +521,13 @@ pub async fn run_detail(
         }
     };
 
-    let sha_short = run.sha[..run.sha.len().min(8)].to_string();
     let detail_run = DetailRun {
-        state: run.state.clone(),
-        state_color: state_color(&run.state).to_string(),
-        sha_short: sha_short.clone(),
-        ref_short: run.ref_name.trim_start_matches("refs/heads/").to_string(),
-        queued: format_timestamp(run.queued_at_ms),
-        started: run.started_at_ms.map_or("—".to_string(), format_timestamp),
-        finished: run.finished_at_ms.map_or("—".to_string(), format_timestamp),
-        duration: format_duration(run.started_at_ms, run.finished_at_ms),
+        state: run.state,
+        sha: run.sha,
+        ref_name: run.ref_name,
+        queued_at_ms: run.queued_at_ms,
+        started_at_ms: run.started_at_ms,
+        finished_at_ms: run.finished_at_ms,
     };
 
     // Load CRI log contents for each sh event.
@@ -444,22 +568,18 @@ pub async fn run_detail(
         let mut detail_sh_events: Vec<DetailShEvent> = Vec::new();
         for (global_idx, ev) in &job_shs {
             let sh_n = sh_index_for_event(&sh_events, &ev.job_id, *global_idx);
-            let cmd_display = if ev.cmd.len() > 120 {
-                &ev.cmd[..120]
-            } else {
-                &ev.cmd
-            };
 
             let log = log_contents
                 .get(&(ev.job_id.clone(), sh_n))
-                .map(|s| s.to_string())
+                .cloned()
                 .unwrap_or_default();
 
             detail_sh_events.push(DetailShEvent {
                 index: sh_n,
-                duration: format_duration_exact(ev.started_at_ms, ev.finished_at_ms),
+                started_at_ms: ev.started_at_ms,
+                finished_at_ms: ev.finished_at_ms,
                 exit_code: ev.exit_code,
-                cmd_display: cmd_display.to_string(),
+                cmd: ev.cmd.clone(),
                 log_content: log,
             });
         }
@@ -467,19 +587,16 @@ pub async fn run_detail(
         detail_jobs.push(DetailJob {
             job_id: job.job_id.clone(),
             state: job.state.clone(),
-            state_color: state_color(&job.state).to_string(),
-            duration: format_duration(job.started_at_ms, job.finished_at_ms),
-            exit_str: job
-                .exit_code
-                .map(|c| format!(" · exit {c}"))
-                .unwrap_or_default(),
+            exit_code: job.exit_code,
+            started_at_ms: job.started_at_ms,
+            finished_at_ms: job.finished_at_ms,
             sh_events: detail_sh_events,
         });
     }
 
     let tmpl = RunDetailTemplate {
         repo: repo_display,
-        page: format!("ci · {sha_short}"),
+        page: format!("ci · {}", detail_run.sha_short()),
         run: detail_run,
         jobs: detail_jobs,
     };
@@ -521,33 +638,34 @@ mod tests {
     #[test]
     fn run_list_template_renders_empty() {
         let tmpl = RunListTemplate {
-            repo: "test.git".to_string(),
+            repo: "test".to_string(),
             page: "ci".to_string(),
             runs: vec![],
         };
         let html = tmpl.render().unwrap();
         assert!(html.contains("no runs yet"));
-        assert!(html.contains("ci · test.git"));
+        assert!(html.contains("ci · test"));
     }
 
     #[test]
     fn run_list_template_renders_runs() {
         let tmpl = RunListTemplate {
-            repo: "test.git".to_string(),
+            repo: "test".to_string(),
             page: "ci".to_string(),
             runs: vec![RunListRow {
                 id: "abc123".to_string(),
-                state_color: "c-ok".to_string(),
-                sha_short: "deadbeef".to_string(),
-                ref_short: "main".to_string(),
-                queued: "just now".to_string(),
-                duration: "1s".to_string(),
+                state: "complete".to_string(),
+                sha: "deadbeef".to_string(),
+                ref_name: "refs/heads/main".to_string(),
+                queued_at_ms: 1000,
+                started_at_ms: Some(2000),
+                finished_at_ms: Some(3000),
             }],
         };
         let html = tmpl.render().unwrap();
         assert!(html.contains("deadbeef"));
         assert!(html.contains("main"));
-        assert!(html.contains("/test.git/ci/abc123"));
+        assert!(html.contains("/test/ci/abc123"));
     }
 
     #[test]
