@@ -128,7 +128,7 @@ impl Runtime {
         Self {
             pipeline,
             inputs,
-            registry: RefCell::new(SecretRegistry::new(secrets)),
+            registry: RefCell::new(SecretRegistry::from(secrets)),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
@@ -280,7 +280,7 @@ impl Runtime {
     fn for_test(pipeline: Pipeline, secrets: HashMap<String, SecretString>) -> Self {
         Self {
             pipeline,
-            registry: RefCell::new(SecretRegistry::new(secrets)),
+            registry: RefCell::new(SecretRegistry::from(secrets)),
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),

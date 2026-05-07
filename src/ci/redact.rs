@@ -59,14 +59,32 @@ impl std::fmt::Debug for SecretRegistry {
     }
 }
 
-impl SecretRegistry {
-    pub fn new(declared: HashMap<String, SecretString>) -> Self {
+impl From<HashMap<String, SecretString>> for SecretRegistry {
+    fn from(declared: HashMap<String, SecretString>) -> Self {
         Self {
             declared,
             revealed: HashMap::new(),
         }
     }
+}
 
+impl From<Vec<(String, SecretString)>> for SecretRegistry {
+    fn from(pairs: Vec<(String, SecretString)>) -> Self {
+        Self::from(pairs.into_iter().collect::<HashMap<_, _>>())
+    }
+}
+
+impl From<Vec<(&str, &str)>> for SecretRegistry {
+    fn from(pairs: Vec<(&str, &str)>) -> Self {
+        let declared: HashMap<String, SecretString> = pairs
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), SecretString::from(v)))
+            .collect();
+        Self::from(declared)
+    }
+}
+
+impl SecretRegistry {
     /// Resolve a declared secret by name, caching the revealed value
     /// for redaction. Returns `Err` if the name isn't declared or
     /// the source can't be read.
@@ -135,16 +153,9 @@ pub fn redact(text: &str, registry: &SecretRegistry) -> String {
 mod tests {
     use super::*;
 
-    fn plain_secrets(pairs: &[(&str, &str)]) -> HashMap<String, SecretString> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), SecretString::from(*v)))
-            .collect()
-    }
-
     #[test]
     fn redact_replaces_secret_value() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("github_token", "ghp_abc123xyz")]));
+        let mut reg = SecretRegistry::from(vec![("github_token", "ghp_abc123xyz")]);
         reg.resolve("github_token").unwrap();
         assert_eq!(
             redact("push with token ghp_abc123xyz failed", &reg),
@@ -154,10 +165,7 @@ mod tests {
 
     #[test]
     fn redact_handles_multiple_secrets() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[
-            ("token_a", "aaaaaaaa"),
-            ("token_b", "bbbbbbbb"),
-        ]));
+        let mut reg = SecretRegistry::from(vec![("token_a", "aaaaaaaa"), ("token_b", "bbbbbbbb")]);
         reg.resolve("token_a").unwrap();
         reg.resolve("token_b").unwrap();
         let result = redact("aaaaaaaa and bbbbbbbb", &reg);
@@ -166,10 +174,8 @@ mod tests {
 
     #[test]
     fn redact_longest_first_prevents_partial_overlap() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[
-            ("short", "abcdefgh"),
-            ("long", "abcdefghijklmnop"),
-        ]));
+        let mut reg =
+            SecretRegistry::from(vec![("short", "abcdefgh"), ("long", "abcdefghijklmnop")]);
         reg.resolve("short").unwrap();
         reg.resolve("long").unwrap();
         assert_eq!(redact("abcdefghijklmnop here", &reg), "{{ long }} here");
@@ -177,20 +183,20 @@ mod tests {
 
     #[test]
     fn redact_returns_unchanged_when_nothing_revealed() {
-        let reg = SecretRegistry::new(plain_secrets(&[("key", "secret_value")]));
+        let reg = SecretRegistry::from(vec![("key", "secret_value")]);
         assert_eq!(redact("nothing to see", &reg), "nothing to see");
     }
 
     #[test]
     fn redact_ignores_short_secrets() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("tiny", "abcdefg")]));
+        let mut reg = SecretRegistry::from(vec![("tiny", "abcdefg")]);
         reg.resolve("tiny").unwrap();
         assert_eq!(redact("abcdefg is short", &reg), "abcdefg is short");
     }
 
     #[test]
     fn redact_similar_but_not_equal_passes_through() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_abc123xyz")]));
+        let mut reg = SecretRegistry::from(vec![("token", "ghp_abc123xyz")]);
         reg.resolve("token").unwrap();
         assert_eq!(
             redact("ghp_abc124xyz is close but not equal", &reg),
@@ -200,7 +206,7 @@ mod tests {
 
     #[test]
     fn redact_replaces_all_occurrences() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("key", "secret_password")]));
+        let mut reg = SecretRegistry::from(vec![("key", "secret_password")]);
         reg.resolve("key").unwrap();
         assert_eq!(
             redact("secret_password secret_password secret_password", &reg),
@@ -210,8 +216,7 @@ mod tests {
 
     #[test]
     fn minimum_length_is_8() {
-        let mut reg =
-            SecretRegistry::new(plain_secrets(&[("short", "1234567"), ("ok", "12345678")]));
+        let mut reg = SecretRegistry::from(vec![("short", "1234567"), ("ok", "12345678")]);
         // 7 chars — too short for redaction
         reg.resolve("short").unwrap();
         assert_eq!(redact("1234567", &reg), "1234567");
@@ -223,7 +228,7 @@ mod tests {
 
     #[test]
     fn resolve_errors_for_unknown_name() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[]));
+        let mut reg = SecretRegistry::from(HashMap::new());
         let err = reg.resolve("missing").unwrap_err();
         assert!(
             matches!(err, super::super::error::Error::UnknownSecret(ref n) if n == "missing"),
@@ -233,13 +238,13 @@ mod tests {
 
     #[test]
     fn resolve_returns_value() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("key", "hunter2")]));
+        let mut reg = SecretRegistry::from(vec![("key", "hunter2")]);
         assert_eq!(reg.resolve("key").unwrap(), "hunter2");
     }
 
     #[test]
     fn redact_is_idempotent() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_long_secret_value")]));
+        let mut reg = SecretRegistry::from(vec![("token", "ghp_long_secret_value")]);
         reg.resolve("token").unwrap();
         let input = "hello ghp_long_secret_value world";
         let first = redact(input, &reg);
@@ -249,7 +254,7 @@ mod tests {
 
     #[test]
     fn redact_preserves_non_matching_text() {
-        let mut reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_long_secret_value")]));
+        let mut reg = SecretRegistry::from(vec![("token", "ghp_long_secret_value")]);
         reg.resolve("token").unwrap();
         let input = "nothing to see here";
         assert_eq!(redact(input, &reg), input);
@@ -257,7 +262,7 @@ mod tests {
 
     #[test]
     fn redact_with_no_resolves_is_identity() {
-        let reg = SecretRegistry::new(plain_secrets(&[("token", "ghp_long_secret_value")]));
+        let reg = SecretRegistry::from(vec![("token", "ghp_long_secret_value")]);
         // No resolve — no redactions registered.
         let input = "contains ghp_long_secret_value but not resolved";
         assert_eq!(redact(input, &reg), input);
@@ -266,10 +271,8 @@ mod tests {
     #[test]
     fn redact_tiebreaks_equal_length_by_name() {
         // Two names with the same revealed value: alphabetical name wins.
-        let mut reg = SecretRegistry::new(plain_secrets(&[
-            ("zzz_late", "samevalue"),
-            ("aaa_early", "samevalue"),
-        ]));
+        let mut reg =
+            SecretRegistry::from(vec![("zzz_late", "samevalue"), ("aaa_early", "samevalue")]);
         reg.resolve("zzz_late").unwrap();
         reg.resolve("aaa_early").unwrap();
         assert_eq!(redact("samevalue", &reg), "{{ aaa_early }}");

@@ -121,13 +121,6 @@ fn push_event_updated_refs_is_subtractive(tc: TestCase) {
 
 // ── Secret registry helpers ──────────────────────────────────────
 
-fn plain_secrets(pairs: &[(&str, &str)]) -> HashMap<String, SecretString> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), SecretString::from(*v)))
-        .collect()
-}
-
 /// Generate a secret name from an index.
 fn secret_name(i: usize) -> String {
     format!("secret_{i}")
@@ -155,7 +148,7 @@ fn resolved_registry(tc: TestCase) -> SecretRegistry {
     for (name, value) in &entries {
         map.insert(name.clone(), SecretString::from(value.clone()));
     }
-    let mut reg = SecretRegistry::new(map);
+    let mut reg = SecretRegistry::from(map);
     // Resolve all secrets so they're registered for redaction.
     for (name, _) in &entries {
         let _ = reg.resolve(name);
@@ -174,7 +167,7 @@ fn text_with_secrets(tc: TestCase) -> (SecretRegistry, String) {
             long_values.push(value.clone());
         }
     }
-    let mut reg = SecretRegistry::new(map);
+    let mut reg = SecretRegistry::from(map);
     for (name, _) in &entries {
         let _ = reg.resolve(name);
     }
@@ -203,7 +196,7 @@ fn redact_never_contains_revealed_long_values(tc: TestCase) {
             long_values.push(value.clone());
         }
     }
-    let mut reg = SecretRegistry::new(map);
+    let mut reg = SecretRegistry::from(map);
     for (name, _) in &entries {
         let _ = reg.resolve(name);
     }
@@ -246,7 +239,7 @@ fn redact_preserves_text_without_secrets(tc: TestCase) {
 
 #[hegel::test]
 fn redact_empty_registry_is_identity(tc: TestCase) {
-    let reg = SecretRegistry::new(HashMap::new());
+    let reg = SecretRegistry::from(HashMap::new());
     let text = tc.draw(text());
     assert_eq!(redact(&text, &reg), text);
 }
@@ -258,7 +251,7 @@ fn redact_unresolved_registry_is_identity(tc: TestCase) {
         .into_iter()
         .map(|(k, v)| (k, SecretString::from(v)))
         .collect();
-    let reg = SecretRegistry::new(map);
+    let reg = SecretRegistry::from(map);
     let text = tc.draw(text());
     assert_eq!(redact(&text, &reg), text);
 }
@@ -267,7 +260,7 @@ fn redact_unresolved_registry_is_identity(tc: TestCase) {
 fn resolve_returns_consistent_value(tc: TestCase) {
     let entries = tc.draw(unique_secret_entries());
     let (name, value) = entries.into_iter().next().unwrap();
-    let mut reg = SecretRegistry::new(plain_secrets(&[(&name, &value)]));
+    let mut reg = SecretRegistry::from(vec![(name.as_str(), value.as_str())]);
     let first = reg.resolve(&name).unwrap();
     let second = reg.resolve(&name).unwrap();
     assert_eq!(first, second);
@@ -277,7 +270,7 @@ fn resolve_returns_consistent_value(tc: TestCase) {
 #[hegel::test]
 fn resolve_unknown_name_errors(tc: TestCase) {
     let name = tc.draw(text());
-    let mut reg = SecretRegistry::new(HashMap::new());
+    let mut reg = SecretRegistry::from(HashMap::new());
     assert!(reg.resolve(&name).is_err());
 }
 
@@ -288,7 +281,7 @@ fn redact_output_never_shows_long_secret_values(tc: TestCase) {
     for (name, value) in &entries {
         map.insert(name.clone(), SecretString::from(value.clone()));
     }
-    let mut reg = SecretRegistry::new(map);
+    let mut reg = SecretRegistry::from(map);
     for (name, _) in &entries {
         let _ = reg.resolve(name);
     }
@@ -316,7 +309,7 @@ fn short_secrets_are_never_redacted(tc: TestCase) {
     if value.is_empty() {
         return;
     }
-    let mut reg = SecretRegistry::new(plain_secrets(&[("short", &value)]));
+    let mut reg = SecretRegistry::from(vec![("short", value.as_str())]);
     let _ = reg.resolve("short");
     let body = value.clone();
     let result = redact(&body, &reg);
