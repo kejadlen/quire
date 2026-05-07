@@ -122,17 +122,6 @@ pub fn load_run_detail(
     Ok((run, jobs, sh_events))
 }
 
-/// Determine the 1-based sh index for an event within its job.
-pub fn sh_index_for_event(events: &[ShEvent], job_id: &str, event_idx: usize) -> usize {
-    let mut n = 0;
-    for (i, ev) in events.iter().enumerate() {
-        if ev.job_id == job_id && i <= event_idx {
-            n += 1;
-        }
-    }
-    n
-}
-
 /// Resolve a URL slug to the on-disk repo name.
 ///
 /// URLs use clean names (`foo`), disk/DB use `foo.git`.

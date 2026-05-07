@@ -21,6 +21,19 @@ fn render<T: Template>(tmpl: &T) -> Response {
     }
 }
 
+/// Read a CRI log file, returning empty on NotFound and on any other
+/// error after logging it.
+async fn read_log(path: &std::path::Path) -> String {
+    match fs_err::tokio::read_to_string(path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read CRI log");
+            String::new()
+        }
+    }
+}
+
 /// Render the error template with the given status, falling back to plain
 /// text if the error template itself fails to render.
 fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -> Response {
@@ -113,60 +126,42 @@ pub async fn run_detail(
         finished_at_ms: run.finished_at_ms,
     };
 
-    // Load CRI log contents for each sh event.
-    let runs_base = quire.base_dir().join("runs").join(&repo_name);
-    let mut log_contents: std::collections::HashMap<(String, usize), String> =
+    // Group sh events by job_id, preserving DB order so positional index
+    // matches launch order.
+    let mut events_by_job: std::collections::HashMap<&str, Vec<&db::ShEvent>> =
         std::collections::HashMap::new();
-    for (idx, ev) in sh_events.iter().enumerate() {
-        if !db::is_safe_path_segment(&ev.job_id) {
-            tracing::warn!(job_id = %ev.job_id, "skipping CRI log read for unsafe job_id");
-            continue;
-        }
-        let sh_n = db::sh_index_for_event(&sh_events, &ev.job_id, idx);
-        let key = (ev.job_id.clone(), sh_n);
-        if log_contents.contains_key(&key) {
-            continue;
-        }
-        let log_path = runs_base
-            .join(&run_id)
-            .join("jobs")
-            .join(&ev.job_id)
-            .join(format!("sh-{sh_n}.log"));
-        match fs_err::tokio::read_to_string(&log_path).await {
-            Ok(content) => {
-                log_contents.insert(key, content);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(path = %log_path.display(), error = %e, "failed to read CRI log");
-            }
-        }
+    for ev in &sh_events {
+        events_by_job.entry(&ev.job_id).or_default().push(ev);
     }
 
-    let mut detail_jobs: Vec<DetailJob> = Vec::new();
+    let runs_base = quire.base_dir().join("runs").join(&repo_name);
+    let job_dir_base = runs_base.join(&run_id).join("jobs");
+
+    let mut detail_jobs: Vec<DetailJob> = Vec::with_capacity(jobs.len());
     for job in &jobs {
-        let job_shs: Vec<(usize, &db::ShEvent)> = sh_events
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.job_id == job.job_id)
-            .collect();
+        let job_events = events_by_job
+            .get(job.job_id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let job_dir = db::is_safe_path_segment(&job.job_id).then(|| job_dir_base.join(&job.job_id));
+        if job_dir.is_none() {
+            tracing::warn!(job_id = %job.job_id, "skipping CRI log reads for unsafe job_id");
+        }
 
-        let mut detail_sh_events: Vec<DetailShEvent> = Vec::new();
-        for (global_idx, ev) in &job_shs {
-            let sh_n = db::sh_index_for_event(&sh_events, &ev.job_id, *global_idx);
-
-            let log = log_contents
-                .get(&(ev.job_id.clone(), sh_n))
-                .cloned()
-                .unwrap_or_default();
-
+        let mut detail_sh_events: Vec<DetailShEvent> = Vec::with_capacity(job_events.len());
+        for (i, ev) in job_events.iter().enumerate() {
+            let sh_n = i + 1;
+            let log_content = match &job_dir {
+                Some(dir) => read_log(&dir.join(format!("sh-{sh_n}.log"))).await,
+                None => String::new(),
+            };
             detail_sh_events.push(DetailShEvent {
                 index: sh_n,
                 started_at_ms: ev.started_at_ms,
                 finished_at_ms: ev.finished_at_ms,
                 exit_code: ev.exit_code,
                 cmd: ev.cmd.clone(),
-                log_content: log,
+                log_content,
             });
         }
 
