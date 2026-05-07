@@ -2,18 +2,48 @@
 
 use askama::Template;
 use axum::extract::{Path as AxumPath, State};
-use axum::response::Html;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
 
 use super::auth::RemoteUser;
 use super::db;
 use super::templates::*;
 use crate::Quire;
 
+/// Render a template into an HTML response, returning 500 on render failure.
+fn render<T: Template>(tmpl: &T) -> Response {
+    match tmpl.render() {
+        Ok(body) => Html(body).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "template render failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
+}
+
+/// Render the error template with the given status, falling back to plain
+/// text if the error template itself fails to render.
+fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -> Response {
+    let tmpl = ErrorTemplate {
+        repo,
+        page: "error".to_string(),
+        title: title.to_string(),
+        detail: detail.clone(),
+    };
+    match tmpl.render() {
+        Ok(body) => (status, Html(body)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "error template render failed");
+            (status, format!("{title}\n\n{detail}\n")).into_response()
+        }
+    }
+}
+
 pub async fn run_list(
     State(quire): State<Quire>,
     AxumPath(repo): AxumPath<String>,
     user: RemoteUser,
-) -> Html<String> {
+) -> Response {
     let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
@@ -22,13 +52,12 @@ pub async fn run_list(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(repo = %repo, error = %e, "failed to load runs");
-            let tmpl = ErrorTemplate {
-                repo: repo_display,
-                page: "error".to_string(),
-                title: "Failed to load runs".to_string(),
-                detail: e,
-            };
-            return Html(tmpl.render().unwrap_or_default());
+            return render_error(
+                repo_display,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load runs",
+                e,
+            );
         }
     };
 
@@ -50,14 +79,14 @@ pub async fn run_list(
         page: "ci".to_string(),
         runs: template_runs,
     };
-    Html(tmpl.render().unwrap_or_default())
+    render(&tmpl)
 }
 
 pub async fn run_detail(
     State(quire): State<Quire>,
     AxumPath((repo, run_id)): AxumPath<(String, String)>,
     user: RemoteUser,
-) -> Html<String> {
+) -> Response {
     let _user = user;
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
@@ -67,13 +96,12 @@ pub async fn run_detail(
         Ok(d) => d,
         Err(e) => {
             tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
-            let tmpl = ErrorTemplate {
-                repo: repo_display,
-                page: "error".to_string(),
-                title: "Failed to load run".to_string(),
-                detail: e,
-            };
-            return Html(tmpl.render().unwrap_or_default());
+            return render_error(
+                repo_display,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load run",
+                e,
+            );
         }
     };
 
@@ -156,5 +184,5 @@ pub async fn run_detail(
         run: detail_run,
         jobs: detail_jobs,
     };
-    Html(tmpl.render().unwrap_or_default())
+    render(&tmpl)
 }
