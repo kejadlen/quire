@@ -71,6 +71,8 @@ RUN apt-get update \
 COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
 COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
 COPY --from=builder /build/quire /usr/local/bin/quire
+# CI shells out to docker against the host daemon (DooD); see docs/CI.md.
+COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Configure git hooks globally so all repos inherit the post-receive dispatch.
 # `hook.<label>` is an arbitrary identifier; the hook is bound to an event

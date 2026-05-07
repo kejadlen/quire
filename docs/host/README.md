@@ -31,14 +31,17 @@ Reference configs for dispatching SSH connections into the quire container.
 
        docker run -d --name quire-container \
            --user "$(id -u git):$(id -g git)" \
+           --group-add "$(getent group docker | cut -d: -f3)" \
            -e HOME=/tmp \
            -v /var/quire:/var/quire \
+           -v /var/run/docker.sock:/var/run/docker.sock \
            -p 127.0.0.1:3000:3000 \
            quire
 
    In a compose file, the equivalent is `user: "${QUIRE_UID}:${QUIRE_GID}"`
    with the values templated from `id -u git` / `id -g git` during host
-   setup.
+   setup, plus `group_add: ["${DOCKER_GID}"]` and the two bind mounts
+   under `volumes:`.
 
    If you want the interim gitweb view, run it as a separate container
    mounting the same volume (read-only is sufficient):
@@ -74,3 +77,29 @@ writable `HOME` for its config probing.
 The HTTP port (3000) is published to host loopback only. A reverse proxy
 on the host terminates TLS and reverse-proxies to it; nothing else
 should reach it directly.
+
+## CI: docker-out-of-docker
+
+The CI runner shells out to docker against the **host** daemon —
+`docker run` to start a per-run container with the pipeline's image,
+`docker exec` for each `(sh ...)` call, `docker stop` at the end.
+Architecture and trade-offs in [docs/CI.md](../CI.md).
+
+For this to work the quire container needs:
+
+- The docker CLI (baked into the image; the host daemon does the work).
+- The host's `/var/run/docker.sock` bind-mounted in.
+- Membership in the host's `docker` group (via `--group-add`) so the
+  unprivileged `git` uid can talk to the socket.
+
+Anyone with the docker socket has root on the host. That's an
+acceptable trade here because quire and the operator account already
+share the box; if that ever stops being true, switch to the OCI+bwrap
+path described in CI.md.
+
+One sharp edge: when quire issues `docker run -v /var/quire/runs/...:/work`,
+the host path is resolved by the host daemon, not interpreted from
+inside the container. So `/var/quire` must resolve to the **same path**
+on the host and inside the quire container. The bind mount above
+(`-v /var/quire:/var/quire`) already enforces this; just don't get
+clever and remap the path on either side.
