@@ -141,9 +141,9 @@ impl<S: Send + Sync> FromRequestParts<S> for RemoteUser {
 
 fn state_color(state: &str) -> &'static str {
     match state {
-        "complete" => "var(--ok)",
-        "failed" => "var(--bad)",
-        _ => "var(--muted)",
+        "complete" => "c-ok",
+        "failed" => "c-bad",
+        _ => "c-muted",
     }
 }
 

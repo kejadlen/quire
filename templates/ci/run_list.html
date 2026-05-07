@@ -3,36 +3,42 @@
 {% block title %}ci · {{ repo }}{% endblock %}
 
 {% block nav %}
-<nav style="padding:14px 56px;border-bottom:1px solid var(--rule);font-family:var(--font-mono);font-size:14px;font-weight:500;letter-spacing:-0.2px;display:flex;justify-content:space-between;align-items:center">
-<div><span style="color:var(--mutedFaint)">quire</span> <span style="color:var(--rule2)">/</span> <span>{{ repo }}</span> <span style="color:var(--rule2)">/</span> <span style="color:var(--muted)">ci</span></div>
-<div style="font-size:11px;color:var(--mutedFaint)">press [?] for shortcuts</div>
+<nav class="page-nav">
+  <div class="breadcrumbs">
+    <span class="crumb-faint">quire</span>
+    <span class="sep">/</span>
+    <span>{{ repo }}</span>
+    <span class="sep">/</span>
+    <span class="crumb-muted">ci</span>
+  </div>
+  <div class="shortcuts">press [?] for shortcuts</div>
 </nav>
 {% endblock %}
 
 {% block content %}
-<h2 style="font-family:var(--font-mono);font-size:19px;font-weight:600;margin:0 0 16px">ci runs</h2>
-<table style="width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:12.5px;line-height:1.6">
-<thead>
-<tr style="border-bottom:1px solid var(--rule2)">
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)"></th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">sha</th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">ref</th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">queued</th>
-  <th style="text-align:left;padding:6px 8px;font-weight:400;color:var(--mutedFaint)">duration</th>
-</tr>
-</thead>
-<tbody style="border-top:1px solid var(--rule)">
-{% for run in runs %}
-<tr>
-  <td style="padding:6px 8px"><span style="display:inline-block;width:6px;height:6px;border-radius:3px;background:{{ run.state_color }}"></span></td>
-  <td style="padding:6px 8px"><a href="/repo/{{ repo }}/ci/{{ run.id }}" style="color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--rule2)">{{ run.sha_short }}</a></td>
-  <td style="padding:6px 8px">{{ run.ref_short }}</td>
-  <td style="padding:6px 8px">{{ run.queued }}</td>
-  <td style="padding:6px 8px">{{ run.duration }}</td>
-</tr>
-{% else %}
-<tr><td colspan="5" style="padding:16px;color:var(--muted)">no runs yet</td></tr>
-{% endfor %}
-</tbody>
+<h2 class="ci-heading">ci runs</h2>
+<table class="ci-table">
+  <thead>
+    <tr>
+      <th></th>
+      <th>sha</th>
+      <th>ref</th>
+      <th>queued</th>
+      <th>duration</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td><span class="ci-status-dot {{ run.state_color }}"></span></td>
+      <td><a href="/repo/{{ repo }}/ci/{{ run.id }}" class="ci-sha-link">{{ run.sha_short }}</a></td>
+      <td>{{ run.ref_short }}</td>
+      <td>{{ run.queued }}</td>
+      <td>{{ run.duration }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">no runs yet</td></tr>
+  {% endfor %}
+  </tbody>
 </table>
 {% endblock %}
