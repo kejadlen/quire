@@ -219,6 +219,13 @@ impl SecretRegistry {
     /// common short strings like "true" or "yes" is too high. A warn
     /// is emitted so an operator can see why a short token is showing
     /// up unredacted in CI output.
+    ///
+    /// The returned `String` is the plain, revealed value. Do not pass
+    /// it to `tracing` or any other log sink — the global tracing
+    /// subscriber has no redaction layer, so a leaked value would
+    /// reach stderr and Sentry. Route it into a surface that goes
+    /// through [`redact`] (e.g. `sh` command args, ShOutput) or wrap
+    /// it in a type whose `Debug`/`Display` impl redacts.
     pub fn resolve(&mut self, name: &str) -> Result<String> {
         let secret = self
             .declared
@@ -286,6 +293,22 @@ mod tests {
         assert!(
             !debug_output.contains("super_secret_password"),
             "Debug must not leak the secret value"
+        );
+    }
+
+    #[test]
+    fn registry_debug_does_not_leak_revealed_values() {
+        let mut registry: SecretRegistry =
+            vec![("github_token", "abcdefghijklmnop_long_enough")].into();
+        let _ = registry.resolve("github_token").unwrap();
+        let debug_output = format!("{registry:?}");
+        assert!(
+            !debug_output.contains("abcdefghijklmnop_long_enough"),
+            "SecretRegistry Debug must not leak revealed values: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("github_token"),
+            "SecretRegistry Debug should still surface declared names: {debug_output}"
         );
     }
 

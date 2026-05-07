@@ -194,6 +194,12 @@ impl Runtime {
     /// Resolve a declared secret by name, caching it for redaction.
     /// Errors if the name isn't declared or the secret's source
     /// can't be read.
+    ///
+    /// The returned `String` is the plain, revealed value — never
+    /// trace or log it directly. See [`SecretRegistry::resolve`] for
+    /// the full caveat.
+    ///
+    /// [`SecretRegistry::resolve`]: crate::secret::SecretRegistry::resolve
     pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
         self.registry.borrow_mut().resolve(name).map_err(Into::into)
     }
