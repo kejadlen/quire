@@ -40,6 +40,7 @@ enum Commands {
     /// Start the HTTP server.
     Serve {
         /// Seed the database with dev data before starting.
+        #[cfg(feature = "dev")]
         #[arg(long)]
         seed: bool,
     },
@@ -207,13 +208,21 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Commands::Serve { seed } => {
+        Commands::Serve {
+            #[cfg(feature = "dev")]
+            seed,
+        } => {
+            #[cfg(feature = "dev")]
             let quire = if seed { commands::dev::seed()? } else { quire };
-            let ci_routes = quire::quire::web::router(quire.clone());
+            #[cfg(not(feature = "dev"))]
+            let ci_routes = quire::quire::web::router(quire.clone()).layer(
+                axum::middleware::from_fn(quire::quire::web::auth::require_auth),
+            );
+            #[cfg(feature = "dev")]
             let ci_routes = if seed {
-                ci_routes
+                quire::quire::web::router(quire.clone())
             } else {
-                ci_routes.layer(axum::middleware::from_fn(
+                quire::quire::web::router(quire.clone()).layer(axum::middleware::from_fn(
                     quire::quire::web::auth::require_auth,
                 ))
             };

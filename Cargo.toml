@@ -3,6 +3,10 @@ name = "quire"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["dev"]
+dev = []
+
 [[bin]]
 name = "quire"
 path = "src/bin/quire/main.rs"
