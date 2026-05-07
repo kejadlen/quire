@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Root directory for quire data (default: /var/quire).
+    #[arg(long, global = true, env = "QUIRE_BASE_DIR")]
+    base_dir: Option<String>,
+
     /// Generate shell completions and exit.
     #[arg(long, value_enum)]
     completions: Option<Shell>,
@@ -34,7 +38,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the HTTP server.
-    Serve,
+    Serve {
+        /// Seed the database with dev data before starting.
+        #[arg(long)]
+        seed: bool,
+    },
 
     /// Dispatch an SSH-originated command.
     Exec {
@@ -179,11 +187,14 @@ fn init_tracing() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let quire = Quire::default();
+    let cli = Cli::parse();
+
+    let quire = match cli.base_dir {
+        Some(ref dir) => Quire::new(dir.into()),
+        None => Quire::default(),
+    };
     let _sentry = init_sentry(&quire);
     init_tracing()?;
-
-    let cli = Cli::parse();
 
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "quire", &mut std::io::stdout());
@@ -196,7 +207,12 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Commands::Serve => commands::serve::run(&quire).await?,
+        Commands::Serve { seed } => {
+            if seed {
+                commands::dev::seed(&quire)?;
+            }
+            commands::serve::run(&quire).await?
+        }
         Commands::Exec { command } => commands::exec::run(&quire, command).await?,
         Commands::Hook { hook_name } => commands::hook::run(&quire, hook_name).await?,
         Commands::Repo { command } => match command {
