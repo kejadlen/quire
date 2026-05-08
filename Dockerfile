@@ -46,11 +46,16 @@ FROM chef AS builder
 ARG QUIRE_VERSION
 ENV QUIRE_VERSION=${QUIRE_VERSION}
 # `quire-ci` is built static against musl so it can be `docker cp`'d
-# into arbitrary pipeline images regardless of their libc. Use the
-# rustup-bundled `rust-lld` to link, so we don't need musl-tools or a
-# multilib-aware host `cc` in the build image.
+# into arbitrary pipeline images regardless of their libc. `musl-tools`
+# provides `musl-gcc`, which `cc`-using build scripts (e.g. `lua-src`)
+# need to cross-compile their C code to musl; point cargo's cross
+# linker and the cc crate at it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends musl-tools \
+    && rm -rf /var/lib/apt/lists/*
 RUN rustup target add x86_64-unknown-linux-musl
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+    CC_x86_64_unknown_linux_musl=musl-gcc
 COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git/db \
