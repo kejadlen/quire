@@ -2124,6 +2124,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quire-ci"
+version = "0.1.0"
+dependencies = [
+ "quire-core",
+]
+
+[[package]]
+name = "quire-core"
+version = "0.1.0"
+
+[[package]]
 name = "quire-server"
 version = "0.1.0"
 dependencies = [
@@ -2140,6 +2151,7 @@ dependencies = [
  "mlua",
  "petgraph",
  "predicates",
+ "quire-core",
  "regex",
  "rusqlite",
  "rusqlite_migration",

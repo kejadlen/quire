@@ -16,6 +16,8 @@ name = "quire"
 path = "src/bin/quire/main.rs"
 
 [dependencies]
+quire-core = { path = "../quire-core" }
+
 askama = "*"
 axum = "*"
 clap = { version = "*", features = ["derive", "env"] }

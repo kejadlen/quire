@@ -1,3 +1,3 @@
 [workspace]
-members = ["quire-server"]
+members = ["quire-ci", "quire-core", "quire-server"]
 resolver = "3"
