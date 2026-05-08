@@ -13,7 +13,7 @@ use petgraph::visit::{Bfs, Reversed};
 
 use super::error::Result;
 use super::registration::{self, Registrations};
-use crate::fennel::Fennel;
+use quire_core::fennel::Fennel;
 
 /// A registration-time error caught while individual `(ci.job …)` and
 /// `(ci.image …)` calls are being processed.

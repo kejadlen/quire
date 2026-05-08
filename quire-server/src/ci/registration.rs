@@ -17,7 +17,7 @@ use miette::NamedSource;
 use super::error::Result;
 use super::mirror;
 use super::pipeline::{self, DefinitionError, Diagnostic, Job, PipelineError, RunFn};
-use crate::fennel::Fennel;
+use quire_core::fennel::Fennel;
 
 /// Output of [`register`]: jobs and image successfully registered
 /// from the script. Definition-time errors are returned via the `Err`

@@ -15,7 +15,7 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::{DockerLifecycle, RunMeta};
-use crate::secret::{SecretRegistry, SecretString, redact};
+use quire_core::secret::{SecretRegistry, SecretString, redact};
 /// Per-sh timing: (index, started_at, finished_at).
 pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
@@ -199,7 +199,7 @@ impl Runtime {
     /// trace or log it directly. See [`SecretRegistry::resolve`] for
     /// the full caveat.
     ///
-    /// [`SecretRegistry::resolve`]: crate::secret::SecretRegistry::resolve
+    /// [`SecretRegistry::resolve`]: quire_core::secret::SecretRegistry::resolve
     pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
         self.registry.borrow_mut().resolve(name).map_err(Into::into)
     }

@@ -7,9 +7,9 @@ use miette::{Context, IntoDiagnostic, Result, ensure};
 pub mod web;
 
 use crate::ci::{Ci, Runs};
-use crate::fennel::Fennel;
-use crate::secret::SecretString;
 use crate::{Error, Result as AppResult};
+use quire_core::fennel::Fennel;
+use quire_core::secret::SecretString;
 
 /// Parsed global configuration (`/var/quire/config.fnl`).
 ///

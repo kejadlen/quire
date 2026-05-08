@@ -1,8 +1,8 @@
 use miette::Diagnostic;
 
 use crate::ci::Error as CiError;
-use crate::fennel::FennelError;
-use crate::secret;
+use quire_core::fennel::FennelError;
+use quire_core::secret;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
@@ -77,7 +77,7 @@ impl From<FennelError> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fennel::FennelError;
+    use quire_core::fennel::FennelError;
 
     #[test]
     fn from_fennel_error() {
@@ -94,7 +94,7 @@ mod tests {
         // FennelError::Eval has a top-level message of just the
         // filename and an mlua::Error in its source — the exact case
         // the helper is meant to fix.
-        let f = crate::fennel::Fennel::new().expect("Fennel::new");
+        let f = quire_core::fennel::Fennel::new().expect("Fennel::new");
         let result: std::result::Result<i32, _> = f.load_string("(this is not valid", "bad.fnl");
         let fennel_err = result.unwrap_err();
 

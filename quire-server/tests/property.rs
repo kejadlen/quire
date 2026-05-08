@@ -4,7 +4,7 @@ use hegel::TestCase;
 use hegel::generators::{integers, just, text, vecs};
 use hegel::one_of;
 use quire::event::{PushEvent, PushRef};
-use quire::secret::{SecretRegistry, SecretString, redact};
+use quire_core::secret::{SecretRegistry, SecretString, redact};
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 

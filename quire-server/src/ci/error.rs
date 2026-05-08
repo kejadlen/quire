@@ -4,8 +4,8 @@ use miette::Diagnostic;
 
 use super::pipeline::PipelineError;
 use super::run::RunState;
-use crate::fennel::FennelError;
-use crate::secret;
+use quire_core::fennel::FennelError;
+use quire_core::secret;
 
 /// Errors produced by CI operations.
 #[derive(Debug, thiserror::Error, Diagnostic)]

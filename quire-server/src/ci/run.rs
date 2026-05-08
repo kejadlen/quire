@@ -16,7 +16,7 @@ use super::error::{Error, Result};
 use super::pipeline::{Pipeline, RunFn};
 use super::runtime::{ExecutorRuntime, Runtime, RuntimeHandle, ShOutput};
 use crate::display_chain;
-use crate::secret::SecretString;
+use quire_core::secret::SecretString;
 
 /// The execution mode for a run. Host runs `sh` directly on the host.
 /// Docker materializes a container and routes `sh` through `docker exec`.

@@ -156,7 +156,7 @@ fn trigger_ref(
     db_path: &Path,
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
-    secrets: &HashMap<String, crate::secret::SecretString>,
+    secrets: &HashMap<String, quire_core::secret::SecretString>,
     executor: run::Executor,
 ) -> error::Result<()> {
     let ci = repo.ci();

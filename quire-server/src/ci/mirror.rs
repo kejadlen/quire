@@ -237,7 +237,7 @@ mod tests {
     use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
     use crate::ci::run::RunMeta;
     use crate::ci::runtime::{ExecutorRuntime, RuntimeHandle};
-    use crate::secret::{Error as SecretError, SecretString};
+    use quire_core::secret::{Error as SecretError, SecretString};
 
     /// Set up a bare git repo with one commit. Returns the tempdir,
     /// the bare repo path, and the head SHA.
