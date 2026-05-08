@@ -13,7 +13,7 @@ pub use quire_core::ci::pipeline::{
 };
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{mirror, pipeline, registration, runtime};
-pub use run::{Run, RunState, Runs, materialize_workspace, reconcile_orphans};
+pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.
 ///
@@ -121,8 +121,8 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
-    let secrets = match quire.global_config() {
-        Ok(config) => config.secrets,
+    let config = match quire.global_config() {
+        Ok(config) => config,
         Err(e) => {
             tracing::error!(repo = %event.repo, error = %display_chain(&e), "failed to load global config");
             return;
@@ -131,7 +131,14 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 
     let db_path = quire.db_path();
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(&repo, &db_path, event.pushed_at, push_ref, &secrets) {
+        if let Err(e) = trigger_ref(
+            &repo,
+            &db_path,
+            event.pushed_at,
+            push_ref,
+            &config.secrets,
+            config.executor,
+        ) {
             tracing::error!(
                 repo = %event.repo,
                 sha = %push_ref.new_sha, // cov-excl-line
@@ -149,6 +156,7 @@ fn trigger_ref(
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     secrets: &HashMap<String, quire_core::secret::SecretString>,
+    executor: Executor,
 ) -> error::Result<()> {
     let ci = repo.ci();
 
@@ -182,7 +190,17 @@ fn trigger_ref(
 
     let workspace = run.path().join("workspace");
     run::materialize_workspace(&repo.path(), &push_ref.new_sha, &workspace)?;
-    run.execute(pipeline, secrets.clone(), &repo.path(), &workspace)?;
+    match executor {
+        Executor::Host => {
+            run.execute(pipeline, secrets.clone(), &repo.path(), &workspace)?;
+        }
+        Executor::QuireCi => {
+            // The orchestrator already validated `pipeline` to fail-fast on
+            // bad ci.fnl; `quire-ci` recompiles inside its own process.
+            drop(pipeline);
+            run.execute_via_quire_ci(&workspace)?;
+        }
+    }
     Ok(())
 }
 
@@ -359,6 +377,7 @@ mod tests {
             pushed_at,
             &push_ref,
             &HashMap::new(),
+            Executor::Host,
         )
         .expect("trigger_ref should succeed");
 
@@ -392,6 +411,7 @@ mod tests {
             pushed_at,
             &push_ref,
             &HashMap::new(),
+            Executor::Host,
         )
         .expect("should succeed without ci.fnl");
     }
@@ -415,6 +435,7 @@ mod tests {
             pushed_at,
             &push_ref,
             &HashMap::new(),
+            Executor::Host,
         );
         assert!(result.is_err(), "invalid pipeline should fail");
     }

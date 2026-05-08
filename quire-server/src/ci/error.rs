@@ -63,6 +63,9 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("quire-ci exited with status {exit:?}")]
+    QuireCiExit { exit: Option<i32> },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

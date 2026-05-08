@@ -19,6 +19,20 @@ use quire_core::secret::SecretString;
 
 pub use quire_core::ci::run::RunMeta;
 
+/// How a run dispatches its pipeline.
+///
+/// `Host` evaluates the Lua/Fennel pipeline in-process on the
+/// orchestrator. `QuireCi` shells out to the `quire-ci` binary,
+/// which compiles and runs the pipeline in a separate process.
+/// Selected by the `:executor` key in the global config.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Executor {
+    #[default]
+    Host,
+    QuireCi,
+}
+
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
@@ -297,6 +311,52 @@ impl Run {
 
         self.transition(RunState::Complete)?;
         Ok(outputs)
+    }
+
+    /// Run the pipeline by shelling out to the `quire-ci` binary.
+    ///
+    /// Combined stdout+stderr is captured to `<run_dir>/quire-ci.log`.
+    /// Run finishes `Complete` on exit 0, `Failed` otherwise. Per-job
+    /// and per-sh database records are not written in this path —
+    /// quire-ci doesn't yet emit a structured report for the
+    /// orchestrator to ingest.
+    pub fn execute_via_quire_ci(mut self, workspace: &Path) -> Result<()> {
+        self.transition(RunState::Active)?;
+
+        let log_path = self.path().join("quire-ci.log");
+        // fs_err for the path-bearing IO error; unwrap to std::fs::File so
+        // it's convertible into Stdio.
+        let log = fs_err::File::create(&log_path)?.into_parts().0;
+        let log_clone = log.try_clone()?;
+
+        tracing::info!(
+            run_id = %self.id,
+            log = %log_path.display(),
+            "dispatching run to quire-ci",
+        );
+
+        let status = std::process::Command::new("quire-ci")
+            .arg("run")
+            .arg("--workspace")
+            .arg(workspace)
+            .stdout(std::process::Stdio::from(log))
+            .stderr(std::process::Stdio::from(log_clone))
+            .status()
+            .map_err(|source| Error::CommandSpawnFailed {
+                program: "quire-ci".to_string(),
+                cwd: workspace.to_path_buf(),
+                source,
+            })?;
+
+        if !status.success() {
+            self.transition(RunState::Failed)?;
+            return Err(Error::QuireCiExit {
+                exit: status.code(),
+            });
+        }
+
+        self.transition(RunState::Complete)?;
+        Ok(())
     }
 
     /// Write sh events to the database and per-sh CRI log files to

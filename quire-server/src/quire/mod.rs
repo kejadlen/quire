@@ -6,7 +6,7 @@ use miette::{Context, IntoDiagnostic, Result, ensure};
 
 pub mod web;
 
-use crate::ci::{Ci, Runs};
+use crate::ci::{Ci, Executor, Runs};
 use crate::{Error, Result as AppResult};
 use quire_core::fennel::Fennel;
 use quire_core::secret::SecretString;
@@ -22,6 +22,11 @@ pub struct GlobalConfig {
     /// Each value is a `SecretString` (plain literal or `{:file "..."}`).
     #[serde(default)]
     pub secrets: HashMap<String, SecretString>,
+    /// How the orchestrator dispatches CI runs. Defaults to in-process
+    /// host evaluation; set `:executor :quire-ci` to opt into shelling
+    /// out to the `quire-ci` binary.
+    #[serde(default)]
+    pub executor: Executor,
 }
 
 #[derive(serde::Deserialize, Debug)]
