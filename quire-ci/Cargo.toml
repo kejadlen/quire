@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fs-err = "*"
-miette = { version = "*", features = ["fancy"] }
+fs-err = { workspace = true }
+miette = { workspace = true, features = ["fancy"] }
 quire-core = { path = "../quire-core" }

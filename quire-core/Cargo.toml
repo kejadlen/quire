@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fs-err = "*"
-jiff = { version = "*", features = ["serde"] }
-miette = "*"
-mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
-petgraph = "*"
-regex = "*"
-serde = { version = "*", features = ["derive"] }
-thiserror = "*"
-tracing = "*"
+fs-err = { workspace = true }
+jiff = { workspace = true }
+miette = { workspace = true }
+mlua = { workspace = true }
+petgraph = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-serde_json = "*"
-tempfile = "*"
+serde_json = { workspace = true }
+tempfile = { workspace = true }
