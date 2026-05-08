@@ -13,9 +13,11 @@ use jiff::Timestamp;
 use mlua::IntoLua;
 
 use super::error::{Error, Result};
-use super::pipeline::{Pipeline, RunFn};
-use super::runtime::{Runtime, RuntimeHandle, ShOutput};
+use quire_core::ci::pipeline::{Pipeline, RunFn};
+use quire_core::ci::runtime::{Runtime, RuntimeHandle, ShOutput};
 use quire_core::secret::SecretString;
+
+pub use quire_core::ci::run::RunMeta;
 
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,18 +55,6 @@ impl std::str::FromStr for RunState {
         }
         .ok_or(())
     }
-}
-
-/// Immutable metadata for a CI run. Passed to `Runs::create` at
-/// enqueue time; the fields are written to the `runs` row once.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RunMeta {
-    /// The commit SHA that triggered this run.
-    pub sha: String,
-    /// The full ref name (e.g. `refs/heads/main`).
-    pub r#ref: String,
-    /// When the push occurred.
-    pub pushed_at: Timestamp,
 }
 
 /// Access to CI runs for a single repo.
@@ -315,7 +305,7 @@ impl Run {
     fn write_sh_records(
         &self,
         outputs: &HashMap<String, Vec<ShOutput>>,
-        timings: &HashMap<String, super::runtime::ShTimings>,
+        timings: &HashMap<String, quire_core::ci::runtime::ShTimings>,
     ) -> Result<()> {
         if outputs.is_empty() {
             return Ok(());
@@ -826,7 +816,7 @@ mod tests {
     }
 
     fn load(source: &str) -> Pipeline {
-        super::super::pipeline::compile(source, "ci.fnl").expect("compile should succeed")
+        quire_core::ci::pipeline::compile(source, "ci.fnl").expect("compile should succeed")
     }
 
     #[test]

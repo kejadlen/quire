@@ -2135,8 +2135,10 @@ name = "quire-core"
 version = "0.1.0"
 dependencies = [
  "fs-err",
+ "jiff",
  "miette",
  "mlua",
+ "petgraph",
  "regex",
  "serde",
  "serde_json",

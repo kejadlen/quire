@@ -12,7 +12,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, Reversed};
 
 use super::registration::{self, Registrations};
-use quire_core::fennel::{Fennel, FennelError};
+use crate::fennel::{Fennel, FennelError};
 
 /// A registration-time error caught while individual `(ci.job …)` and
 /// `(ci.image …)` calls are being processed.
@@ -104,14 +104,14 @@ pub struct Job {
     pub inputs: Vec<String>,
     /// Span covering the `(ci.job …)` call site. Used as the label
     /// location for both per-job and post-graph diagnostics.
-    pub(crate) span: SourceSpan,
+    pub span: SourceSpan,
     /// What to run when the executor reaches this job.
-    pub(super) run_fn: RunFn,
+    pub run_fn: RunFn,
 }
 
 /// A Rust-side run-fn: a closure invoked synchronously by the
 /// executor with the runtime in scope.
-pub(super) type RustRunFn =
+pub type RustRunFn =
     std::rc::Rc<dyn Fn(&super::runtime::Runtime) -> super::runtime::RuntimeResult<()>>;
 
 /// How a job runs at execute time.
@@ -126,7 +126,7 @@ pub(super) type RustRunFn =
 /// before invoking — `mlua::Function` is cheap to clone (a registry
 /// handle); the `Rc` makes the `Rust` variant cheap too.
 #[derive(Clone)]
-pub(super) enum RunFn {
+pub enum RunFn {
     Lua(mlua::Function),
     #[allow(dead_code)] // Wired up by `(ci.mirror …)` and friends.
     Rust(RustRunFn),
@@ -155,7 +155,7 @@ impl Job {
     ///
     /// Visible to the sibling `registration` module which constructs
     /// jobs from the registration callbacks.
-    pub(super) fn new(
+    pub fn new(
         id: String,
         inputs: Vec<String>,
         run_fn: RunFn,
@@ -209,7 +209,7 @@ impl Pipeline {
     }
 
     /// Borrow the underlying Fennel/Lua VM.
-    pub(crate) fn fennel(&self) -> &Fennel {
+    pub fn fennel(&self) -> &Fennel {
         &self.fennel
     }
 
@@ -223,7 +223,7 @@ impl Pipeline {
     /// Return job IDs in topological order — dependencies before
     /// dependents. The pipeline is already validated as acyclic, so
     /// this never fails.
-    pub(crate) fn topo_order(&self) -> Vec<&str> {
+    pub fn topo_order(&self) -> Vec<&str> {
         petgraph::algo::toposort(&self.graph, None)
             .expect("pipeline is validated as acyclic")
             .into_iter()
@@ -242,7 +242,7 @@ impl Pipeline {
     /// the job) via petgraph's BFS. Source refs aren't graph nodes,
     /// so they're scooped up from the inputs lists of every visited
     /// job.
-    pub(crate) fn transitive_inputs(&self) -> HashMap<String, HashSet<String>> {
+    pub fn transitive_inputs(&self) -> HashMap<String, HashSet<String>> {
         let reversed = Reversed(&self.graph);
         let mut result: HashMap<String, HashSet<String>> = HashMap::new();
         for job in &self.jobs {
@@ -266,12 +266,12 @@ impl Pipeline {
     }
 }
 
-#[cfg(test)]
 impl Pipeline {
     /// Replace the first job's run-fn — for tests that need to
     /// exercise a `RunFn::Rust` execution path without building the
     /// full helper machinery (which doesn't exist yet).
-    pub(super) fn replace_first_run_fn(&mut self, run_fn: RunFn) {
+    #[doc(hidden)]
+    pub fn replace_first_run_fn(&mut self, run_fn: RunFn) {
         if let Some(job) = self.jobs.first_mut() {
             job.run_fn = run_fn;
         }
@@ -301,7 +301,7 @@ fn build_graph(jobs: &[Job]) -> (JobGraph, HashMap<String, NodeIndex>) {
 
 /// Compute a span covering the given 1-indexed line in `source`.
 /// Returns an empty span at offset 0 when the line is unknown.
-pub(super) fn span_for_line(source: &str, line: u32) -> SourceSpan {
+pub fn span_for_line(source: &str, line: u32) -> SourceSpan {
     if line == 0 {
         return SourceSpan::from((0, 0)); // cov-excl-line
     }
@@ -330,10 +330,10 @@ pub struct PipelineError {
     // Named `src` rather than `source` so thiserror doesn't auto-treat
     // it as the error chain.
     #[source_code]
-    pub(crate) src: NamedSource<String>,
+    pub src: NamedSource<String>,
 
     #[related]
-    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Errors from [`compile`] — Fennel evaluation failures and pipeline-shape
@@ -372,7 +372,7 @@ pub type CompileResult<T> = std::result::Result<T, CompileError>;
 /// [`validate_post_graph`] checks the dependency graph. Errors from a
 /// phase are wrapped in a [`PipelineError`] for miette to render with
 /// inline labels.
-pub(crate) fn compile(source: &str, name: &str) -> CompileResult<Pipeline> {
+pub fn compile(source: &str, name: &str) -> CompileResult<Pipeline> {
     let fennel = Fennel::new()?;
     let Registrations { jobs, image } = registration::register(&fennel, source, name)?;
 

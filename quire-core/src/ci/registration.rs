@@ -18,15 +18,15 @@ use super::mirror;
 use super::pipeline::{
     self, CompileResult, DefinitionError, Diagnostic, Job, PipelineError, RunFn,
 };
-use quire_core::fennel::Fennel;
+use crate::fennel::Fennel;
 
 /// Output of [`register`]: jobs and image successfully registered
 /// from the script. Definition-time errors are returned via the `Err`
 /// arm, not collected here.
 #[derive(Debug)]
-pub(super) struct Registrations {
-    pub(super) jobs: Vec<Job>,
-    pub(super) image: Option<String>,
+pub struct Registrations {
+    pub jobs: Vec<Job>,
+    pub image: Option<String>,
 }
 
 /// Evaluate `source` with the registration module bound and collect
@@ -36,7 +36,7 @@ pub(super) struct Registrations {
 /// not abort the rest of the script — but if any rule fired, the
 /// whole batch is returned as a `PipelineError` instead of partial
 /// registrations.
-pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> CompileResult<Registrations> {
+pub fn register(fennel: &Fennel, source: &str, name: &str) -> CompileResult<Registrations> {
     let jobs: Rc<RefCell<Vec<Job>>> = Rc::new(RefCell::new(Vec::new()));
     let image = Rc::new(RefCell::new(None));
     let src = Rc::new(source.to_string());
@@ -91,11 +91,11 @@ pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> CompileResu
 ///   (fn [{: sh : secret}]
 ///     (sh ["echo" (secret :github_token)])))
 /// ```
-pub(super) struct Registration {
-    pub(super) jobs: Rc<RefCell<Vec<Job>>>,
-    pub(super) errors: Rc<RefCell<Vec<DefinitionError>>>,
+pub struct Registration {
+    pub jobs: Rc<RefCell<Vec<Job>>>,
+    pub errors: Rc<RefCell<Vec<DefinitionError>>>,
     image: Rc<RefCell<Option<ImageRegistration>>>,
-    pub(super) source: Rc<String>,
+    pub source: Rc<String>,
 }
 
 impl IntoLua for Registration {
@@ -113,7 +113,7 @@ impl Registration {
     /// Push a registered job after enforcing id uniqueness. On
     /// collision, records `DuplicateJob` against the caller's source
     /// line and drops the new job; the first registration wins.
-    pub(super) fn add_job(&self, job: Job, line: u32) {
+    pub fn add_job(&self, job: Job, line: u32) {
         let mut jobs = self.jobs.borrow_mut();
         if jobs.iter().any(|j| j.id == job.id) {
             let span = pipeline::span_for_line(&self.source, line);

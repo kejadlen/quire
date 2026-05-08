@@ -15,7 +15,7 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::RunMeta;
-use quire_core::secret::{self, SecretRegistry, SecretString, redact};
+use crate::secret::{self, SecretRegistry, SecretString, redact};
 
 /// Errors produced by [`Runtime`] methods and the `RunFn::Rust`
 /// callbacks that hold them. A small sum carved out of the
@@ -50,7 +50,7 @@ impl From<mlua::Error> for RuntimeError {
 pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 
 /// Per-sh timing: (index, started_at, finished_at).
-pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
+pub type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
 /// Per-execution runtime: owns the Lua VM, holds the secrets exposed
 /// to the job, the per-job `(jobs name)` views, the current-job
@@ -73,18 +73,18 @@ pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 /// All three handle primitives — `(sh …)`, `(secret …)`, and
 /// `(jobs …)` — require a runtime to be installed on the VM. Calls
 /// from a VM without one error.
-pub(super) struct Runtime {
+pub struct Runtime {
     pipeline: Pipeline,
     /// Unified secret store: holds declared secrets and their revealed
     /// values for both lookup and redaction. No Debug impl on the
     /// registry; Runtime must not derive Debug either.
-    pub(super) registry: RefCell<SecretRegistry>,
-    pub(super) inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
-    pub(super) current_job: RefCell<Option<String>>,
-    pub(super) outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
+    pub registry: RefCell<SecretRegistry>,
+    pub inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
+    pub current_job: RefCell<Option<String>>,
+    pub outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
     /// Per-sh timing records: job_id → (sh_index, started_at, finished_at).
     /// Parallel to `outputs`; each entry at the same index corresponds.
-    pub(super) sh_timings: RefCell<HashMap<String, ShTimings>>,
+    pub sh_timings: RefCell<HashMap<String, ShTimings>>,
     /// Per-job sh call counter for assigning sequential indices.
     sh_counter: RefCell<HashMap<String, usize>>,
     /// The materialized workspace for this run. Every `(sh …)` call
@@ -104,7 +104,7 @@ impl Runtime {
     /// failure — abort is the right answer there. The matching
     /// `RuntimeHandle::into_lua` call at the executor's call site uses
     /// the same boundary.
-    pub(super) fn new(
+    pub fn new(
         pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
         meta: &RunMeta,
@@ -155,17 +155,17 @@ impl Runtime {
     }
 
     /// Borrow the underlying Lua VM.
-    pub(super) fn lua(&self) -> &Lua {
+    pub fn lua(&self) -> &Lua {
         self.pipeline.fennel().lua()
     }
 
     /// The topo-sorted job IDs in execution order.
-    pub(super) fn topo_order(&self) -> Vec<&str> {
+    pub fn topo_order(&self) -> Vec<&str> {
         self.pipeline.topo_order()
     }
 
     /// Look up a job by id.
-    pub(super) fn job(&self, id: &str) -> Option<&Job> {
+    pub fn job(&self, id: &str) -> Option<&Job> {
         self.pipeline.job(id)
     }
 
@@ -176,7 +176,7 @@ impl Runtime {
     /// Panics if `id` has no inputs view — every job built by
     /// `Runtime::new` gets one, so a missing view means the executor
     /// is calling `enter_job` with an id that wasn't in the pipeline.
-    pub(super) fn enter_job(&self, id: &str) {
+    pub fn enter_job(&self, id: &str) {
         assert!(
             self.inputs.contains_key(id),
             "enter_job called with unknown job id '{id}'"
@@ -186,17 +186,17 @@ impl Runtime {
 
     /// Clear the current-job cursor. Subsequent `(sh …)` calls (if
     /// any) won't be attributed to a job until `enter_job` is called again.
-    pub(super) fn leave_job(&self) {
+    pub fn leave_job(&self) {
         *self.current_job.borrow_mut() = None;
     }
 
     /// Drain all recorded outputs, returning them keyed by job id.
-    pub(super) fn take_outputs(&self) -> HashMap<String, Vec<ShOutput>> {
+    pub fn take_outputs(&self) -> HashMap<String, Vec<ShOutput>> {
         std::mem::take(&mut *self.outputs.borrow_mut())
     }
 
     /// Drain all recorded sh timings, returning them keyed by job id.
-    pub(super) fn take_sh_timings(&self) -> HashMap<String, ShTimings> {
+    pub fn take_sh_timings(&self) -> HashMap<String, ShTimings> {
         std::mem::take(&mut *self.sh_timings.borrow_mut())
     }
 
@@ -209,14 +209,14 @@ impl Runtime {
     /// the full caveat.
     ///
     /// [`SecretRegistry::resolve`]: quire_core::secret::SecretRegistry::resolve
-    pub(super) fn secret(&self, name: &str) -> RuntimeResult<String> {
+    pub fn secret(&self, name: &str) -> RuntimeResult<String> {
         self.registry.borrow_mut().resolve(name).map_err(Into::into)
     }
 
     /// Run `cmd` with `opts` and record its output against the
     /// current job (if one is active). Non-zero exits come back in
     /// `:exit`, not as `Err`.
-    pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> RuntimeResult<ShOutput> {
+    pub fn sh(&self, cmd: Cmd, opts: ShOpts) -> RuntimeResult<ShOutput> {
         let started_at = Timestamp::now();
         let program = cmd.program().to_string();
         let output =
@@ -279,7 +279,7 @@ impl Runtime {
 
 /// `IntoLua` carrier for an `Rc<Runtime>`. Stows the Rc on the VM as
 /// app data and returns the handle table — `{sh, secret, jobs}`.
-pub(super) struct RuntimeHandle(pub Rc<Runtime>);
+pub struct RuntimeHandle(pub Rc<Runtime>);
 
 impl IntoLua for RuntimeHandle {
     // Errors raised by the closures below cross the mlua boundary via
@@ -362,7 +362,7 @@ impl IntoLua for RuntimeHandle {
 /// `From<Cmd> for Command` can't be handed an empty argv. The
 /// non-empty invariant is enforced in [`mlua::FromLua`] before this
 /// type is ever built.
-pub(super) enum Cmd {
+pub enum Cmd {
     Shell(String),
     Argv { program: String, args: Vec<String> },
 }
@@ -421,7 +421,7 @@ impl Cmd {
     // Also revisit the `from_utf8_lossy` calls below — non-UTF-8 bytes
     // are silently replaced with U+FFFD and `:stdout` / `:stderr` end
     // up as mojibake with no signal that anything was lost.
-    pub(super) fn run(self, opts: ShOpts, cwd: &std::path::Path) -> std::io::Result<ShOutput> {
+    pub fn run(self, opts: ShOpts, cwd: &std::path::Path) -> std::io::Result<ShOutput> {
         let cmd_str = format!("{self}");
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
@@ -478,8 +478,8 @@ impl mlua::FromLua for Cmd {
 /// closed so typos surface rather than being silently ignored.
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub(super) struct ShOpts {
-    pub(super) env: HashMap<String, String>,
+pub struct ShOpts {
+    pub env: HashMap<String, String>,
 }
 
 impl mlua::FromLua for ShOpts {

@@ -3,17 +3,17 @@
 use std::collections::HashMap;
 
 pub(crate) mod logs;
-mod mirror;
-mod pipeline;
-mod registration;
 mod run;
-mod runtime;
 
 pub(crate) mod error;
 
 pub use error::{Error, Result};
-pub use pipeline::{DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError};
-pub use run::{Run, RunMeta, RunState, Runs, materialize_workspace, reconcile_orphans};
+pub use quire_core::ci::pipeline::{
+    DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
+};
+pub use quire_core::ci::run::RunMeta;
+pub use quire_core::ci::{mirror, pipeline, registration, runtime};
+pub use run::{Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.
 ///

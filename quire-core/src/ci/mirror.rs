@@ -25,7 +25,7 @@ use super::runtime::{Cmd, Runtime, RuntimeError, RuntimeResult, ShOpts};
 
 /// Closure state for the `quire/mirror` job's run-fn: everything the
 /// tag-and-push needs at execute time, captured once at registration.
-pub(super) struct MirrorJob {
+pub struct MirrorJob {
     url: String,
     secret: String,
     /// Refs to push to the remote. Empty means "push whatever ref
@@ -189,7 +189,7 @@ impl MirrorJob {
     /// tag-and-push at execute time. Singleton-ness is enforced by
     /// generic id uniqueness in `Registration::add_job` — a second
     /// `(ci.mirror …)` collides on the `quire/mirror` id.
-    pub(super) fn register(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
+    pub fn register(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
         let r = lua.app_data_ref::<Registration>().ok_or_else(|| {
             mlua::Error::external("quire.ci registration not installed on Lua VM")
         })?;
@@ -236,7 +236,7 @@ mod tests {
     use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
     use crate::ci::run::RunMeta;
     use crate::ci::runtime::RuntimeHandle;
-    use quire_core::secret::{Error as SecretError, SecretString};
+    use crate::secret::{Error as SecretError, SecretString};
 
     /// Set up a bare git repo with one commit. Returns the tempdir,
     /// the bare repo path, and the head SHA.

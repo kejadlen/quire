@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 fs-err = "*"
+jiff = { version = "*", features = ["serde"] }
 miette = "*"
 mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
+petgraph = "*"
 regex = "*"
 serde = { version = "*", features = ["derive"] }
 thiserror = "*"
