@@ -2124,7 +2124,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "quire"
+name = "quire-server"
 version = "0.1.0"
 dependencies = [
  "askama",

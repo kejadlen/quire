@@ -25,8 +25,8 @@ coverage:
         -s . \
         -t covdir \
         --ignore-not-existing \
-        --keep-only 'src/**' \
-        --ignore 'src/bin/**' \
+        --keep-only 'quire-server/src/**' \
+        --ignore 'quire-server/src/bin/**' \
         --excl-line 'cov-excl-line|unreachable!|tracing::' \
         --excl-start 'cov-excl-start' \
         --excl-stop 'cov-excl-stop')
@@ -60,8 +60,8 @@ coverage-html:
         -s . \
         -t html \
         --ignore-not-existing \
-        --keep-only 'src/**' \
-        --ignore 'src/bin/**' \
+        --keep-only 'quire-server/src/**' \
+        --ignore 'quire-server/src/bin/**' \
         --excl-line 'cov-excl-line|unreachable!|tracing::' \
         --excl-start 'cov-excl-start' \
         --excl-stop 'cov-excl-stop' \
@@ -81,7 +81,7 @@ mutants:
 all: fmt clippy test
 
 install:
-    cargo install --locked --path .
+    cargo install --locked --path quire-server
 
 # Tag a revision (default: @-) as v<UTC-date>-<short-sha> for the github mirror.
 tag rev="@-":

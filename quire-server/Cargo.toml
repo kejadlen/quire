@@ -1,0 +1,51 @@
+[package]
+name = "quire-server"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["dev"]
+dev = []
+
+[lib]
+name = "quire"
+path = "src/lib.rs"
+
+[[bin]]
+name = "quire"
+path = "src/bin/quire/main.rs"
+
+[dependencies]
+askama = "*"
+axum = "*"
+clap = { version = "*", features = ["derive", "env"] }
+clap_complete = "*"
+fs-err = { version = "*", features = ["tokio"] }
+jiff = { version = "*", features = ["serde"] }
+miette = { version = "*", features = ["fancy"] }
+mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
+regex = "*"
+petgraph = "*"
+rusqlite = { version = "*", features = ["bundled"] }
+rusqlite_migration = "*"
+sentry = { version = "*", features = ["backtrace", "contexts", "debug-images", "panic", "release-health", "reqwest", "rustls", "tokio"], default-features = false }
+sentry-tracing = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+serde_yaml_ng = "*"
+shell-words = "*"
+tempfile = "*"
+thiserror = "*"
+tokio = { version = "*", features = ["full"] }
+tracing = "*"
+tracing-subscriber = { version = "*", features = ["env-filter", "json"] }
+uuid = { version = "*", features = ["v7"] }
+walkdir = "*"
+
+[dev-dependencies]
+assert_cmd = "*"
+hegeltest = "*"
+http-body-util = "*"
+predicates = "*"
+serde_json = "*"
+tower = { version = "*", features = ["util"] }
