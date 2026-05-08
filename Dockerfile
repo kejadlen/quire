@@ -45,18 +45,29 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 ARG QUIRE_VERSION
 ENV QUIRE_VERSION=${QUIRE_VERSION}
+# `quire-ci` is built static against musl so it can be `docker cp`'d
+# into arbitrary pipeline images regardless of their libc. Use the
+# rustup-bundled `rust-lld` to link, so we don't need musl-tools or a
+# multilib-aware host `cc` in the build image.
+RUN rustup target add x86_64-unknown-linux-musl
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
 COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/build/target \
     cargo chef cook --release --recipe-path recipe.json
 COPY . .
-# Copy the binary out of the cache mount so it survives into the runtime stage.
+# Copy the binaries out of the cache mount so they survive into the runtime
+# stage. Stash under /build/bin/ so they don't collide with the workspace
+# member directories at /build/quire-ci, /build/quire-server.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/build/target \
     cargo build --release --bin quire && \
-    cp target/release/quire /build/quire
+    cargo build --release --bin quire-ci --target x86_64-unknown-linux-musl && \
+    mkdir -p /build/bin && \
+    cp target/release/quire /build/bin/quire && \
+    cp target/x86_64-unknown-linux-musl/release/quire-ci /build/bin/quire-ci
 
 # Runtime stage.
 FROM debian:trixie-slim
@@ -70,7 +81,8 @@ RUN apt-get update \
 
 COPY --from=git-builder /usr/local/bin/git /usr/local/bin/git
 COPY --from=git-builder /usr/local/libexec/git-core/ /usr/local/libexec/git-core/
-COPY --from=builder /build/quire /usr/local/bin/quire
+COPY --from=builder /build/bin/quire /usr/local/bin/quire
+COPY --from=builder /build/bin/quire-ci /usr/local/bin/quire-ci
 # CI shells out to docker against the host daemon (DooD); see docs/CI.md.
 COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
