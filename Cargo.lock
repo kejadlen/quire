@@ -2129,7 +2129,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fs-err",
+ "jiff",
  "miette",
+ "mlua",
  "quire-core",
 ]
 

@@ -6,5 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { workspace = true }
 fs-err = { workspace = true }
+jiff = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
+mlua = { workspace = true }
 quire-core = { path = "../quire-core" }
