@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 use quire::Quire;
-use quire::ci::{Ci, CommitRef, Executor, RunMeta, Runs};
+use quire::ci::{Ci, CommitRef, RunMeta, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -41,7 +41,7 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 /// default), creates a transient Run rooted at a tempdir, drives the
 /// pipeline through it, and prints each job's `(ci.sh …)` output to
 /// stdout. The tempdir is removed when the command exits.
-pub async fn run(quire: &Quire, maybe_sha: Option<&str>, executor: Executor) -> Result<()> {
+pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path.clone());
@@ -88,13 +88,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>, executor: Executor) -> 
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
         .into_diagnostic()?;
-    let exec_result = run.execute(
-        pipeline,
-        secrets,
-        &repo_path.join(".git"),
-        &workspace,
-        executor,
-    );
+    let exec_result = run.execute(pipeline, secrets, &repo_path.join(".git"), &workspace);
 
     match exec_result {
         Ok(outputs) => {

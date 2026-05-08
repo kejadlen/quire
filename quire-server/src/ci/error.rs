@@ -34,26 +34,8 @@ pub enum Error {
         source: Box<Error>,
     },
 
-    #[error("docker is not available — install docker and ensure the daemon is running")]
-    DockerUnavailable,
-
-    #[error("missing .quire/Dockerfile")]
-    DockerfileMissing,
-
     #[error("workspace materialization failed")]
     WorkspaceMaterializationFailed {
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("image build failed")]
-    ImageBuildFailed {
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("container start failed")]
-    ContainerStartFailed {
         #[source]
         source: std::io::Error,
     },

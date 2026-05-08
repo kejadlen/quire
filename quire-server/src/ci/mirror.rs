@@ -236,7 +236,7 @@ mod tests {
 
     use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
     use crate::ci::run::RunMeta;
-    use crate::ci::runtime::{ExecutorRuntime, RuntimeHandle};
+    use crate::ci::runtime::RuntimeHandle;
     use quire_core::secret::{Error as SecretError, SecretString};
 
     /// Set up a bare git repo with one commit. Returns the tempdir,
@@ -446,7 +446,6 @@ mod tests {
             meta,
             git_dir,
             std::env::current_dir().expect("cwd"),
-            ExecutorRuntime::Host,
         ));
         let _ = RuntimeHandle(runtime.clone())
             .into_lua(runtime.lua())

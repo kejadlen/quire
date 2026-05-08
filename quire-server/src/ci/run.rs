@@ -14,60 +14,8 @@ use mlua::IntoLua;
 
 use super::error::{Error, Result};
 use super::pipeline::{Pipeline, RunFn};
-use super::runtime::{ExecutorRuntime, Runtime, RuntimeHandle, ShOutput};
-use crate::display_chain;
+use super::runtime::{Runtime, RuntimeHandle, ShOutput};
 use quire_core::secret::SecretString;
-
-/// The execution mode for a run. Host runs `sh` directly on the host.
-/// Docker materializes a container and routes `sh` through `docker exec`.
-#[derive(Debug, Clone)]
-pub enum Executor {
-    Host,
-    Docker,
-}
-
-/// Owns the per-run container session alongside the database path
-/// so [`Drop`] can stamp `container_stopped_at` *before* the session
-/// itself drops and fires `docker stop`.
-///
-/// Field declaration order matters: `session` is declared first so it
-/// drops first after this struct's custom `Drop` body returns. The
-/// effect is: write `container_stopped_at` → drop `session` →
-/// `docker stop`.
-pub(super) struct DockerLifecycle {
-    pub(super) session: crate::ci::docker::ContainerSession,
-    db_path: PathBuf,
-    run_id: String,
-    pub(super) work_dir: String,
-}
-
-impl Drop for DockerLifecycle {
-    fn drop(&mut self) {
-        // Stamp `container_stopped_at` before ContainerSession's Drop
-        // (`docker stop`) fires. Errors are logged and swallowed —
-        // Drop cannot return Result.
-        match crate::db::open(&self.db_path) {
-            Ok(conn) => {
-                let now = Timestamp::now().as_millisecond();
-                if let Err(e) = conn.execute(
-                    "UPDATE runs SET container_stopped_at_ms = ?1 WHERE id = ?2",
-                    rusqlite::params![now, &self.run_id],
-                ) {
-                    tracing::error!(
-                        error = %display_chain(&Error::from(e)),
-                        "failed to write container_stopped_at"
-                    );
-                }
-            }
-            Err(e) => tracing::error!(
-                error = %display_chain(&e),
-                "failed to open db before container stop"
-            ),
-        }
-        // After this body returns, fields drop in declaration order:
-        // `session` drops first → ContainerSession::Drop → docker stop.
-    }
-}
 
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,25 +216,10 @@ impl Run {
         secrets: HashMap<String, SecretString>,
         git_dir: &std::path::Path,
         workspace: &std::path::Path,
-        executor: Executor,
     ) -> Result<HashMap<String, Vec<ShOutput>>> {
         let meta = self.read_meta()?;
 
-        // Transition to Active *before* building/starting the
-        // container. The docker build can take a long time and
-        // happens with the run in `active` so the database state
-        // accurately reflects "this run is in progress." It also
-        // means `container_id` is allowed (the CHECK constraint
-        // permits it in `active`).
         self.transition(RunState::Active)?;
-
-        let executor_runtime = match self.build_executor_runtime(executor, workspace) {
-            Ok(rt) => rt,
-            Err(e) => {
-                self.transition(RunState::Failed)?;
-                return Err(e);
-            }
-        };
 
         let runtime = Rc::new(Runtime::new(
             pipeline,
@@ -294,7 +227,6 @@ impl Run {
             &meta,
             git_dir,
             workspace.to_path_buf(),
-            executor_runtime,
         ));
 
         let lua = runtime.lua();
@@ -375,64 +307,6 @@ impl Run {
 
         self.transition(RunState::Complete)?;
         Ok(outputs)
-    }
-
-    /// Build the per-run container if `executor` is `Docker`, writing
-    /// build and container timestamps to the database incrementally.
-    /// Run must already be in `active` so `container_id` is permitted.
-    fn build_executor_runtime(
-        &self,
-        executor: Executor,
-        workspace: &std::path::Path,
-    ) -> Result<ExecutorRuntime> {
-        match executor {
-            Executor::Host => Ok(ExecutorRuntime::Host),
-            Executor::Docker => {
-                if !crate::ci::docker::is_available() {
-                    return Err(Error::DockerUnavailable);
-                }
-
-                // Build phase.
-                let now = Timestamp::now().as_millisecond();
-                let db = crate::db::open(&self.db_path)?;
-                db.execute(
-                    "UPDATE runs SET build_started_at_ms = ?1 WHERE id = ?2",
-                    rusqlite::params![now, &self.id],
-                )?;
-
-                let dockerfile = workspace.join(".quire/Dockerfile");
-                if !dockerfile.exists() {
-                    return Err(Error::DockerfileMissing);
-                }
-                let tag = format!("quire-ci/{}:{}", repo_segment(&self.base_dir), self.id);
-
-                crate::ci::docker::docker_build(&dockerfile, workspace, &tag)?;
-
-                let build_finished = Timestamp::now().as_millisecond();
-                db.execute(
-                    "UPDATE runs SET image_tag = ?1, build_finished_at_ms = ?2 WHERE id = ?3",
-                    rusqlite::params![&tag, build_finished, &self.id],
-                )?;
-
-                // Start phase.
-                const WORK_DIR: &str = "/work";
-                let session =
-                    crate::ci::docker::ContainerSession::start(&tag, workspace, WORK_DIR)?;
-
-                let container_started = session.container_started_at.as_millisecond();
-                db.execute(
-                    "UPDATE runs SET container_id = ?1, container_started_at_ms = ?2 WHERE id = ?3",
-                    rusqlite::params![&session.container_id, container_started, &self.id],
-                )?;
-
-                Ok(ExecutorRuntime::Docker(DockerLifecycle {
-                    session,
-                    db_path: self.db_path.clone(),
-                    run_id: self.id.clone(),
-                    work_dir: WORK_DIR.to_string(),
-                }))
-            }
-        }
     }
 
     /// Write sh events to the database and per-sh CRI log files to
@@ -582,34 +456,6 @@ impl Run {
 
 /// Take the final path component of a runs base (`runs/<repo>/`) and
 /// sanitize it for use as the tag segment in `quire-ci/<segment>:<id>`.
-/// Docker reference components match `[a-z0-9]+(?:[._-][a-z0-9]+)*`,
-/// so we lowercase, replace any other character with `_`, and strip
-/// leading non-alphanumerics (e.g. tempdir names like `.tmpXyZ`).
-/// Falls back to `repo` when the result would be empty.
-fn repo_segment(base: &Path) -> String {
-    let Some(raw) = base.file_name().and_then(|s| s.to_str()) else {
-        return "repo".to_string();
-    };
-    let sanitized: String = raw
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
-        .to_string();
-    if sanitized.is_empty() {
-        "repo".to_string()
-    } else {
-        sanitized
-    }
-}
-
 /// Materialize a working tree at `sha` into `workspace` via
 /// `git archive | tar -x`. Creates the workspace dir if needed.
 pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Result<()> {
@@ -1004,7 +850,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &workspace,
-                Executor::Host,
             )
             .expect("execute");
         let pwd = &outputs["pwd"];
@@ -1035,7 +880,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect("execute");
 
@@ -1072,7 +916,6 @@ mod tests {
             HashMap::new(),
             std::path::Path::new("."),
             &test_workspace(&quire),
-            Executor::Host,
         )
         .expect("execute");
 
@@ -1099,7 +942,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect_err("expected failure");
         assert!(matches!(err, Error::JobFailed { ref job, .. } if job == "a"));
@@ -1129,7 +971,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect("execute");
 
@@ -1159,7 +1000,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect("execute");
 
@@ -1185,7 +1025,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
@@ -1217,7 +1056,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect_err("expected failure");
         let Error::JobFailed { source, .. } = err else {
@@ -1247,7 +1085,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect_err("expected failure");
         let Error::JobFailed { source, .. } = err else {
@@ -1281,7 +1118,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect("execute");
         let b = &outputs["b"];
@@ -1306,7 +1142,6 @@ mod tests {
             HashMap::new(),
             std::path::Path::new("."),
             &test_workspace(&quire),
-            Executor::Host,
         )
         .expect("execute");
 
@@ -1353,7 +1188,6 @@ mod tests {
             HashMap::new(),
             std::path::Path::new("."),
             &test_workspace(&quire),
-            Executor::Host,
         );
 
         let failed_dir = runs.base_dir.join(&run_id);
@@ -1389,7 +1223,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
@@ -1428,7 +1261,6 @@ mod tests {
             HashMap::new(),
             std::path::Path::new("."),
             &test_workspace(&quire),
-            Executor::Host,
         )
         .expect("execute should succeed");
         assert!(called.get(), "rust run-fn should have been called");
@@ -1455,7 +1287,6 @@ mod tests {
                 HashMap::new(),
                 std::path::Path::new("."),
                 &test_workspace(&quire),
-                Executor::Host,
             )
             .expect_err("expected failure");
         let Error::JobFailed { job, source } = err else {
@@ -1466,146 +1297,5 @@ mod tests {
             source.to_string().contains("simulated rust failure"),
             "expected source to surface rust error, got: {source}"
         );
-    }
-
-    #[test]
-    fn repo_segment_returns_final_component() {
-        assert_eq!(repo_segment(Path::new("runs/test.git")), "test.git");
-        assert_eq!(
-            repo_segment(Path::new("/var/lib/quire/runs/repo.git")),
-            "repo.git"
-        );
-        assert_eq!(repo_segment(Path::new("")), "repo");
-    }
-
-    #[test]
-    fn repo_segment_sanitizes_for_docker_tags() {
-        assert_eq!(repo_segment(Path::new("/tmp/.tmpAbCdEf")), "tmpabcdef");
-        assert_eq!(repo_segment(Path::new("MyRepo.git")), "myrepo.git");
-        assert_eq!(
-            repo_segment(Path::new("repo with spaces")),
-            "repo_with_spaces"
-        );
-    }
-
-    #[test]
-    #[ignore = "requires docker"]
-    fn execute_docker_mode_runs_jobs_in_container() {
-        if !crate::ci::docker::is_available() {
-            return;
-        }
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let src_repo = dir.path().join("src");
-        fs_err::create_dir_all(&src_repo).expect("mkdir src");
-
-        let env_vars: [(&str, &str); 6] = [
-            ("GIT_AUTHOR_NAME", "test"),
-            ("GIT_AUTHOR_EMAIL", "test@test"),
-            ("GIT_COMMITTER_NAME", "test"),
-            ("GIT_COMMITTER_EMAIL", "test@test"),
-            ("GIT_CONFIG_GLOBAL", "/dev/null"),
-            ("GIT_CONFIG_SYSTEM", "/dev/null"),
-        ];
-        for cmd in [vec!["init", "-b", "main"]] {
-            let out = std::process::Command::new("git")
-                .args(&cmd)
-                .current_dir(&src_repo)
-                .envs(env_vars)
-                .output()
-                .expect("git");
-            assert!(out.status.success());
-        }
-        fs_err::create_dir_all(src_repo.join(".quire")).expect("mkdir .quire");
-        fs_err::write(src_repo.join(".quire/Dockerfile"), "FROM alpine:3.19\n")
-            .expect("write Dockerfile");
-        for cmd in [vec!["add", "."], vec!["commit", "-m", "initial"]] {
-            let out = std::process::Command::new("git")
-                .args(&cmd)
-                .current_dir(&src_repo)
-                .envs(env_vars)
-                .output()
-                .expect("git");
-            assert!(out.status.success());
-        }
-        let sha = String::from_utf8(
-            std::process::Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(&src_repo)
-                .envs(env_vars)
-                .output()
-                .expect("rev-parse")
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
-
-        let workspace = dir.path().join("ws");
-        materialize_workspace(&src_repo.join(".git"), &sha, &workspace).expect("materialize");
-
-        let (_qd, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let meta = RunMeta {
-            sha,
-            r#ref: "refs/heads/main".to_string(),
-            pushed_at: "2026-05-04T12:00:00Z".parse().unwrap(),
-        };
-        let run = runs.create(&meta).expect("create");
-        let run_id = run.id().to_string();
-
-        let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :probe [:quire/push] (fn [{: sh}] (sh ["uname" "-s"])))"#,
-        );
-
-        let outputs = run
-            .execute(
-                pipeline,
-                HashMap::new(),
-                &src_repo.join(".git"),
-                &workspace,
-                Executor::Docker,
-            )
-            .expect("execute");
-
-        let probe = &outputs["probe"];
-        assert_eq!(probe.len(), 1);
-        assert_eq!(
-            probe[0].stdout.trim(),
-            "Linux",
-            "expected uname -s to return Linux from inside the container, got: {:?}",
-            probe[0].stdout,
-        );
-
-        // Verify container metadata was written to the DB.
-        let db = crate::db::open(&quire.db_path()).expect("open db");
-        let image_tag: Option<String> = db
-            .query_row(
-                "SELECT image_tag FROM runs WHERE id = ?1",
-                rusqlite::params![&run_id],
-                |row| row.get(0),
-            )
-            .expect("query");
-        assert!(image_tag.is_some(), "image_tag should be set");
-
-        let container_stopped_ms: Option<i64> = db
-            .query_row(
-                "SELECT container_stopped_at_ms FROM runs WHERE id = ?1",
-                rusqlite::params![&run_id],
-                |row| row.get(0),
-            )
-            .expect("query");
-        assert!(
-            container_stopped_ms.is_some(),
-            "container_stopped_at_ms should be set"
-        );
-
-        // Cleanup the image we built.
-        if let Some(tag) = image_tag {
-            let _ = std::process::Command::new("docker")
-                .args(["image", "rm", &tag])
-                .output();
-        }
     }
 }
