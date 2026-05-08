@@ -138,7 +138,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
             event.pushed_at,
             push_ref,
             &secrets,
-            run::Executor::Docker,
+            run::Executor::Host,
         ) {
             tracing::error!(
                 repo = %event.repo,
