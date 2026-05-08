@@ -11,9 +11,8 @@ use petgraph::Graph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, Reversed};
 
-use super::error::Result;
 use super::registration::{self, Registrations};
-use quire_core::fennel::Fennel;
+use quire_core::fennel::{Fennel, FennelError};
 
 /// A registration-time error caught while individual `(ci.job …)` and
 /// `(ci.image …)` calls are being processed.
@@ -112,7 +111,8 @@ pub struct Job {
 
 /// A Rust-side run-fn: a closure invoked synchronously by the
 /// executor with the runtime in scope.
-pub(super) type RustRunFn = std::rc::Rc<dyn Fn(&super::runtime::Runtime) -> Result<()>>;
+pub(super) type RustRunFn =
+    std::rc::Rc<dyn Fn(&super::runtime::Runtime) -> super::error::Result<()>>;
 
 /// How a job runs at execute time.
 ///
@@ -336,6 +336,35 @@ pub struct PipelineError {
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
+/// Errors from [`compile`] — Fennel evaluation failures and pipeline-shape
+/// failures unified at the compile boundary, so callers can match on
+/// the compile result without reaching into the kitchen-sink
+/// `ci::Error`.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum CompileError {
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Fennel(#[from] Box<FennelError>),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Pipeline(#[from] Box<PipelineError>),
+}
+
+impl From<FennelError> for CompileError {
+    fn from(err: FennelError) -> Self {
+        Self::Fennel(Box::new(err))
+    }
+}
+
+impl From<PipelineError> for CompileError {
+    fn from(err: PipelineError) -> Self {
+        Self::Pipeline(Box::new(err))
+    }
+}
+
+pub type CompileResult<T> = std::result::Result<T, CompileError>;
+
 /// Compile a ci.fnl source string into a validated [`Pipeline`].
 ///
 /// Two phases, fail-fast between them: [`registration::register`]
@@ -343,7 +372,7 @@ pub struct PipelineError {
 /// [`validate_post_graph`] checks the dependency graph. Errors from a
 /// phase are wrapped in a [`PipelineError`] for miette to render with
 /// inline labels.
-pub(crate) fn compile(source: &str, name: &str) -> Result<Pipeline> {
+pub(crate) fn compile(source: &str, name: &str) -> CompileResult<Pipeline> {
     let fennel = Fennel::new()?;
     let Registrations { jobs, image } = registration::register(&fennel, source, name)?;
 
@@ -515,7 +544,7 @@ mod tests {
         let f = Fennel::new().expect("Fennel::new() should succeed");
         let err =
             registration::register(&f, source, "ci.fnl").expect_err("expected registration errors");
-        let crate::ci::error::Error::Pipeline(pe) = err else {
+        let CompileError::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}")
         };
         pe.diagnostics
@@ -808,7 +837,7 @@ mod tests {
 (ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
             "ci.fnl",
         );
-        let Err(crate::ci::error::Error::Pipeline(pe)) = result else {
+        let Err(CompileError::Pipeline(pe)) = result else {
             panic!("expected PipelineError")
         };
         for d in &pe.diagnostics {

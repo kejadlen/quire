@@ -337,7 +337,7 @@ mod tests {
         let Err(err) = compile(source, "ci.fnl") else {
             panic!("expected error");
         };
-        let crate::ci::error::Error::Pipeline(pe) = err else {
+        let crate::ci::pipeline::CompileError::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}");
         };
         assert!(
@@ -356,7 +356,7 @@ mod tests {
         let Err(err) = compile(source, "ci.fnl") else {
             panic!("expected error");
         };
-        let crate::ci::error::Error::Pipeline(pe) = err else {
+        let crate::ci::pipeline::CompileError::Pipeline(pe) = err else {
             panic!("expected PipelineError, got {err:?}");
         };
         pe.diagnostics

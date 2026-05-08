@@ -72,7 +72,7 @@ impl Ci {
     /// Single chokepoint for compile + structural validation, used by
     /// [`Ci::pipeline`] and `trigger_ref` so the two paths can't drift.
     fn compile(&self, source: &str) -> error::Result<Pipeline> {
-        pipeline::compile(source, CI_FNL)
+        Ok(pipeline::compile(source, CI_FNL)?)
     }
 
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.

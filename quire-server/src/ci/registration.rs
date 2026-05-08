@@ -14,9 +14,10 @@ use mlua::{IntoLua, Lua};
 
 use miette::NamedSource;
 
-use super::error::Result;
 use super::mirror;
-use super::pipeline::{self, DefinitionError, Diagnostic, Job, PipelineError, RunFn};
+use super::pipeline::{
+    self, CompileResult, DefinitionError, Diagnostic, Job, PipelineError, RunFn,
+};
 use quire_core::fennel::Fennel;
 
 /// Output of [`register`]: jobs and image successfully registered
@@ -35,7 +36,7 @@ pub(super) struct Registrations {
 /// not abort the rest of the script — but if any rule fired, the
 /// whole batch is returned as a `PipelineError` instead of partial
 /// registrations.
-pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> Result<Registrations> {
+pub(super) fn register(fennel: &Fennel, source: &str, name: &str) -> CompileResult<Registrations> {
     let jobs: Rc<RefCell<Vec<Job>>> = Rc::new(RefCell::new(Vec::new()));
     let image = Rc::new(RefCell::new(None));
     let src = Rc::new(source.to_string());

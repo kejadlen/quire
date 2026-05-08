@@ -2,7 +2,7 @@
 
 use miette::Diagnostic;
 
-use super::pipeline::PipelineError;
+use super::pipeline::{CompileError, PipelineError};
 use super::run::RunState;
 use quire_core::fennel::FennelError;
 use quire_core::secret;
@@ -87,6 +87,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl From<PipelineError> for Error {
     fn from(err: PipelineError) -> Self {
         Error::Pipeline(Box::new(err))
+    }
+}
+
+impl From<CompileError> for Error {
+    fn from(err: CompileError) -> Self {
+        match err {
+            CompileError::Fennel(e) => Error::Fennel(e),
+            CompileError::Pipeline(e) => Error::Pipeline(e),
+        }
     }
 }
 
