@@ -2139,8 +2139,10 @@ dependencies = [
  "mlua",
  "regex",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ mod error;
 pub mod event;
 pub use quire_core::fennel;
 pub mod quire;
-pub mod secret;
+pub use quire_core::secret;
 
 pub use error::Error;
 pub use error::Result;

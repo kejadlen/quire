@@ -10,6 +10,8 @@ mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] 
 regex = "*"
 serde = { version = "*", features = ["derive"] }
 thiserror = "*"
+tracing = "*"
 
 [dev-dependencies]
+serde_json = "*"
 tempfile = "*"
