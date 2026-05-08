@@ -1,4 +1,9 @@
+mod event;
+mod sink;
+
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -7,7 +12,10 @@ use miette::IntoDiagnostic;
 use mlua::IntoLua;
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
-use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeHandle, ShOutput};
+use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
+
+use crate::event::Event;
+use crate::sink::{EventSink, JsonlSink, NullSink};
 
 /// Run a quire CI pipeline locally.
 #[derive(Parser)]
@@ -33,7 +41,20 @@ enum Commands {
     /// reads return Nil for everything except `quire/push` (the
     /// runtime doesn't yet propagate run-fn outputs into downstream
     /// jobs' input views).
-    Run,
+    Run {
+        /// Where to send structured run events.
+        #[arg(long, value_enum, default_value_t = EventsKind::Null)]
+        events: EventsKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum EventsKind {
+    /// Drop events.
+    Null,
+    /// JSONL on stdout, one event per line.
+    Stdout,
 }
 
 fn main() -> miette::Result<()> {
@@ -41,7 +62,13 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Validate => validate(cli.workspace),
-        Commands::Run => run_pipeline(cli.workspace),
+        Commands::Run { events } => {
+            let sink: Box<dyn EventSink> = match events {
+                EventsKind::Null => Box::new(NullSink),
+                EventsKind::Stdout => Box::new(JsonlSink::new(io::stdout())),
+            };
+            run_pipeline(cli.workspace, sink)
+        }
     }
 }
 
@@ -70,7 +97,7 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
     Ok(())
 }
 
-fn run_pipeline(workspace: PathBuf) -> miette::Result<()> {
+fn run_pipeline(workspace: PathBuf, sink: Box<dyn EventSink>) -> miette::Result<()> {
     let pipeline = compile_at(&workspace)?;
 
     let job_ids: Vec<String> = pipeline
@@ -79,9 +106,10 @@ fn run_pipeline(workspace: PathBuf) -> miette::Result<()> {
         .map(|s| s.to_string())
         .collect();
     if job_ids.is_empty() {
-        println!("No jobs registered.");
         return Ok(());
     }
+
+    let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
     let meta = RunMeta {
         sha: "0".repeat(40),
@@ -98,6 +126,32 @@ fn run_pipeline(workspace: PathBuf) -> miette::Result<()> {
         workspace,
     ));
 
+    // Active job pointer, shared between the main loop and the runtime
+    // callback (which translates RuntimeEvent → wire Event).
+    let current_job: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    {
+        let cb_sink = sink.clone();
+        let cb_current_job = current_job.clone();
+        runtime.set_event_callback(Box::new(move |event| {
+            let job_id = cb_current_job
+                .borrow()
+                .clone()
+                .expect("runtime fires sh events only inside enter_job/leave_job");
+            let wire_event = match event {
+                RuntimeEvent::ShStarted { cmd } => Event::ShStarted {
+                    job_id,
+                    cmd: cmd.to_string(),
+                },
+                RuntimeEvent::ShFinished { exit } => Event::ShFinished {
+                    job_id,
+                    exit_code: exit,
+                },
+            };
+            cb_sink.borrow_mut().emit(wire_event).expect("emit event");
+        }));
+    }
+
     // Install the runtime handle on the Lua VM once for the whole run;
     // each job's run-fn receives `rt_value` as its sole argument.
     let lua = runtime.lua();
@@ -107,6 +161,14 @@ fn run_pipeline(workspace: PathBuf) -> miette::Result<()> {
 
     let mut failed_job: Option<(String, RuntimeError)> = None;
     for job_id in &job_ids {
+        *current_job.borrow_mut() = Some(job_id.clone());
+
+        sink.borrow_mut()
+            .emit(Event::JobStarted {
+                job_id: job_id.clone(),
+            })
+            .expect("emit job_started");
+
         let run_fn = runtime
             .job(job_id)
             .expect("topo_order returns valid ids")
@@ -123,6 +185,21 @@ fn run_pipeline(workspace: PathBuf) -> miette::Result<()> {
         };
         runtime.leave_job();
 
+        let finish_event = if result.is_ok() {
+            Event::JobCompleted {
+                job_id: job_id.clone(),
+            }
+        } else {
+            Event::JobFailed {
+                job_id: job_id.clone(),
+            }
+        };
+        sink.borrow_mut()
+            .emit(finish_event)
+            .expect("emit job finish");
+
+        *current_job.borrow_mut() = None;
+
         if let Err(e) = result {
             failed_job = Some((job_id.clone(), e));
             break;
@@ -131,32 +208,10 @@ fn run_pipeline(workspace: PathBuf) -> miette::Result<()> {
 
     lua.remove_app_data::<Rc<Runtime>>();
 
-    let outputs = runtime.take_outputs();
-    print_outputs(&job_ids, &outputs);
-
-    if let Some((job, err)) = failed_job {
-        eprintln!("\nJob '{job}' failed.");
+    if let Some((_, err)) = failed_job {
         return Err(err.into());
     }
 
-    let nonzero: Vec<&str> = job_ids
-        .iter()
-        .filter(|id| {
-            outputs
-                .get(id.as_str())
-                .is_some_and(|os| os.iter().any(|o| o.exit != 0))
-        })
-        .map(String::as_str)
-        .collect();
-    if nonzero.is_empty() {
-        println!("\nAll jobs passed.");
-    } else {
-        println!(
-            "\n{} job(s) had non-zero `(sh ...)` exits: {}",
-            nonzero.len(),
-            nonzero.join(", ")
-        );
-    }
     Ok(())
 }
 
@@ -165,29 +220,4 @@ fn compile_at(workspace: &std::path::Path) -> miette::Result<Pipeline> {
     let path = workspace.join(".quire").join("ci.fnl");
     let source = fs_err::read_to_string(&path).into_diagnostic()?;
     Ok(pipeline::compile(&source, &path.display().to_string())?)
-}
-
-/// Print captured `(sh …)` outputs, grouped by job, in execution
-/// order. Skips jobs with no recorded output.
-fn print_outputs(job_ids: &[String], outputs: &HashMap<String, Vec<ShOutput>>) {
-    for job_id in job_ids {
-        let Some(job_outputs) = outputs.get(job_id) else {
-            continue;
-        };
-        if job_outputs.is_empty() {
-            continue;
-        }
-        println!("==> {job_id}");
-        for o in job_outputs {
-            if !o.stdout.is_empty() {
-                print!("{}", o.stdout);
-            }
-            if !o.stderr.is_empty() {
-                eprint!("{}", o.stderr);
-            }
-            if o.exit != 0 {
-                eprintln!("(exit {})", o.exit);
-            }
-        }
-    }
 }

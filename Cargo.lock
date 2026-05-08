@@ -2133,6 +2133,8 @@ dependencies = [
  "miette",
  "mlua",
  "quire-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
