@@ -2127,6 +2127,8 @@ dependencies = [
 name = "quire-ci"
 version = "0.1.0"
 dependencies = [
+ "fs-err",
+ "miette",
  "quire-core",
 ]
 
