@@ -3,6 +3,7 @@ members = ["quire-ci", "quire-core", "quire-server"]
 resolver = "3"
 
 [workspace.dependencies]
+clap = { version = "*", features = ["derive", "env"] }
 fs-err = "*"
 jiff = { version = "*", features = ["serde"] }
 miette = "*"

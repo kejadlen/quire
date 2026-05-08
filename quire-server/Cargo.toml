@@ -32,7 +32,7 @@ tracing = { workspace = true }
 
 askama = "*"
 axum = "*"
-clap = { version = "*", features = ["derive", "env"] }
+clap = { workspace = true }
 clap_complete = "*"
 rusqlite = { version = "*", features = ["bundled"] }
 rusqlite_migration = "*"

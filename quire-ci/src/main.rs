@@ -1,34 +1,39 @@
 use std::path::PathBuf;
-use std::process::ExitCode;
 
+use clap::Parser;
 use miette::IntoDiagnostic;
-use quire_core::ci::pipeline::CompileError;
 
-fn main() -> ExitCode {
+/// Validate a quire CI pipeline.
+#[derive(Parser)]
+#[command(version, propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(clap::Subcommand)]
+enum Commands {
+    /// Compile and validate a ci.fnl pipeline.
+    Validate {
+        /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
+        #[arg(short, long, default_value = ".")]
+        workspace: PathBuf,
+    },
+}
+
+fn main() -> miette::Result<()> {
     miette::set_panic_hook();
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{e:?}");
-            ExitCode::FAILURE
-        }
-    }
+    run()
 }
 
 fn run() -> miette::Result<()> {
-    let path = find_ci_fnl()?;
+    let cli = Cli::parse();
+    let Commands::Validate { workspace } = cli.command;
 
+    let path = workspace.join(".quire").join("ci.fnl");
     let source = fs_err::read_to_string(&path).into_diagnostic()?;
 
-    let pipeline = match quire_core::ci::pipeline::compile(&source, &path.display().to_string()) {
-        Ok(p) => p,
-        Err(CompileError::Fennel(err)) => {
-            return Err(miette::Report::new_boxed(err));
-        }
-        Err(CompileError::Pipeline(err)) => {
-            return Err(miette::Report::new_boxed(err));
-        }
-    };
+    let pipeline = quire_core::ci::pipeline::compile(&source, &path.display().to_string())?;
 
     let jobs = pipeline.jobs();
     if jobs.is_empty() {
@@ -50,19 +55,4 @@ fn run() -> miette::Result<()> {
 
     println!("\nAll validations passed.");
     Ok(())
-}
-
-/// Walk from cwd upward to find `.quire/ci.fnl`.
-fn find_ci_fnl() -> miette::Result<PathBuf> {
-    let cwd = std::env::current_dir().into_diagnostic()?;
-    let mut dir = cwd.as_path();
-    loop {
-        let candidate = dir.join(".quire").join("ci.fnl");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        dir = dir
-            .parent()
-            .ok_or_else(|| miette::miette!("no .quire/ci.fnl found in any parent directory"))?;
-    }
 }
