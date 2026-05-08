@@ -15,7 +15,40 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::RunMeta;
-use quire_core::secret::{SecretRegistry, SecretString, redact};
+use quire_core::secret::{self, SecretRegistry, SecretString, redact};
+
+/// Errors produced by [`Runtime`] methods and the `RunFn::Rust`
+/// callbacks that hold them. A small sum carved out of the
+/// orchestrator's kitchen-sink error so the runtime layer doesn't
+/// drag rusqlite/yaml/etc. along with it.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum RuntimeError {
+    #[error(transparent)]
+    Secret(#[from] secret::Error),
+
+    #[error(transparent)]
+    Lua(Box<mlua::Error>),
+
+    #[error("command spawn failed: {program} in {cwd}")]
+    CommandSpawnFailed {
+        program: String,
+        cwd: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("git error: {0}")]
+    Git(String),
+}
+
+impl From<mlua::Error> for RuntimeError {
+    fn from(err: mlua::Error) -> Self {
+        Self::Lua(Box::new(err))
+    }
+}
+
+pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
+
 /// Per-sh timing: (index, started_at, finished_at).
 pub(super) type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
 
@@ -176,23 +209,23 @@ impl Runtime {
     /// the full caveat.
     ///
     /// [`SecretRegistry::resolve`]: quire_core::secret::SecretRegistry::resolve
-    pub(super) fn secret(&self, name: &str) -> super::error::Result<String> {
+    pub(super) fn secret(&self, name: &str) -> RuntimeResult<String> {
         self.registry.borrow_mut().resolve(name).map_err(Into::into)
     }
 
     /// Run `cmd` with `opts` and record its output against the
     /// current job (if one is active). Non-zero exits come back in
     /// `:exit`, not as `Err`.
-    pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> super::error::Result<ShOutput> {
+    pub(super) fn sh(&self, cmd: Cmd, opts: ShOpts) -> RuntimeResult<ShOutput> {
         let started_at = Timestamp::now();
         let program = cmd.program().to_string();
-        let output = cmd.run(opts, &self.workspace).map_err(|e| {
-            super::error::Error::CommandSpawnFailed {
-                program,
-                cwd: self.workspace.clone(),
-                source: e,
-            }
-        })?;
+        let output =
+            cmd.run(opts, &self.workspace)
+                .map_err(|e| RuntimeError::CommandSpawnFailed {
+                    program,
+                    cwd: self.workspace.clone(),
+                    source: e,
+                })?;
         let finished_at = Timestamp::now();
         if let Some(job) = self.current_job.borrow().as_ref() {
             let n = {

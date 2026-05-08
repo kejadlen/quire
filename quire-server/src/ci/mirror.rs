@@ -19,10 +19,9 @@ use std::rc::Rc;
 
 use mlua::{Lua, LuaSerdeExt};
 
-use super::error::{Error, Result};
 use super::pipeline::{self, DefinitionError, Job, RunFn};
 use super::registration::Registration;
-use super::runtime::{Cmd, Runtime, ShOpts};
+use super::runtime::{Cmd, Runtime, RuntimeError, RuntimeResult, ShOpts};
 
 /// Closure state for the `quire/mirror` job's run-fn: everything the
 /// tag-and-push needs at execute time, captured once at registration.
@@ -46,7 +45,7 @@ impl MirrorJob {
     /// `git push` exit lands in the run log alongside any other shell
     /// output. Returns `Err` only for setup failures (unknown secret,
     /// failed tag, base64 spawn).
-    fn execute(&self, rt: &Runtime) -> Result<()> {
+    fn execute(&self, rt: &Runtime) -> RuntimeResult<()> {
         let calling = rt.current_job.borrow();
         let calling = calling
             .as_ref()
@@ -91,7 +90,7 @@ impl MirrorJob {
             git_opts.clone(),
         )?;
         if tag_result.exit != 0 {
-            return Err(Error::Git(format!(
+            return Err(RuntimeError::Git(format!(
                 "git tag failed: {}",
                 tag_result.stderr.trim()
             )));
@@ -600,7 +599,7 @@ mod tests {
         runtime.leave_job();
 
         assert!(
-            matches!(err, Error::Secret(SecretError::UnknownSecret(ref name)) if name == "missing"),
+            matches!(err, RuntimeError::Secret(SecretError::UnknownSecret(ref name)) if name == "missing"),
             "expected UnknownSecret(\"missing\"), got: {err:?}"
         );
     }

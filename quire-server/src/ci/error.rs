@@ -4,6 +4,7 @@ use miette::Diagnostic;
 
 use super::pipeline::{CompileError, PipelineError};
 use super::run::RunState;
+use super::runtime::RuntimeError;
 use quire_core::fennel::FennelError;
 use quire_core::secret;
 
@@ -77,6 +78,25 @@ impl From<CompileError> for Error {
         match err {
             CompileError::Fennel(e) => Error::Fennel(e),
             CompileError::Pipeline(e) => Error::Pipeline(e),
+        }
+    }
+}
+
+impl From<RuntimeError> for Error {
+    fn from(err: RuntimeError) -> Self {
+        match err {
+            RuntimeError::Secret(e) => Error::Secret(e),
+            RuntimeError::Lua(e) => Error::Lua(e),
+            RuntimeError::CommandSpawnFailed {
+                program,
+                cwd,
+                source,
+            } => Error::CommandSpawnFailed {
+                program,
+                cwd,
+                source,
+            },
+            RuntimeError::Git(s) => Error::Git(s),
         }
     }
 }

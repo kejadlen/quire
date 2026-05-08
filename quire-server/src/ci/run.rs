@@ -258,7 +258,7 @@ impl Run {
                     let _: mlua::Value = f.call(rt_value.clone())?;
                     Ok(())
                 }
-                RunFn::Rust(f) => f(&runtime),
+                RunFn::Rust(f) => f(&runtime).map_err(Into::into),
             })();
             runtime.leave_job();
 
@@ -1278,7 +1278,9 @@ mod tests {
         );
 
         pipeline.replace_first_run_fn(RunFn::Rust(Rc::new(|_rt| {
-            Err(Error::Git("simulated rust failure".into()))
+            Err(crate::ci::runtime::RuntimeError::Git(
+                "simulated rust failure".into(),
+            ))
         })));
 
         let err = run

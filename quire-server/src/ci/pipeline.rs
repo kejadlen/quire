@@ -112,7 +112,7 @@ pub struct Job {
 /// A Rust-side run-fn: a closure invoked synchronously by the
 /// executor with the runtime in scope.
 pub(super) type RustRunFn =
-    std::rc::Rc<dyn Fn(&super::runtime::Runtime) -> super::error::Result<()>>;
+    std::rc::Rc<dyn Fn(&super::runtime::Runtime) -> super::runtime::RuntimeResult<()>>;
 
 /// How a job runs at execute time.
 ///
