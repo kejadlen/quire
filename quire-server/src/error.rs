@@ -81,9 +81,10 @@ mod tests {
 
     #[test]
     fn from_fennel_error() {
-        let fennel_err = FennelError::Empty {
-            name: "test.fnl".to_string(),
-        };
+        let fennel_err = FennelError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "test.fnl",
+        ));
         let err: Error = fennel_err.into();
         assert!(err.to_string().contains("test.fnl"));
     }

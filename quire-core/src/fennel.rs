@@ -2,11 +2,12 @@ use std::path::Path;
 
 use miette::{Diagnostic, SourceOffset};
 use mlua::{Lua, LuaSerdeExt};
+use thiserror::Error;
 
 const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
 
 /// Error kinds from the Fennel loader.
-#[derive(Debug, thiserror::Error, Diagnostic)]
+#[derive(Debug, Error, Diagnostic)]
 pub enum FennelError {
     #[error(transparent)]
     #[diagnostic(code(fennel::io))]
@@ -16,6 +17,11 @@ pub enum FennelError {
     #[diagnostic(code(fennel::internal))]
     Internal(#[from] mlua::Error),
 
+    /// Fennel/Lua evaluation failed. `message` is just the source
+    /// name so miette renders `× <name>`; the actual Lua error text
+    /// is reachable via the `#[source]` chain. Plain `Display` will
+    /// only show the name — walk the chain (e.g. via
+    /// `display_chain`) to surface the underlying error.
     #[error("{message}")]
     #[diagnostic(code(fennel::eval))]
     Eval {
@@ -28,10 +34,9 @@ pub enum FennelError {
         source: Box<mlua::Error>,
     },
 
-    #[error("empty config: {name}")]
-    #[diagnostic(code(fennel::empty))]
-    Empty { name: String },
-
+    /// Result couldn't be deserialized into the requested type.
+    /// Same display caveat as `Eval`: `message` is the source name,
+    /// the deser error is in the `#[source]` chain.
     #[error("{message}")]
     #[diagnostic(code(fennel::type_mismatch))]
     TypeMismatch {
@@ -93,12 +98,11 @@ impl Fennel {
         setup(&self.lua)?;
 
         let fennel: mlua::Table = self.lua.globals().get("fennel")?;
-
         let eval: mlua::Function = fennel.get("eval")?;
-
         let opts = self.lua.create_table()?;
 
         opts.set("filename", name)?;
+
         // Align Lua line numbers with Fennel source lines so debug
         // info points back at the user's `.fnl`.
         opts.set("correlate", true)?;
@@ -119,21 +123,7 @@ impl Fennel {
     where
         T: serde::de::DeserializeOwned,
     {
-        if source.trim().is_empty() {
-            return Err(FennelError::Empty {
-                name: name.to_string(),
-            });
-        }
-
         let result = self.eval_raw(source, name, |_| Ok(()))?;
-
-        // Reject nil results — a config file that evaluates to nothing is
-        // almost always a mistake.
-        if matches!(result, mlua::Value::Nil) {
-            return Err(FennelError::Empty {
-                name: name.to_string(),
-            });
-        }
 
         self.lua
             .from_value(result)
@@ -166,7 +156,8 @@ impl FennelError {
         // Try to extract a line number from the Lua error for a label.
         // None when the error message doesn't carry a line — miette renders
         // the source block without an inline pointer in that case.
-        let label = extract_line_offset(&err).and_then(|line| line_offset(source, line));
+        let label =
+            extract_line_offset(&err.to_string()).and_then(|line| line_offset(source, line));
 
         FennelError::Eval {
             message,
@@ -183,11 +174,10 @@ impl FennelError {
 /// The name may contain colons (e.g. `HEAD:.quire/config.fnl`), so splitting
 /// from the left breaks. Match the first `:LINE:COLUMN: ` run, which is
 /// unambiguous — filenames don't end with `:digits:digits:`.
-fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
-    let msg = err.to_string();
+fn extract_line_offset(msg: &str) -> Option<usize> {
     // Match `:LINE:COLUMN: ` (parse error) or `:LINE: ` (runtime error).
     let re = regex::Regex::new(r":(\d+)(?::\d+)?: ").ok()?;
-    let caps = re.captures(&msg)?;
+    let caps = re.captures(msg)?;
     caps.get(1)?
         .as_str()
         .parse::<usize>()
@@ -197,9 +187,6 @@ fn extract_line_offset(err: &mlua::Error) -> Option<usize> {
 
 /// Convert a 1-based line number to a byte offset in the source.
 fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
-    if line == 0 {
-        return None;
-    }
     let mut current_line = 1;
     for (i, ch) in source.char_indices() {
         if current_line == line {
@@ -290,30 +277,25 @@ mod tests {
     }
 
     #[test]
-    fn load_string_rejects_empty_source() {
-        let f = fennel();
-        let result: Result<MirrorConfig, _> = f.load_string("", "empty.fnl");
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FennelError::Empty { .. }));
-    }
-
-    #[test]
-    fn load_string_rejects_whitespace_only() {
-        let f = fennel();
-        let result: Result<MirrorConfig, _> = f.load_string("  \n  ", "blank.fnl");
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FennelError::Empty { .. }));
-    }
-
-    #[test]
     fn load_string_rejects_malformed_fennel() {
         let f = fennel();
-        let result: Result<MirrorConfig, _> = f.load_string("{:bad {:}", "bad.fnl");
-        assert!(result.is_err());
+        let source = "{:bad {:}";
+        let result: Result<MirrorConfig, _> = f.load_string(source, "bad.fnl");
         let err = result.unwrap_err();
+        let FennelError::Eval {
+            message,
+            source_code,
+            label,
+            ..
+        } = &err
+        else {
+            panic!("expected Eval, got {err:?}");
+        };
+        assert_eq!(message, "bad.fnl");
+        assert_eq!(source_code, source);
         assert!(
-            err.to_string().contains("bad.fnl"),
-            "error should mention source name: {err}"
+            label.is_some(),
+            "label should be set for line-bearing error"
         );
     }
 
@@ -321,7 +303,11 @@ mod tests {
     fn load_string_rejects_type_mismatch() {
         let f = fennel();
         let result: Result<MirrorConfig, _> = f.load_string("{:mirror {:url 42}}", "types.fnl");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, FennelError::TypeMismatch { message, .. } if message == "types.fnl"),
+            "expected TypeMismatch, got {err:?}",
+        );
     }
 
     #[test]
@@ -380,20 +366,43 @@ mod tests {
     }
 
     #[test]
-    fn load_string_rejects_nil_result() {
+    fn eval_raw_setup_can_inject_globals() {
         let f = fennel();
-        // A Fennel expression that evaluates to nil (not empty, but produces nil).
-        let result: Result<MirrorConfig, _> = f.load_string("nil", "nil.fnl");
-        assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), FennelError::Empty { .. }),
-            "expected Empty error for nil result"
+        let result = f
+            .eval_raw("custom_var", "test", |lua| {
+                lua.globals().set("custom_var", 42)
+            })
+            .expect("eval_raw should succeed");
+        assert_eq!(result.as_integer(), Some(42));
+    }
+
+    #[test]
+    fn extract_line_offset_parses_line_and_column() {
+        assert_eq!(
+            super::extract_line_offset("name.fnl:5:12: parse error"),
+            Some(5)
         );
     }
 
     #[test]
-    fn line_offset_returns_none_for_line_zero() {
-        assert!(super::line_offset("hello", 0).is_none());
+    fn extract_line_offset_parses_line_only() {
+        assert_eq!(
+            super::extract_line_offset("name.fnl:7: runtime error"),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn extract_line_offset_handles_colon_in_name() {
+        assert_eq!(
+            super::extract_line_offset("HEAD:.quire/config.fnl:3:1: oops"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn extract_line_offset_returns_none_without_location() {
+        assert!(super::extract_line_offset("no location info").is_none());
     }
 
     #[test]
