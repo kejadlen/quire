@@ -153,11 +153,12 @@ impl FennelError {
         // duplicate the output in miette's × and ╰─▶ sections.
         let message = name.to_string();
 
-        // Try to extract a line number from the Lua error for a label.
-        // None when the error message doesn't carry a line — miette renders
-        // the source block without an inline pointer in that case.
-        let label =
-            extract_line_offset(&err.to_string()).and_then(|line| line_offset(source, line));
+        // Try to extract a line (and optional column) from the Lua
+        // error for a label. None when the error message doesn't carry
+        // a line — miette renders the source block without an inline
+        // pointer in that case.
+        let label = extract_line_col(&err.to_string())
+            .and_then(|(line, col)| line_col_offset(source, line, col));
 
         FennelError::Eval {
             message,
@@ -168,29 +169,54 @@ impl FennelError {
     }
 }
 
-/// Try to extract a line number from a Lua error message.
+/// Try to extract a line and optional column from a Lua error message.
 ///
 /// Lua/Fennel errors embed the source location as `name:LINE:COLUMN: message`.
 /// The name may contain colons (e.g. `HEAD:.quire/config.fnl`), so splitting
 /// from the left breaks. Match the first `:LINE:COLUMN: ` run, which is
 /// unambiguous — filenames don't end with `:digits:digits:`.
-fn extract_line_offset(msg: &str) -> Option<usize> {
+fn extract_line_col(msg: &str) -> Option<(usize, Option<usize>)> {
     // Match `:LINE:COLUMN: ` (parse error) or `:LINE: ` (runtime error).
-    let re = regex::Regex::new(r":(\d+)(?::\d+)?: ").ok()?;
+    let re = regex::Regex::new(r":(\d+)(?::(\d+))?: ").ok()?;
     let caps = re.captures(msg)?;
-    caps.get(1)?
+    let line = caps
+        .get(1)?
         .as_str()
         .parse::<usize>()
         .ok()
-        .filter(|&n| n > 0)
+        .filter(|&n| n > 0)?;
+    let col = caps.get(2).and_then(|m| m.as_str().parse::<usize>().ok());
+    Some((line, col))
 }
 
-/// Convert a 1-based line number to a byte offset in the source.
-fn line_offset(source: &str, line: usize) -> Option<SourceOffset> {
+/// Convert a 1-based line (and optional column) to a byte offset in
+/// the source. Column is also 1-based. When column is None, points
+/// at the start of the line.
+fn line_col_offset(source: &str, line: usize, col: Option<usize>) -> Option<SourceOffset> {
     let mut current_line = 1;
     for (i, ch) in source.char_indices() {
         if current_line == line {
-            return Some(SourceOffset::from(i));
+            let byte_offset = if let Some(col) = col {
+                // Advance col-1 characters from the start of the line.
+                let line_start = i;
+                let line_end = source[line_start..]
+                    .find('\n')
+                    .map(|n| line_start + n)
+                    .unwrap_or(source.len());
+                let line_text = &source[line_start..line_end];
+                let mut byte_pos = 0;
+                for (idx, c) in line_text.char_indices() {
+                    if idx + 1 == col {
+                        byte_pos = idx;
+                        break;
+                    }
+                    byte_pos = idx + c.len_utf8();
+                }
+                line_start + byte_pos
+            } else {
+                i
+            };
+            return Some(SourceOffset::from(byte_offset));
         }
         if ch == '\n' {
             current_line += 1;
@@ -360,8 +386,8 @@ mod tests {
             label
                 .expect("label should be set when line is extractable")
                 .offset(),
-            1,
-            "label should point at line 2 despite colons in name"
+            8,
+            "label should point at the exact error column in line 2"
         );
     }
 
@@ -377,37 +403,37 @@ mod tests {
     }
 
     #[test]
-    fn extract_line_offset_parses_line_and_column() {
+    fn extract_line_col_parses_line_and_column() {
         assert_eq!(
-            super::extract_line_offset("name.fnl:5:12: parse error"),
-            Some(5)
+            super::extract_line_col("name.fnl:5:12: parse error"),
+            Some((5, Some(12)))
         );
     }
 
     #[test]
-    fn extract_line_offset_parses_line_only() {
+    fn extract_line_col_parses_line_only() {
         assert_eq!(
-            super::extract_line_offset("name.fnl:7: runtime error"),
-            Some(7)
+            super::extract_line_col("name.fnl:7: runtime error"),
+            Some((7, None))
         );
     }
 
     #[test]
-    fn extract_line_offset_handles_colon_in_name() {
+    fn extract_line_col_handles_colon_in_name() {
         assert_eq!(
-            super::extract_line_offset("HEAD:.quire/config.fnl:3:1: oops"),
-            Some(3)
+            super::extract_line_col("HEAD:.quire/config.fnl:3:1: oops"),
+            Some((3, Some(1)))
         );
     }
 
     #[test]
-    fn extract_line_offset_returns_none_without_location() {
-        assert!(super::extract_line_offset("no location info").is_none());
+    fn extract_line_col_returns_none_without_location() {
+        assert!(super::extract_line_col("no location info").is_none());
     }
 
     #[test]
-    fn line_offset_returns_none_when_line_exceeds_source() {
+    fn line_col_offset_returns_none_when_line_exceeds_source() {
         // Source has 2 lines, ask for line 10.
-        assert!(super::line_offset("line1\nline2\n", 10).is_none());
+        assert!(super::line_col_offset("line1\nline2\n", 10, None).is_none());
     }
 }
