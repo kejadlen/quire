@@ -2,7 +2,7 @@ pub mod ci;
 pub mod db;
 mod error;
 pub mod event;
-pub mod fennel;
+pub use quire_core::fennel;
 pub mod quire;
 pub mod secret;
 

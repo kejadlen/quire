@@ -2133,6 +2133,15 @@ dependencies = [
 [[package]]
 name = "quire-core"
 version = "0.1.0"
+dependencies = [
+ "fs-err",
+ "miette",
+ "mlua",
+ "regex",
+ "serde",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "quire-server"

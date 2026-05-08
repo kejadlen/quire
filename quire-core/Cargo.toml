@@ -2,3 +2,14 @@
 name = "quire-core"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+fs-err = "*"
+miette = "*"
+mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
+regex = "*"
+serde = { version = "*", features = ["derive"] }
+thiserror = "*"
+
+[dev-dependencies]
+tempfile = "*"
