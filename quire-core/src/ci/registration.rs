@@ -52,7 +52,13 @@ pub fn register(fennel: &Fennel, source: &str, name: &str) -> CompileResult<Regi
                 image: image.clone(),
                 source: src.clone(),
             },
-        )
+        )?;
+        // Declare `runtime` as a known global so Fennel compilation
+        // doesn't reject `runtime.sh` / `runtime.secret` / `runtime.jobs`
+        // as unknown identifiers. The real value is installed at execution
+        // time by `RuntimeHandle::install`.
+        lua.globals().set("runtime", lua.create_table()?)?;
+        Ok(())
     })?;
 
     // Remove the Registration app data so `ci.image`/`ci.job` calls at
@@ -184,6 +190,26 @@ fn register_job(
         r.errors
             .borrow_mut()
             .push(DefinitionError::ReservedSlash { job_id: id, span });
+        return Ok(());
+    }
+
+    // Arity check: one-arg run-fns use the old `(fn [{: sh}] …)`
+    // pattern. Reject them so users get a clear message instead of
+    // a runtime-nil panic when the ambient runtime is absent.
+    //
+    // Fail open on `debug.getinfo` errors — if the debug library is
+    // unavailable or the call shape changes, treat the function as
+    // zero-arg and let the user surface any real arity mismatch at
+    // execution time.
+    let nparams: u32 = lua
+        .load("return debug.getinfo(...).nparams")
+        .call(&run_fn)
+        .unwrap_or(0);
+    if nparams != 0 {
+        let span = pipeline::span_for_line(&r.source, line);
+        r.errors
+            .borrow_mut()
+            .push(DefinitionError::ArityViolation { job_id: id, span });
         return Ok(());
     }
 

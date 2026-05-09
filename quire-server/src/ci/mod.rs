@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn ci_pipeline_returns_pipeline_when_ci_fnl_present() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
         let ci = repo.ci();
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn ci_source_reads_file_at_sha() {
-        let source = "(local ci (require :quire.ci))\n(ci.job :x [:quire/push] (fn [_] nil))";
+        let source = "(local ci (require :quire.ci))\n(ci.job :x [:quire/push] (fn [] nil))";
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
         let ci = repo.ci();
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn trigger_creates_run_and_completes() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
         let sha = head_sha(&repo);
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn trigger_errors_on_invalid_pipeline() {
-        let source = "(local ci (require :quire.ci))\n(ci.job :a [] (fn [_] nil))";
+        let source = "(local ci (require :quire.ci))\n(ci.job :a [] (fn [] nil))";
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
         let sha = head_sha(&repo);
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn trigger_processes_multiple_refs() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
         let sha = head_sha(&repo);
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn ci_source_errors_on_invalid_sha() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
         let repo = quire.repo(&name).expect("repo");
         let ci = repo.ci();

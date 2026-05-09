@@ -53,6 +53,15 @@ pub enum DefinitionError {
         #[label("here")]
         span: SourceSpan,
     },
+
+    #[error(
+        "Job '{job_id}' run-fn takes an argument — run-fns must be zero-arg `(fn [] …)`; use `runtime.sh`, `runtime.secret`, and `runtime.jobs` instead of destructuring a handle."
+    )]
+    ArityViolation {
+        job_id: String,
+        #[label("here")]
+        span: SourceSpan,
+    },
 }
 
 /// A post-graph structural error found after all jobs have been
@@ -480,7 +489,7 @@ mod tests {
     #[test]
     fn compile_registers_a_job() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :test [:quire/push] (fn [_] nil))"#;
+(ci.job :test [:quire/push] (fn [] nil))"#;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let jobs = pipeline.jobs();
         assert_eq!(jobs.len(), 1);
@@ -492,8 +501,8 @@ mod tests {
     fn compile_registers_multiple_jobs() {
         let source = r#"
 (local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))
-(ci.job :test [:build] (fn [_] nil))
+(ci.job :build [:quire/push] (fn [] nil))
+(ci.job :test [:build] (fn [] nil))
 "#;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let jobs = pipeline.jobs();
@@ -507,11 +516,11 @@ mod tests {
     #[test]
     fn compile_captures_source_line() {
         let source = "(local ci (require :quire.ci))
-(ci.job :first [:quire/push] (fn [_] nil))
-(ci.job :second [:quire/push] (fn [_] nil))
+(ci.job :first [:quire/push] (fn [] nil))
+(ci.job :second [:quire/push] (fn [] nil))
 
 
-(ci.job :sixth [:quire/push] (fn [_] nil))";
+(ci.job :sixth [:quire/push] (fn [] nil))";
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let lines: Vec<usize> = pipeline
             .jobs()
@@ -568,8 +577,8 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))
-(ci.job :test [:build :quire/push] (fn [_] nil))
+(ci.job :build [:quire/push] (fn [] nil))
+(ci.job :test [:build :quire/push] (fn [] nil))
 "#,
         );
         assert!(validate(&jobs).is_ok());
@@ -580,8 +589,8 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :a [:b] (fn [_] nil))
-(ci.job :b [:a] (fn [_] nil))
+(ci.job :a [:b] (fn [] nil))
+(ci.job :b [:a] (fn [] nil))
 "#,
         );
         let errs = validate(&jobs).unwrap_err();
@@ -596,9 +605,9 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :a [:b :quire/push] (fn [_] nil))
-(ci.job :b [:a :quire/push] (fn [_] nil))
-(ci.job :clean [:quire/push] (fn [_] nil))
+(ci.job :a [:b :quire/push] (fn [] nil))
+(ci.job :b [:a :quire/push] (fn [] nil))
+(ci.job :clean [:quire/push] (fn [] nil))
 "#,
         );
         let errs = validate(&jobs).unwrap_err();
@@ -622,10 +631,10 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :a [:b :quire/push] (fn [_] nil))
-(ci.job :b [:a :quire/push] (fn [_] nil))
-(ci.job :c [:d :quire/push] (fn [_] nil))
-(ci.job :d [:c :quire/push] (fn [_] nil))
+(ci.job :a [:b :quire/push] (fn [] nil))
+(ci.job :b [:a :quire/push] (fn [] nil))
+(ci.job :c [:d :quire/push] (fn [] nil))
+(ci.job :d [:c :quire/push] (fn [] nil))
 "#,
         );
         let errs = validate(&jobs).unwrap_err();
@@ -640,7 +649,7 @@ mod tests {
     fn register_rejects_empty_inputs() {
         let errors = registration_errors(
             r#"(local ci (require :quire.ci))
-(ci.job :setup [] (fn [_] nil))"#,
+(ci.job :setup [] (fn [] nil))"#,
         );
         assert!(
             errors.iter().any(
@@ -654,7 +663,7 @@ mod tests {
     fn register_rejects_slash_in_job_id() {
         let errors = registration_errors(
             r#"(local ci (require :quire.ci))
-(ci.job :foo/bar [:quire/push] (fn [_] nil))"#,
+(ci.job :foo/bar [:quire/push] (fn [] nil))"#,
         );
         assert!(
             errors.iter().any(
@@ -668,8 +677,8 @@ mod tests {
     fn register_rejects_duplicate_job_id() {
         let errors = registration_errors(
             r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))
-(ci.job :build [:quire/push] (fn [_] nil))"#,
+(ci.job :build [:quire/push] (fn [] nil))
+(ci.job :build [:quire/push] (fn [] nil))"#,
         );
         assert!(
             errors.iter().any(
@@ -686,8 +695,8 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :a [:b] (fn [_] nil))
-(ci.job :b [:a] (fn [_] nil))
+(ci.job :a [:b] (fn [] nil))
+(ci.job :b [:a] (fn [] nil))
 "#,
         );
         let errs = validate(&jobs).unwrap_err();
@@ -708,7 +717,7 @@ mod tests {
         // reaches the post-graph reachability check.
         let jobs = registered_jobs(
             r#"(local ci (require :quire.ci))
-(ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
+(ci.job :orphan [:does-not-exist] (fn [] nil))"#,
         );
         let errs = validate(&jobs).unwrap_err();
         assert!(
@@ -727,10 +736,10 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [_] nil))
-(ci.job :b [:a] (fn [_] nil))
-(ci.job :c [:a] (fn [_] nil))
-(ci.job :d [:b :c] (fn [_] nil))"#,
+(ci.job :a [:quire/push] (fn [] nil))
+(ci.job :b [:a] (fn [] nil))
+(ci.job :c [:a] (fn [] nil))
+(ci.job :d [:b :c] (fn [] nil))"#,
         );
         assert!(validate(&jobs).is_ok());
     }
@@ -744,7 +753,7 @@ mod tests {
         let jobs = registered_jobs(
             r#"
 (local ci (require :quire.ci))
-(ci.job :orphan [:a :a] (fn [_] nil))"#,
+(ci.job :orphan [:a :a] (fn [] nil))"#,
         );
         let errs = validate(&jobs).unwrap_err();
         assert!(
@@ -758,9 +767,9 @@ mod tests {
     fn transitive_inputs_collects_direct_and_indirect() {
         let pipeline = compile(
             r#"(local ci (require :quire.ci))
-(ci.job :setup [:quire/push] (fn [_] nil))
-(ci.job :build [:setup] (fn [_] nil))
-(ci.job :test [:build :setup] (fn [_] nil))"#,
+(ci.job :setup [:quire/push] (fn [] nil))
+(ci.job :build [:setup] (fn [] nil))
+(ci.job :test [:build :setup] (fn [] nil))"#,
             "ci.fnl",
         )
         .expect("compile should succeed");
@@ -791,7 +800,7 @@ mod tests {
     fn transitive_inputs_excludes_self() {
         let pipeline = compile(
             r#"(local ci (require :quire.ci))
-(ci.job :only [:quire/push] (fn [_] nil))"#,
+(ci.job :only [:quire/push] (fn [] nil))"#,
             "ci.fnl",
         )
         .expect("compile should succeed");
@@ -804,7 +813,7 @@ mod tests {
     fn compile_registers_pipeline_image() {
         let source = r#"(local ci (require :quire.ci))
 (ci.image "alpine")
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         assert_eq!(pipeline.image(), Some("alpine"));
     }
@@ -812,7 +821,7 @@ mod tests {
     #[test]
     fn compile_succeeds_without_image() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         assert_eq!(pipeline.image(), None);
     }
@@ -833,8 +842,8 @@ mod tests {
         // errors short-circuit before structure checks run.
         let result = compile(
             r#"(local ci (require :quire.ci))
-(ci.job :setup [] (fn [_] nil))
-(ci.job :orphan [:does-not-exist] (fn [_] nil))"#,
+(ci.job :setup [] (fn [] nil))
+(ci.job :orphan [:does-not-exist] (fn [] nil))"#,
             "ci.fnl",
         );
         let Err(CompileError::Pipeline(pe)) = result else {
@@ -861,7 +870,7 @@ mod tests {
         let source = r#"(local ci (require :quire.ci))
 (ci.image "alpine")
 (ci.image "ubuntu")
-(ci.job :build [:quire/push] (fn [_] nil))"#;
+(ci.job :build [:quire/push] (fn [] nil))"#;
         let result = compile(source, "ci.fnl");
         assert!(result.is_err(), "duplicate image should fail");
         let Err(e) = result else { unreachable!() };

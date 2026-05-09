@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use clap::Parser;
 use miette::IntoDiagnostic;
-use mlua::IntoLua;
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
@@ -229,11 +228,10 @@ fn run_pipeline(
         }));
     }
 
-    // Install the runtime handle on the Lua VM once for the whole run;
-    // each job's run-fn receives `rt_value` as its sole argument.
+    // Install the ambient runtime on the Lua VM once for the whole run.
     let lua = runtime.lua();
-    let rt_value = RuntimeHandle(runtime.clone())
-        .into_lua(lua)
+    RuntimeHandle(runtime.clone())
+        .install(lua)
         .expect("install runtime on Lua VM");
 
     let mut failed_job: Option<(String, RuntimeError)> = None;
@@ -255,7 +253,7 @@ fn run_pipeline(
         runtime.enter_job(job_id);
         let result: Result<(), RuntimeError> = match run_fn {
             RunFn::Lua(f) => f
-                .call::<mlua::Value>(rt_value.clone())
+                .call::<mlua::Value>(())
                 .map(|_| ())
                 .map_err(RuntimeError::from),
             RunFn::Rust(f) => f(&runtime),

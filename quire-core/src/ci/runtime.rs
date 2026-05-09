@@ -364,33 +364,29 @@ impl Runtime {
     }
 }
 
-/// `IntoLua` carrier for an `Rc<Runtime>`. Stows the Rc on the VM as
-/// app data and returns the handle table — `{sh, secret, jobs}`.
+/// Install the ambient `runtime` global on the Lua VM.
+///
+/// Stows the `Rc<Runtime>` as app data and sets a `runtime` global
+/// table holding `sh`, `secret`, and `jobs` — closures over the
+/// active runtime. An `__index` metatable raises a clear error for
+/// any other key. The active job slot is set/cleared by the executor
+/// around each run-fn invocation via [`Runtime::enter_job`] /
+/// [`Runtime::leave_job`].
 pub struct RuntimeHandle(pub Rc<Runtime>);
 
-impl IntoLua for RuntimeHandle {
-    // Errors raised by the closures below cross the mlua boundary via
-    // `Error::external`, which erases them to
-    // `Box<dyn Error + Send + Sync>`. The `std::error::Error` source
-    // chain is preserved, but miette `Diagnostic` metadata (codes,
-    // labels, source spans) does not survive the round trip — the
-    // resulting `mlua::Error` becomes the `#[source]` of
-    // `Error::JobFailed` at the executor, which only renders the chain
-    // as plain `Display`. Don't reach for richer error types here
-    // expecting them to render: rephrase the Display string to carry
-    // what the user needs to see.
-    fn into_lua(self, lua: &Lua) -> mlua::Result<mlua::Value> {
-        // Pull the installed runtime out of `lua`'s app data, or
-        // surface a Lua error. Every adapter below needs this.
+impl RuntimeHandle {
+    /// Install the ambient runtime on the Lua VM. Call once before
+    /// executing any run-fns.
+    pub fn install(self, lua: &Lua) -> mlua::Result<()> {
         fn runtime(lua: &Lua) -> mlua::Result<mlua::AppDataRef<'_, Rc<Runtime>>> {
             lua.app_data_ref::<Rc<Runtime>>()
                 .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))
         }
 
         lua.set_app_data(self.0);
-        let table = lua.create_table()?;
+        let rt = lua.create_table()?;
 
-        table.set(
+        rt.set(
             "sh",
             lua.create_function(|lua, (cmd, opts): (Cmd, Option<ShOpts>)| {
                 let rt = runtime(lua)?;
@@ -401,7 +397,7 @@ impl IntoLua for RuntimeHandle {
             })?,
         )?;
 
-        table.set(
+        rt.set(
             "secret",
             lua.create_function(|lua, name: String| {
                 let rt = runtime(lua)?;
@@ -409,13 +405,15 @@ impl IntoLua for RuntimeHandle {
             })?,
         )?;
 
-        table.set(
+        rt.set(
             "jobs",
             lua.create_function(|lua, name: String| {
                 let rt = runtime(lua)?;
                 let calling = rt.current_job.borrow();
                 let calling = calling.as_ref().ok_or_else(|| {
-                    mlua::Error::external("(jobs ...) called outside a job's run-fn")
+                    mlua::Error::external(
+                        "runtime accessed outside a job — primitives are only available while a run-fn is executing",
+                    )
                 })?;
                 // Runtime::new builds a view for every job and
                 // enter_job is the only setter for current_job, so a
@@ -438,7 +436,22 @@ impl IntoLua for RuntimeHandle {
             })?,
         )?;
 
-        table.into_lua(lua)
+        // Catch typos: any key other than sh/secret/jobs raises
+        // a clear error instead of returning nil.
+        let mt = lua.create_table()?;
+        mt.set(
+            "__index",
+            lua.create_function(
+                |_lua, (_table, key): (mlua::Table, String)| -> mlua::Result<mlua::Value> {
+                    Err(mlua::Error::external(format!(
+                        "unknown runtime primitive '{key}' — expected sh, secret, or jobs"
+                    )))
+                },
+            )?,
+        )?;
+        rt.set_metatable(Some(mt))?;
+        lua.globals().set("runtime", rt)?;
+        Ok(())
     }
 }
 
@@ -608,8 +621,8 @@ mod tests {
             RunFn::Rust(_) => panic!("expected RunFn::Lua for test setup"),
         };
         let runtime = Rc::new(Runtime::for_test(pipeline, secrets));
-        let _ = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
+        RuntimeHandle(runtime.clone())
+            .install(runtime.lua())
             .expect("install runtime");
         (runtime, run_fn)
     }
@@ -622,13 +635,10 @@ mod tests {
             SecretString::from("ghp_test_value"),
         );
         let source = r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [{: secret}] (secret :github_token)))"#;
-        let (runtime, run_fn) = rt(source, secrets);
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
+(ci.job :grab [:quire/push] (fn [] (runtime.secret :github_token)))"#;
+        let (_runtime, run_fn) = rt(source, secrets);
         let token: String = run_fn
-            .call(handle)
+            .call::<String>(())
             .expect("run_fn should return the secret value");
         assert_eq!(token, "ghp_test_value");
     }
@@ -636,12 +646,9 @@ mod tests {
     #[test]
     fn secret_errors_for_unknown_name() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [{: secret}] (secret :missing)))"#;
-        let (runtime, run_fn) = rt(source, HashMap::new());
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
+(ci.job :grab [:quire/push] (fn [] (runtime.secret :missing)))"#;
+        let (_runtime, run_fn) = rt(source, HashMap::new());
+        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown secret") && msg.contains("missing"),
@@ -656,7 +663,7 @@ mod tests {
 
         let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hi"])))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
         runtime.set_event_callback(Box::new(move |event| match event {
@@ -669,10 +676,7 @@ mod tests {
         }));
         *runtime.current_job.borrow_mut() = Some("go".to_string());
 
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let _: mlua::Value = run_fn.call(handle).expect("sh call");
+        let _: mlua::Value = run_fn.call(()).expect("sh call");
 
         let calls = received.borrow();
         assert_eq!(calls.len(), 2, "expected 2 events, got: {calls:?}");
@@ -688,16 +692,13 @@ mod tests {
     fn sh_writes_cri_log_inline() {
         let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hi"])))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
         let log_dir = runtime.log_dir().to_path_buf();
         *runtime.current_job.borrow_mut() = Some("go".to_string());
 
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let _: mlua::Value = run_fn.call(handle).expect("sh call");
+        let _: mlua::Value = run_fn.call(()).expect("sh call");
 
         let log_path = log_dir.join("jobs").join("go").join("sh-1.log");
         assert!(log_path.exists(), "expected sh-1.log at {log_path:?}");
@@ -715,7 +716,7 @@ mod tests {
 
         let (runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hi"])))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
         runtime.set_event_callback(Box::new(move |_event| {
@@ -723,23 +724,17 @@ mod tests {
         }));
         // No enter_job — current_job stays None.
 
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let _: mlua::Value = run_fn.call(handle).expect("sh call");
+        let _: mlua::Value = run_fn.call(()).expect("sh call");
 
         assert_eq!(*count.borrow(), 0, "callback should not fire outside a job");
     }
 
     /// Build a pipeline whose single job's run-fn invokes `(sh …)`,
-    /// invoke it with the runtime handle, and decode the resulting Lua
+    /// invoke it with the ambient runtime, and decode the resulting Lua
     /// table as ShOutput.
     fn run_sh_via_job(source: &str) -> ShOutput {
         let (runtime, run_fn) = rt(source, HashMap::new());
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let value: mlua::Value = run_fn.call(handle).expect("sh call should return a value");
+        let value: mlua::Value = run_fn.call(()).expect("sh call should return a value");
         runtime.lua().from_value(value).expect("decode ShOutput")
     }
 
@@ -752,20 +747,17 @@ mod tests {
         );
         let source = r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push]
-  (fn [{: sh : secret}]
-    (let [tok (secret :github_token)]
-      (sh ["echo" tok]))))"#;
+  (fn []
+    (let [tok (runtime.secret :github_token)]
+      (runtime.sh ["echo" tok]))))"#;
         let (runtime, run_fn) = rt(source, secrets);
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
 
         // Mark a current job so sh records into outputs. for_test seeds
         // an empty inputs map, so enter_job would panic; bypass the
         // assertion by writing the field directly.
         *runtime.current_job.borrow_mut() = Some("go".to_string());
 
-        let value: mlua::Value = run_fn.call(handle).expect("sh call");
+        let value: mlua::Value = run_fn.call(()).expect("sh call");
         let returned: ShOutput = runtime.lua().from_value(value).expect("decode");
 
         // The Lua caller still sees the raw value — echo printed it.
@@ -798,7 +790,7 @@ mod tests {
     fn sh_runs_argv_and_captures_stdout() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hello"])))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hello"])))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "hello\n");
@@ -809,7 +801,7 @@ mod tests {
     fn sh_runs_string_under_shell() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh "echo hello | tr a-z A-Z")))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh "echo hello | tr a-z A-Z")))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "HELLO\n");
@@ -819,7 +811,7 @@ mod tests {
     fn sh_reports_nonzero_exit_without_erroring() {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh "exit 7")))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh "exit 7")))"#,
         );
         assert_eq!(r.exit, 7);
     }
@@ -833,8 +825,8 @@ mod tests {
         let r = run_sh_via_job(
             r#"(local ci (require :quire.ci))
 (ci.job :go [:quire/push]
-  (fn [{: sh}]
-    (sh "echo $CI_SH_INHERITED_TEST $CI_SH_OVERRIDE_TEST"
+  (fn []
+    (runtime.sh "echo $CI_SH_INHERITED_TEST $CI_SH_OVERRIDE_TEST"
         {:env {:CI_SH_OVERRIDE_TEST "from-opts"}})))"#,
         );
         assert_eq!(r.exit, 0);
@@ -843,15 +835,12 @@ mod tests {
 
     #[test]
     fn sh_rejects_unknown_opt_key() {
-        let (runtime, run_fn) = rt(
+        let (_runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh "echo hi" {:cwdir "/tmp"})))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh "echo hi" {:cwdir "/tmp"})))"#,
             HashMap::new(),
         );
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
+        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("cwdir"),
@@ -861,15 +850,12 @@ mod tests {
 
     #[test]
     fn sh_rejects_non_sequence_table_as_cmd() {
-        let (runtime, run_fn) = rt(
+        let (_runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh {:env {:FOO "bar"}})))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh {:env {:FOO "bar"}})))"#,
             HashMap::new(),
         );
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
+        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("sequence"),
@@ -879,15 +865,12 @@ mod tests {
 
     #[test]
     fn sh_rejects_empty_argv() {
-        let (runtime, run_fn) = rt(
+        let (_runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh [])))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh [])))"#,
             HashMap::new(),
         );
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
+        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("empty"),
@@ -897,15 +880,12 @@ mod tests {
 
     #[test]
     fn sh_rejects_number_as_cmd() {
-        let (runtime, run_fn) = rt(
+        let (_runtime, run_fn) = rt(
             r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [{: sh}] (sh 42)))"#,
+(ci.job :go [:quire/push] (fn [] (runtime.sh 42)))"#,
             HashMap::new(),
         );
-        let handle = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
-            .expect("install runtime");
-        let err = run_fn.call::<mlua::Value>(handle).unwrap_err();
+        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("string or sequence"),

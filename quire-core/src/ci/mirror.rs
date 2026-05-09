@@ -231,7 +231,6 @@ impl MirrorJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlua::IntoLua;
 
     use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
     use crate::ci::run::RunMeta;
@@ -321,7 +320,7 @@ mod tests {
     #[test]
     fn mirror_after_appends_to_inputs() {
         let source = r#"(local ci (require :quire.ci))
-(ci.job :build [:quire/push] (fn [_] nil))
+(ci.job :build [:quire/push] (fn [] nil))
 (ci.mirror "https://github.com/example/repo.git"
   {:secret :github_token :tag (fn [_] "v1") :after [:build]})"#;
         let inputs = mirror_job_inputs(source);
@@ -448,8 +447,8 @@ mod tests {
             std::env::current_dir().expect("cwd"),
             log_dir,
         ));
-        let _ = RuntimeHandle(runtime.clone())
-            .into_lua(runtime.lua())
+        RuntimeHandle(runtime.clone())
+            .install(runtime.lua())
             .expect("install runtime");
         (runtime, run_fn)
     }
