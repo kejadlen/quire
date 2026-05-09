@@ -82,17 +82,17 @@ The dependency graph is *derived* from the inputs list. No separate `:needs` fie
 
 ### Accessing inputs
 
-The function receives the **runtime handle** as its sole argument — a table with `sh`, `secret`, and `jobs` bound on it. Destructure the primitives the body needs:
+Run-fns are zero-arg functions. The runtime is available as a global `runtime` table whose `__index` metatable dispatches `sh`, `secret`, and `jobs` to closures over the active runtime:
 
 ```
-(fn [{: sh : jobs}]
-  (let [push (jobs :quire/push)]
-    (sh ["git" "checkout" push.sha])))
+(fn []
+  (let [push (runtime.jobs :quire/push)]
+    (runtime.sh ["git" "checkout" push.sha])))
 ```
 
-`(jobs name)` returns the outputs for `name` if `name` is a transitive ancestor of the calling job in the input graph; an unknown or non-ancestor name raises a Lua error. Self-lookup is rejected. Sources and jobs share one namespace — `(jobs :quire/push)` reads the source's outputs uniformly.
+`runtime.jobs` returns the outputs for `name` if `name` is a transitive ancestor of the calling job in the input graph; an unknown or non-ancestor name raises a Lua error. Self-lookup is rejected. Sources and jobs share one namespace — `(runtime.jobs :quire/push)` reads the source's outputs uniformly.
 
-The function-call form sidesteps the awkward dot-access on `/`-containing keys. The `:as` rebinding sugar planned for cron and cherry-picked outputs (see "Future: input args" below) layers on top of the same accessor.
+The `runtime.` prefix is a visible explicit-context marker so reviewers can grep for effect sites. Accessing `runtime` outside a run-fn raises: `runtime accessed outside a job — primitives are only available while a run-fn is executing`.
 
 > **v0 status:** `(jobs :quire/push)` is wired. Job-to-job outputs (where `(jobs :build)` returns a job's `run-fn` return value) are not — there's no writer API yet, and a reachable name with no recorded outputs returns `nil`.
 
@@ -115,16 +115,16 @@ Every push to any ref fires a run that includes every job whose transitive input
 
 ```
 (job :test-main [:quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)]
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
       (when (= "main" push.branch)
-        (sh (.. "git checkout " push.sha " && cargo test"))))))
+        (runtime.sh (.. "git checkout " push.sha " && cargo test"))))))
 
 (job :release [:quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)]
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
       (when (and push.tag (string.match push.tag "^v"))
-        (sh (.. "publish " push.tag))))))
+        (runtime.sh (.. "publish " push.tag))))))
 ```
 
 Fennel's `when` returns `nil` if the predicate is false, otherwise the body. That nil propagates out as the `run` return value, the runner records the job as skipped. The gate and the work are in the same expression.
@@ -137,12 +137,12 @@ Source types that need configuration — cron schedules, webhook paths — can't
 
 ```
 (job :nightly-audit [(cron :daily)]
-  (fn [{: jobs}]
-    (let [tick (jobs :cron)] ...)))
+  (fn []
+    (let [tick (runtime.jobs :cron)] ...)))
 
 (job :hourly-check [(cron :every "1h" :as :hourly)]
-  (fn [{: jobs}]
-    (let [tick (jobs :hourly)] ...)))
+  (fn []
+    (let [tick (runtime.jobs :hourly)] ...)))
 ```
 
 `cron`, `webhook`, etc. would be quire-provided functions in the eval scope. They return marker values; the runner inspects the inputs list for them, registers their event sources, instantiates runs when they fire. The `:as` keyword names the binding when the default name (the source type) would collide.
@@ -172,26 +172,26 @@ A bad `ci.fnl` push gets a CI run that fails immediately with the parse error, s
 
 That's the whole contract. No sugar layer, no introspection, no defaulting. The runner records what was returned.
 
-Inside `run`, the function uses **runtime primitives** bound on the handle. The most important is `(sh cmd opts?)`, which `docker exec`'s a command into the run's container and returns a result table:
+Inside `run`, the function uses **runtime primitives** exposed on the ambient `runtime` global. The most important is `(runtime.sh cmd opts?)`, which `docker exec`'s a command into the run's container and returns a result table:
 
 ```
 (job :test [:quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)]
-      (sh ["git" "checkout" push.sha])
-      (sh "cargo test"))))
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
+      (runtime.sh ["git" "checkout" push.sha])
+      (runtime.sh "cargo test"))))
 ```
 
 `(sh ...)` returns `{:exit :stdout :stderr :cmd}`. The run-fn can branch on that — checking exit, parsing stdout, deciding whether to issue follow-up commands. That dynamism is the whole reason ci.fnl is Fennel and not YAML:
 
 ```
 (job :test-and-package [:quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)]
-      (sh ["git" "checkout" push.sha])
-      (let [test (sh "cargo test")]
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
+      (runtime.sh ["git" "checkout" push.sha])
+      (let [test (runtime.sh "cargo test")]
         (when (= 0 test.exit)
-          (let [pkg (sh "tar czf out.tar.gz target/release")]
+          (let [pkg (runtime.sh "tar czf out.tar.gz target/release")]
             {:exit pkg.exit
              :artifacts ["out.tar.gz"]
              :test-stdout test.stdout}))))))
@@ -205,7 +205,7 @@ If the test fails, the outer `(when ...)` returns nil → job skipped. If it pas
 
 Earlier drafts of this design had three return shapes (string, list of strings, table) plus an `:outputs` field for declarative output extension plus a `:when` field for conditional firing plus an `:image` field for the default container image. All gone. They were paying for conveniences that aren't conveniences in a code-first config:
 
-* **String sugar.** `:run "cargo test"` saves about ten characters over `(fn [_] (sh "cargo test"))`. Not worth a second mental model.
+* **String sugar.** `:run "cargo test"` saves about ten characters over `(fn [] (runtime.sh "cargo test"))`. Not worth a second mental model.
 * **`:outputs` declarative extension.** "Read coverage.json after the command exits" is a Fennel one-liner inside `run`: `(let [r (sh "...")] {:exit r.exit :coverage (read-json "coverage.json")})`. Helpers compose to clean up repetition.
 * **`:when`.** Returning `nil` from `run` already means "skip." Filtering and work end up in the same expression, which makes the intent more visible, not less.
 * **`:image`.** Image is declared once at the pipeline level via `(ci.image ...)`. Per-job override can be added as a map-form opts arg if a pipeline ever needs heterogeneity.
@@ -214,14 +214,14 @@ The residual things that *aren't* "just functions" — the inputs list and the i
 
 ## Runtime primitives
 
-Bound on the runtime handle passed into each `run` function. Destructure what you need: `(fn [{: sh : secret : jobs}] ...)`.
+Exposed on the ambient `runtime` global inside each run-fn. Zero-arg functions — no destructuring needed. Accessing `runtime` outside a run-fn raises an error.
 
-* `(jobs name)` — return outputs for `name` (a transitive ancestor of the calling job, or a source ref). Errors if `name` is not in the calling job's transitive inputs.
-* `(sh cmd opts?)` — `docker exec` a command into the run's container, return `{:exit :stdout :stderr :cmd}`. `cmd` is either a string (run under `sh -c` inside the container) or a non-empty sequence of strings (argv, no shell). `opts` accepts `:env` (table of overrides) and `:cwd` (path inside `/work`).
-* `(secret name)` — resolve a named secret from the operator's config. Errors if the name isn't declared.
-* `(read-file path)`, `(read-json path)`, `(write-file path content)` — workspace I/O. Paths relative to the workspace.
-* `(log msg)` — append to the job's log file. Visible in the web UI.
-* `(env name)` — read an environment variable from the runner's environment.
+* `(runtime.jobs name)` — return outputs for `name` (a transitive ancestor of the calling job, or a source ref). Errors if `name` is not in the calling job's transitive inputs.
+* `(runtime.sh cmd opts?)` — `docker exec` a command into the run's container, return `{:exit :stdout :stderr :cmd}`. `cmd` is either a string (run under `sh -c` inside the container) or a non-empty sequence of strings (argv, no shell). `opts` accepts `:env` (table of overrides) and `:cwd` (path inside `/work`).
+* `(runtime.secret name)` — resolve a named secret from the operator's config. Errors if the name isn't declared.
+* `(runtime.read-file path)`, `(runtime.read-json path)`, `(runtime.write-file path content)` — workspace I/O. Paths relative to the workspace.
+* `(runtime.log msg)` — append to the job's log file. Visible in the web UI.
+* `(runtime.env name)` — read an environment variable from the runner's environment.
 
 Each of these blocks the Fennel function until it returns. Multi-`sh`-call parallelism inside one job is a v2 want; the v1 model is "the function runs sequentially, calling primitives that block."
 
@@ -229,7 +229,7 @@ Each of these blocks the Fennel function until it returns. Multi-`sh`-call paral
 
 > **v0 status:** `sh`, `secret`, and `jobs` are bound today. `sh` currently shells out on the host; the per-run container + `docker exec` tunneling is planned (see backlog `lpmoszxo`, `knmkqkvx`). `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
 
-The execute VM is sandboxed (no `io`/`os`/`debug`), so `sh` is the documented chokepoint for any host effect — `os.execute` and `io.open` are not available alternates. See CI.md for the full sandbox shape and the bwrap opt-in for the untrusted-code threat model.
+The execute VM is sandboxed (no `io`/`os`/`debug`), so `runtime.sh` is the documented chokepoint for any host effect — `os.execute` and `io.open` are not available alternates. See CI.md for the full sandbox shape and the bwrap opt-in for the untrusted-code threat model.
 
 ## A worked example
 
@@ -240,36 +240,36 @@ The execute VM is sandboxed (no `io`/`os`/`debug`), so `sh` is the documented ch
 
 ;; Test on every push to main
 (ci.job :test [:quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)]
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
       (when (= "main" push.branch)
-        (sh ["git" "checkout" push.sha])
-        (sh "cargo test --all-features")))))
+        (runtime.sh ["git" "checkout" push.sha])
+        (runtime.sh "cargo test --all-features")))))
 
 ;; Build only if test passed
 (ci.job :build [:test :quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)
-          test (jobs :test)]
+  (fn []
+    (let [push (runtime.jobs :quire/push)
+          test (runtime.jobs :test)]
       (when (and test (= 0 test.exit))
-        (sh ["git" "checkout" push.sha])
-        (let [r (sh "cargo build --release")]
+        (runtime.sh ["git" "checkout" push.sha])
+        (let [r (runtime.sh "cargo build --release")]
           {:exit r.exit
            :artifacts ["target/release/quire"]})))))
 
 ;; Deploy on push to main only
 (ci.job :deploy [:build]
-  (fn [{: sh : jobs}]
-    (when (jobs :build)
-      (sh "scp target/release/quire host:/usr/local/bin/"))))
+  (fn []
+    (when (runtime.jobs :build)
+      (runtime.sh "scp target/release/quire host:/usr/local/bin/"))))
 
 ;; Tagged release: publish to a registry
 (ci.job :publish [:quire/push]
-  (fn [{: sh : jobs}]
-    (let [push (jobs :quire/push)]
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
       (when (and push.tag (string.match push.tag "^v"))
-        (sh ["git" "checkout" push.tag])
-        (sh "cargo publish")))))
+        (runtime.sh ["git" "checkout" push.tag])
+        (runtime.sh "cargo publish")))))
 ```
 
 What this expresses:
@@ -312,12 +312,12 @@ The three-context model means **`ci.fnl` is re-evaluated more than you might exp
 * **Builtins live under `quire/`**; user job ids cannot contain `/`.
 * **For v1, the only source is `:quire/push`.** Cron, webhook, manual deferred.
 * **Filtering happens inside `run`** by returning `nil`. Every push starts a run; jobs that return nil from `run` are skipped.
-* **Runtime handle as the run-fn argument.** The function receives a single table `{: sh : secret : jobs ...}` and destructures the primitives it uses. Slash-containing source names are read via the `jobs` accessor — `(jobs :quire/push)` — never via dot access.
-* **`(jobs name)` is the only accessor for upstream outputs**, covering both source refs and job outputs. Transitive ancestors are visible; non-ancestors and unknown names raise a Lua error.
+* **Ambient `runtime` global.** Run-fns are zero-arg `(fn [] …)`. The runtime is installed as a global Lua table whose `__index` metatable dispatches `runtime.sh`, `runtime.secret`, and `runtime.jobs` to closures over the active runtime. The `runtime.` prefix makes effect sites grep-able. One-arg run-fns are rejected at registration with a clear error message.
+* **`(runtime.jobs name)` is the only accessor for upstream outputs**, covering both source refs and job outputs. Transitive ancestors are visible; non-ancestors and unknown names raise a Lua error.
 * **Dependency graph derived from the inputs list**, not declared separately. No `:needs`.
 * **Four structural validations**: acyclic (registration eval), non-empty inputs (registration eval), reachability from a source (registration eval), no `/` in user job ids (parse time). All fail-closed with named-target error messages.
-* **`run` is a function** `(fn [{: jobs ...}] ...)`. Returns a table (the outputs) or `nil` (skipped). No sugar.
-* **`(sh cmd opts?)` is the only host-effect primitive.** `docker exec`s into the run's container; returns `{:exit :stdout :stderr :cmd}`. There is no `(container ...)` form. The execute VM is sandboxed (no `io`/`os`/`debug`) so `sh` is the documented chokepoint.
+* **`run` is a zero-arg function** `(fn [] …)`. Returns a table (the outputs) or `nil` (skipped). Runtime primitives accessed via the ambient `runtime` global. No sugar.
+* **`(runtime.sh cmd opts?)` is the only host-effect primitive.** `docker exec`s into the run's container; returns `{:exit :stdout :stderr :cmd}`. There is no `(container ...)` form. The execute VM is sandboxed (no `io`/`os`/`debug`) so `runtime.sh` is the documented chokepoint.
 * **`(ci.image <name>)` declares the image** at the pipeline level. One image per pipeline. Per-job override deferred until pipelines actually need heterogeneity; would arrive as a map-form `(ci.job ...)` opts arg.
 * **Three eval contexts** — registration, run start, per job — all in-process inside `quire serve`. Sandboxing model and threat model are described in CI.md.
 * **Source registration sourced from the default branch only** (relevant once registration becomes meaningful — for v1 it's a no-op since `:quire/push` needs no registration).
