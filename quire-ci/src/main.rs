@@ -54,6 +54,61 @@ enum Commands {
     },
 }
 
+/// RAII wrapper around the tempdir that holds a `quire-ci run`'s
+/// captured sh logs when no `--out-dir` was passed. On drop, prints
+/// each log file's contents to stdout, then lets the underlying
+/// [`tempfile::TempDir`] clean up the directory. Drop fires whether
+/// the run succeeded or failed.
+struct DumpLogsOnDrop {
+    dir: tempfile::TempDir,
+}
+
+impl DumpLogsOnDrop {
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
+    /// Walk `<path>/jobs/<job_id>/sh-<n>.log` in alphabetical order
+    /// and print each file's contents to stdout, stripping the CRI
+    /// line prefix so the output reads like the original sh
+    /// stdout/stderr.
+    fn dump(&self) -> std::io::Result<()> {
+        let jobs_dir = self.path().join("jobs");
+        let mut jobs: Vec<_> = fs_err::read_dir(&jobs_dir)?
+            .filter_map(Result::ok)
+            .collect();
+        jobs.sort_by_key(|e| e.file_name());
+        for job in jobs {
+            let mut shes: Vec<_> = fs_err::read_dir(job.path())?
+                .filter_map(Result::ok)
+                .collect();
+            shes.sort_by_key(|e| e.file_name());
+            for sh in shes {
+                println!(
+                    "==> {}/{}",
+                    job.file_name().to_string_lossy(),
+                    sh.file_name().to_string_lossy(),
+                );
+                let contents = fs_err::read_to_string(sh.path())?;
+                for line in contents.lines() {
+                    // CRI: "<ts> <stream> <tag> <text>"
+                    let stripped = line.splitn(4, ' ').nth(3).unwrap_or(line);
+                    println!("{stripped}");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DumpLogsOnDrop {
+    fn drop(&mut self) {
+        // Field drops run after this body, so `self.dir` cleans up
+        // the directory after we've finished reading from it.
+        let _ = self.dump();
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 #[value(rename_all = "lowercase")]
 enum EventsKind {
@@ -73,18 +128,18 @@ fn main() -> miette::Result<()> {
                 EventsKind::Null => Box::new(NullSink),
                 EventsKind::Stdout => Box::new(JsonlSink::new(io::stdout())),
             };
-            let (log_dir, announce_path) = match out_dir {
+            let (log_dir, _dump) = match out_dir {
                 Some(path) => {
                     fs_err::create_dir_all(&path).into_diagnostic()?;
-                    (path, false)
+                    (path, None)
                 }
-                None => (tempfile::tempdir().into_diagnostic()?.keep(), true),
+                None => {
+                    let dir = tempfile::tempdir().into_diagnostic()?;
+                    let path = dir.path().to_path_buf();
+                    (path, Some(DumpLogsOnDrop { dir }))
+                }
             };
-            run_pipeline(cli.workspace, sink, log_dir.clone())?;
-            if announce_path {
-                println!("logs at {}", log_dir.display());
-            }
-            Ok(())
+            run_pipeline(cli.workspace, sink, log_dir)
         }
     }
 }
