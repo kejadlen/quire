@@ -49,34 +49,29 @@ impl From<mlua::Error> for RuntimeError {
 
 pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 
-/// Per-sh timing: (index, started_at, finished_at).
-pub type ShTimings = Vec<(usize, Timestamp, Timestamp)>;
+/// Per-sh timing: (started_at, finished_at). Sequential by sh-call
+/// order within a job; consumers derive the 1-based sh index from the
+/// position in the vector.
+pub type ShTimings = Vec<(Timestamp, Timestamp)>;
 
-/// Lifecycle events fired by [`Runtime::sh`] when a callback is
-/// installed via [`Runtime::set_sh_callback`]. Carries borrowed strings
-/// so the hot path doesn't allocate on the way through.
+/// Lifecycle events fired by [`Runtime`] for an installed observer.
+/// Carries borrowed strings so the hot path doesn't allocate.
+///
+/// Currently only sh process lifecycle is observable; the variant
+/// names leave room for other event sources (secret access, jobs
+/// lookups, etc.) without renaming the enum.
 #[derive(Debug)]
-pub enum ShEvent<'a> {
-    Started {
-        job_id: &'a str,
-        n: usize,
-        started_at: Timestamp,
-        cmd: &'a str,
-    },
-    Finished {
-        job_id: &'a str,
-        n: usize,
-        finished_at: Timestamp,
-        exit: i32,
-    },
+pub enum RuntimeEvent<'a> {
+    ShStarted { cmd: &'a str },
+    ShFinished { exit: i32 },
 }
 
-/// A callback that observes [`Runtime::sh`] lifecycle events.
-pub type ShCallback = Box<dyn FnMut(ShEvent<'_>)>;
+/// A callback that observes [`RuntimeEvent`]s.
+pub type RuntimeCallback = Box<dyn FnMut(RuntimeEvent<'_>)>;
 
 /// The default callback installed on a fresh [`Runtime`]: drops every
-/// event. Replaced via [`Runtime::set_sh_callback`].
-fn noop_sh_callback() -> ShCallback {
+/// event. Replaced via [`Runtime::set_event_callback`].
+fn noop_event_callback() -> RuntimeCallback {
     Box::new(|_| {})
 }
 
@@ -110,15 +105,13 @@ pub struct Runtime {
     pub inputs: HashMap<String, HashMap<String, Option<mlua::Value>>>,
     pub current_job: RefCell<Option<String>>,
     pub outputs: RefCell<HashMap<String, Vec<ShOutput>>>,
-    /// Per-sh timing records: job_id → (sh_index, started_at, finished_at).
-    /// Parallel to `outputs`; each entry at the same index corresponds.
+    /// Per-sh timing records: job_id → (started_at, finished_at).
+    /// Parallel to `outputs`; consumers derive the 1-based sh index
+    /// from the position in the vector.
     pub sh_timings: RefCell<HashMap<String, ShTimings>>,
-    /// Per-job sh call counter for assigning sequential indices.
-    sh_counter: RefCell<HashMap<String, usize>>,
-    /// Observer notified when an sh call starts and finishes. Defaults
-    /// to a no-op; callers install a real one via
-    /// [`Runtime::set_sh_callback`].
-    sh_callback: RefCell<ShCallback>,
+    /// Observer notified of [`RuntimeEvent`]s. Defaults to a no-op;
+    /// callers install a real one via [`Runtime::set_event_callback`].
+    event_callback: RefCell<RuntimeCallback>,
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
     workspace: std::path::PathBuf,
@@ -181,8 +174,7 @@ impl Runtime {
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
-            sh_counter: RefCell::new(HashMap::new()),
-            sh_callback: RefCell::new(noop_sh_callback()),
+            event_callback: RefCell::new(noop_event_callback()),
             workspace,
         }
     }
@@ -233,18 +225,18 @@ impl Runtime {
         std::mem::take(&mut *self.sh_timings.borrow_mut())
     }
 
-    /// Install an observer for sh lifecycle events. The callback fires
-    /// once before each sh process spawns ([`ShEvent::Started`]) and
-    /// once after it exits ([`ShEvent::Finished`]), but only when an
-    /// `enter_job`/`leave_job` window is open — sh calls outside a job
-    /// are not observed, mirroring the recording behavior.
+    /// Install an observer for runtime lifecycle events. Currently the
+    /// only events fired are [`RuntimeEvent::ShStarted`] (before each
+    /// sh process spawns) and [`RuntimeEvent::ShFinished`] (after exit),
+    /// only when an `enter_job`/`leave_job` window is open — sh calls
+    /// outside a job are not observed, mirroring the recording behavior.
     ///
     /// Replaces the previously installed callback (the default is a
     /// no-op). The callback must not call back into `Runtime::sh`
     /// (re-entrant borrow on the callback slot) or into
     /// `take_outputs` / `take_sh_timings` mid-run.
-    pub fn set_sh_callback(&self, callback: ShCallback) {
-        *self.sh_callback.borrow_mut() = callback;
+    pub fn set_event_callback(&self, callback: RuntimeCallback) {
+        *self.event_callback.borrow_mut() = callback;
     }
 
     /// Resolve a declared secret by name, caching it for redaction.
@@ -264,33 +256,18 @@ impl Runtime {
     /// current job (if one is active). Non-zero exits come back in
     /// `:exit`, not as `Err`.
     ///
-    /// Fires `ShEvent::Started` before the spawn and
-    /// `ShEvent::Finished` after exit when an sh callback has been
-    /// installed via [`Self::set_sh_callback`] *and* a job is current.
-    /// Callbacks must not re-enter `sh`.
+    /// Fires `RuntimeEvent::ShStarted` before the spawn and
+    /// `RuntimeEvent::ShFinished` after exit when a job is current.
+    /// Callbacks installed via [`Self::set_event_callback`] must not
+    /// re-enter `sh`.
     pub fn sh(&self, cmd: Cmd, opts: ShOpts) -> RuntimeResult<ShOutput> {
         let started_at = Timestamp::now();
         let program = cmd.program().to_string();
+        let current_job = self.current_job.borrow().clone();
 
-        // Reserve (job_id, n) up-front when a job is current; we need
-        // `n` to label the Started callback. Increment runs before the
-        // spawn so a panic in run() still leaves a consistent counter.
-        let job_id_n: Option<(String, usize)> = self.current_job.borrow().as_ref().map(|job| {
-            let mut counter = self.sh_counter.borrow_mut();
-            let entry = counter.entry(job.clone()).or_insert(1);
-            let n = *entry;
-            *entry += 1;
-            (job.clone(), n)
-        });
-
-        if let Some((job_id, n)) = &job_id_n {
+        if current_job.is_some() {
             let cmd_display = redact(&cmd.to_string(), &self.registry.borrow());
-            (self.sh_callback.borrow_mut())(ShEvent::Started {
-                job_id,
-                n: *n,
-                started_at,
-                cmd: &cmd_display,
-            });
+            (self.event_callback.borrow_mut())(RuntimeEvent::ShStarted { cmd: &cmd_display });
         }
 
         let output =
@@ -302,13 +279,8 @@ impl Runtime {
                 })?;
         let finished_at = Timestamp::now();
 
-        if let Some((job_id, n)) = &job_id_n {
-            (self.sh_callback.borrow_mut())(ShEvent::Finished {
-                job_id,
-                n: *n,
-                finished_at,
-                exit: output.exit,
-            });
+        if let Some(job_id) = current_job {
+            (self.event_callback.borrow_mut())(RuntimeEvent::ShFinished { exit: output.exit });
 
             self.outputs
                 .borrow_mut()
@@ -325,9 +297,9 @@ impl Runtime {
                 });
             self.sh_timings
                 .borrow_mut()
-                .entry(job_id.clone())
+                .entry(job_id)
                 .or_default()
-                .push((*n, started_at, finished_at));
+                .push((started_at, finished_at));
         }
 
         Ok(output)
@@ -347,8 +319,7 @@ impl Runtime {
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
-            sh_counter: RefCell::new(HashMap::new()),
-            sh_callback: RefCell::new(noop_sh_callback()),
+            event_callback: RefCell::new(noop_event_callback()),
             workspace: std::env::current_dir().expect("cwd"),
         }
     }
@@ -640,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn sh_callback_fires_started_then_finished() {
+    fn event_callback_fires_sh_started_then_sh_finished() {
         let received: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let received_clone = received.clone();
 
@@ -649,18 +620,12 @@ mod tests {
 (ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
-        runtime.set_sh_callback(Box::new(move |event| match event {
-            ShEvent::Started { job_id, n, cmd, .. } => {
-                received_clone
-                    .borrow_mut()
-                    .push(format!("started:{job_id}:{n}:{cmd}"));
+        runtime.set_event_callback(Box::new(move |event| match event {
+            RuntimeEvent::ShStarted { cmd } => {
+                received_clone.borrow_mut().push(format!("started:{cmd}"));
             }
-            ShEvent::Finished {
-                job_id, n, exit, ..
-            } => {
-                received_clone
-                    .borrow_mut()
-                    .push(format!("finished:{job_id}:{n}:{exit}"));
+            RuntimeEvent::ShFinished { exit } => {
+                received_clone.borrow_mut().push(format!("finished:{exit}"));
             }
         }));
         *runtime.current_job.borrow_mut() = Some("go".to_string());
@@ -673,20 +638,15 @@ mod tests {
         let calls = received.borrow();
         assert_eq!(calls.len(), 2, "expected 2 events, got: {calls:?}");
         assert!(
-            calls[0].starts_with("started:go:1:"),
+            calls[0].starts_with("started:") && calls[0].contains("echo"),
             "started event shape: {}",
             calls[0]
         );
-        assert!(
-            calls[0].contains("echo"),
-            "started should carry cmd: {}",
-            calls[0]
-        );
-        assert_eq!(calls[1], "finished:go:1:0");
+        assert_eq!(calls[1], "finished:0");
     }
 
     #[test]
-    fn sh_callback_not_fired_without_current_job() {
+    fn event_callback_not_fired_without_current_job() {
         let count = Rc::new(RefCell::new(0u32));
         let count_clone = count.clone();
 
@@ -695,7 +655,7 @@ mod tests {
 (ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
-        runtime.set_sh_callback(Box::new(move |_event| {
+        runtime.set_event_callback(Box::new(move |_event| {
             *count_clone.borrow_mut() += 1;
         }));
         // No enter_job — current_job stays None.

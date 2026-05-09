@@ -378,14 +378,14 @@ impl Run {
             let job_dir = self.path().join("jobs").join(job_id);
 
             for (i, output) in sh_outputs.iter().enumerate() {
-                let (n, started_at, finished_at) = job_timings
+                let n = i + 1;
+                let (started_at, finished_at) = job_timings
                     .and_then(|t| t.get(i))
                     .copied()
                     .unwrap_or_else(|| {
                         // Fallback if timing wasn't captured (shouldn't happen).
-                        let n = i + 1;
                         let now = jiff::Timestamp::now();
-                        (n, now, now)
+                        (now, now)
                     });
 
                 // Write CRI log file.
