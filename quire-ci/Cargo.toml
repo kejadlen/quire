@@ -12,3 +12,4 @@ mlua = { workspace = true }
 quire-core = { path = "../quire-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }

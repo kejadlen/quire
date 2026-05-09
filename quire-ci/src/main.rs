@@ -45,6 +45,12 @@ enum Commands {
         /// Where to send structured run events.
         #[arg(long, value_enum, default_value_t = EventsKind::Null)]
         events: EventsKind,
+
+        /// Directory for per-sh CRI log files. Defaults to a fresh
+        /// tempdir whose path is printed on stdout at the end of the
+        /// run.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
     },
 }
 
@@ -62,12 +68,23 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Validate => validate(cli.workspace),
-        Commands::Run { events } => {
+        Commands::Run { events, out_dir } => {
             let sink: Box<dyn EventSink> = match events {
                 EventsKind::Null => Box::new(NullSink),
                 EventsKind::Stdout => Box::new(JsonlSink::new(io::stdout())),
             };
-            run_pipeline(cli.workspace, sink)
+            let (log_dir, announce_path) = match out_dir {
+                Some(path) => {
+                    fs_err::create_dir_all(&path).into_diagnostic()?;
+                    (path, false)
+                }
+                None => (tempfile::tempdir().into_diagnostic()?.keep(), true),
+            };
+            run_pipeline(cli.workspace, sink, log_dir.clone())?;
+            if announce_path {
+                println!("logs at {}", log_dir.display());
+            }
+            Ok(())
         }
     }
 }
@@ -97,7 +114,11 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
     Ok(())
 }
 
-fn run_pipeline(workspace: PathBuf, sink: Box<dyn EventSink>) -> miette::Result<()> {
+fn run_pipeline(
+    workspace: PathBuf,
+    sink: Box<dyn EventSink>,
+    log_dir: PathBuf,
+) -> miette::Result<()> {
     let pipeline = compile_at(&workspace)?;
 
     let job_ids: Vec<String> = pipeline
@@ -124,6 +145,7 @@ fn run_pipeline(workspace: PathBuf, sink: Box<dyn EventSink>) -> miette::Result<
         &meta,
         &git_dir,
         workspace,
+        log_dir,
     ));
 
     // Active job pointer, shared between the main loop and the runtime

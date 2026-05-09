@@ -231,6 +231,7 @@ impl Run {
             &meta,
             git_dir,
             workspace.to_path_buf(),
+            self.path(),
         ));
 
         let lua = runtime.lua();
@@ -359,9 +360,13 @@ impl Run {
         Ok(())
     }
 
-    /// Write sh events to the database and per-sh CRI log files to
-    /// disk. Written before the final state transition so logs are
+    /// Insert sh_events DB rows from the runtime's captured outputs and
+    /// timings. Written before the final state transition so events are
     /// available for both successful and failed runs.
+    ///
+    /// Per-sh CRI log files are written by [`Runtime::sh`] inline as
+    /// the run progresses (see `Runtime::log_dir`), so this is purely
+    /// a database concern.
     fn write_sh_records(
         &self,
         outputs: &HashMap<String, Vec<ShOutput>>,
@@ -375,25 +380,16 @@ impl Run {
 
         for (job_id, sh_outputs) in outputs {
             let job_timings = timings.get(job_id);
-            let job_dir = self.path().join("jobs").join(job_id);
 
             for (i, output) in sh_outputs.iter().enumerate() {
-                let n = i + 1;
                 let (started_at, finished_at) = job_timings
                     .and_then(|t| t.get(i))
                     .copied()
                     .unwrap_or_else(|| {
-                        // Fallback if timing wasn't captured (shouldn't happen).
                         let now = jiff::Timestamp::now();
                         (now, now)
                     });
 
-                // Write CRI log file.
-                fs_err::create_dir_all(&job_dir)?;
-                let sh_path = job_dir.join(format!("sh-{n}.log"));
-                super::logs::write_cri_log(&sh_path, output, &started_at.to_string())?;
-
-                // Insert sh event into the database.
                 db.execute(
                     "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

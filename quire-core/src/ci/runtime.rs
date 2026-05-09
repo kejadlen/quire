@@ -39,6 +39,13 @@ pub enum RuntimeError {
 
     #[error("git error: {0}")]
     Git(String),
+
+    #[error("failed to write CRI log at {path}")]
+    LogWriteFailed {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl From<mlua::Error> for RuntimeError {
@@ -112,6 +119,10 @@ pub struct Runtime {
     /// Observer notified of [`RuntimeEvent`]s. Defaults to a no-op;
     /// callers install a real one via [`Runtime::set_event_callback`].
     event_callback: RefCell<RuntimeCallback>,
+    /// Directory under which [`Runtime::sh`] writes per-sh CRI log
+    /// files at `<log_dir>/jobs/<job_id>/sh-<n>.log`. Set at
+    /// construction time; callers manage the directory's lifetime.
+    log_dir: std::path::PathBuf,
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
     workspace: std::path::PathBuf,
@@ -135,6 +146,7 @@ impl Runtime {
         meta: &RunMeta,
         git_dir: &std::path::Path,
         workspace: std::path::PathBuf,
+        log_dir: std::path::PathBuf,
     ) -> Self {
         let transitive = pipeline.transitive_inputs();
         let lua = pipeline.fennel().lua();
@@ -175,6 +187,7 @@ impl Runtime {
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
             event_callback: RefCell::new(noop_event_callback()),
+            log_dir,
             workspace,
         }
     }
@@ -282,19 +295,35 @@ impl Runtime {
         if let Some(job_id) = current_job {
             (self.event_callback.borrow_mut())(RuntimeEvent::ShFinished { exit: output.exit });
 
+            let recorded = {
+                let reg = self.registry.borrow();
+                ShOutput {
+                    exit: output.exit,
+                    stdout: redact(&output.stdout, &reg),
+                    stderr: redact(&output.stderr, &reg),
+                    cmd: redact(&output.cmd, &reg),
+                }
+            };
+
+            let job_dir = self.log_dir.join("jobs").join(&job_id);
+            fs_err::create_dir_all(&job_dir).map_err(|source| RuntimeError::LogWriteFailed {
+                path: job_dir.clone(),
+                source,
+            })?;
+            let n = self.outputs.borrow().get(&job_id).map_or(0, Vec::len) + 1;
+            let log_path = job_dir.join(format!("sh-{n}.log"));
+            super::logs::write_cri_log(&log_path, &recorded, &started_at.to_string()).map_err(
+                |source| RuntimeError::LogWriteFailed {
+                    path: log_path,
+                    source,
+                },
+            )?;
+
             self.outputs
                 .borrow_mut()
                 .entry(job_id.clone())
                 .or_default()
-                .push({
-                    let reg = self.registry.borrow();
-                    ShOutput {
-                        exit: output.exit,
-                        stdout: redact(&output.stdout, &reg),
-                        stderr: redact(&output.stderr, &reg),
-                        cmd: redact(&output.cmd, &reg),
-                    }
-                });
+                .push(recorded);
             self.sh_timings
                 .borrow_mut()
                 .entry(job_id)
@@ -308,10 +337,19 @@ impl Runtime {
 
 #[cfg(test)]
 impl Runtime {
+    /// Test-only accessor for the runtime's log directory.
+    pub(crate) fn log_dir(&self) -> &std::path::Path {
+        &self.log_dir
+    }
+
     /// Minimal constructor for tests — no source outputs, just
-    /// secrets and the pipeline's VM. Defaults the workspace to the
-    /// process CWD so tests that don't care about cwd keep working.
+    /// secrets and the pipeline's VM. Workspace defaults to cwd; logs
+    /// land under a fresh tempdir each call (leaked into the system
+    /// temp area, since tests don't share a TempDir handle).
     fn for_test(pipeline: Pipeline, secrets: HashMap<String, SecretString>) -> Self {
+        let log_dir = tempfile::tempdir()
+            .expect("tempdir for runtime logs")
+            .keep();
         Self {
             pipeline,
             registry: RefCell::new(SecretRegistry::from(secrets)),
@@ -320,6 +358,7 @@ impl Runtime {
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
             event_callback: RefCell::new(noop_event_callback()),
+            log_dir,
             workspace: std::env::current_dir().expect("cwd"),
         }
     }
@@ -643,6 +682,30 @@ mod tests {
             calls[0]
         );
         assert_eq!(calls[1], "finished:0");
+    }
+
+    #[test]
+    fn sh_writes_cri_log_inline() {
+        let (runtime, run_fn) = rt(
+            r#"(local ci (require :quire.ci))
+(ci.job :go [:quire/push] (fn [{: sh}] (sh ["echo" "hi"])))"#,
+            HashMap::new(),
+        );
+        let log_dir = runtime.log_dir().to_path_buf();
+        *runtime.current_job.borrow_mut() = Some("go".to_string());
+
+        let handle = RuntimeHandle(runtime.clone())
+            .into_lua(runtime.lua())
+            .expect("install runtime");
+        let _: mlua::Value = run_fn.call(handle).expect("sh call");
+
+        let log_path = log_dir.join("jobs").join("go").join("sh-1.log");
+        assert!(log_path.exists(), "expected sh-1.log at {log_path:?}");
+        let contents = std::fs::read_to_string(&log_path).expect("read log");
+        assert!(
+            contents.contains("stdout F hi"),
+            "expected stdout line in log, got: {contents:?}"
+        );
     }
 
     #[test]

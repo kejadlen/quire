@@ -100,6 +100,11 @@ impl From<RuntimeError> for Error {
                 source,
             },
             RuntimeError::Git(s) => Error::Git(s),
+            RuntimeError::LogWriteFailed { path, source } => Error::CommandSpawnFailed {
+                program: "write-cri-log".to_string(),
+                cwd: path,
+                source,
+            },
         }
     }
 }

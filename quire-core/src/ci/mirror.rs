@@ -439,12 +439,14 @@ mod tests {
             RunFn::Rust(f) => f,
             RunFn::Lua(_) => panic!("mirror should register a RunFn::Rust"),
         };
+        let log_dir = tempfile::tempdir().expect("tempdir for mirror logs").keep();
         let runtime = Rc::new(Runtime::new(
             pipeline,
             secrets,
             meta,
             git_dir,
             std::env::current_dir().expect("cwd"),
+            log_dir,
         ));
         let _ = RuntimeHandle(runtime.clone())
             .into_lua(runtime.lua())

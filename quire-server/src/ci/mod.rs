@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-pub(crate) mod logs;
 mod run;
 
 pub(crate) mod error;
