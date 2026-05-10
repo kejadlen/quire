@@ -325,16 +325,24 @@ impl Run {
     /// Run finishes `Complete` on exit 0, `Failed` otherwise. The DB
     /// rows are written even on failure so the web UI can render
     /// partial progress.
-    pub fn execute_via_quire_ci(mut self, workspace: &Path) -> Result<()> {
+    pub fn execute_via_quire_ci(
+        mut self,
+        workspace: &Path,
+        meta: &RunMeta,
+        secrets: &HashMap<String, SecretString>,
+    ) -> Result<()> {
         self.transition(RunState::Active)?;
 
         let run_dir = self.path();
         let log_path = run_dir.join("quire-ci.log");
         let events_path = run_dir.join("events.jsonl");
+        let dispatch_path = run_dir.join("dispatch.json");
         // fs_err for the path-bearing IO error; unwrap to std::fs::File so
         // it's convertible into Stdio.
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
+
+        write_dispatch(&dispatch_path, meta, secrets)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -351,6 +359,8 @@ impl Run {
             .arg(&run_dir)
             .arg("--events")
             .arg(&events_path)
+            .arg("--dispatch")
+            .arg(&dispatch_path)
             .stdout(std::process::Stdio::from(log))
             .stderr(std::process::Stdio::from(log_clone))
             .status()
@@ -596,6 +606,44 @@ impl Run {
         )?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
+}
+
+/// Serialize the dispatch payload as JSON and write it to `path` with
+/// owner-only permissions on Unix. Secrets cross as plaintext so the
+/// 0600 mode is the line of defense against other local users; failure
+/// to set the mode aborts the dispatch (better than leaking).
+fn write_dispatch(
+    path: &Path,
+    meta: &RunMeta,
+    secrets: &HashMap<String, SecretString>,
+) -> Result<()> {
+    use quire_core::ci::dispatch::Dispatch;
+
+    let mut revealed: HashMap<String, String> = HashMap::with_capacity(secrets.len());
+    for (name, value) in secrets {
+        revealed.insert(
+            name.clone(),
+            value.reveal().map_err(Error::Secret)?.to_string(),
+        );
+    }
+    let dispatch = Dispatch {
+        meta: meta.clone(),
+        secrets: revealed,
+    };
+    let json = serde_json::to_vec_pretty(&dispatch).map_err(std::io::Error::other)?;
+
+    // Open with mode 0600 from the start so there's no window where
+    // the file is world-readable.
+    use fs_err::os::unix::fs::OpenOptionsExt;
+    use std::io::Write;
+    let mut file = fs_err::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(&json)?;
+    Ok(())
 }
 
 /// Take the final path component of a runs base (`runs/<repo>/`) and

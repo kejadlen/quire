@@ -197,7 +197,7 @@ fn trigger_ref(
             // The orchestrator already validated `pipeline` to fail-fast on
             // bad ci.fnl; `quire-ci` recompiles inside its own process.
             drop(pipeline);
-            run.execute_via_quire_ci(&workspace)?;
+            run.execute_via_quire_ci(&workspace, &meta, secrets)?;
         }
     }
     Ok(())

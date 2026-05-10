@@ -34,11 +34,13 @@ enum Commands {
 
     /// Run the whole pipeline against the workspace, in topo order.
     ///
-    /// Synthesizes a placeholder `quire/push` and runs with no
-    /// secrets — `(secret :name)` calls error, and `(jobs upstream)`
-    /// reads return Nil for everything except `quire/push` (the
-    /// runtime doesn't yet propagate run-fn outputs into downstream
-    /// jobs' input views).
+    /// `--dispatch <path>` points at a JSON file (see
+    /// [`quire_core::ci::dispatch::Dispatch`]) that supplies push
+    /// metadata and secrets when the orchestrator dispatches via
+    /// `:executor :quire-ci`. Standalone invocations omit the flag
+    /// and fall back to placeholder meta with no secrets — `(secret
+    /// :name)` calls error, and `(jobs upstream)` reads return Nil
+    /// for everything except `quire/push`.
     Run {
         /// Where to send the structured event stream. Accepts:
         ///   `null`   — drop events (default).
@@ -54,6 +56,13 @@ enum Commands {
         /// run.
         #[arg(long)]
         out_dir: Option<PathBuf>,
+
+        /// Path to a JSON dispatch file produced by the orchestrator.
+        /// Carries push metadata and the secrets the run-fns may
+        /// resolve. Omit for standalone runs (placeholder meta, no
+        /// secrets).
+        #[arg(long)]
+        dispatch: Option<PathBuf>,
     },
 }
 
@@ -134,7 +143,11 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Validate => validate(cli.workspace),
-        Commands::Run { events, out_dir } => {
+        Commands::Run {
+            events,
+            out_dir,
+            dispatch,
+        } => {
             let sink: Box<dyn EventSink> = match events {
                 EventsTarget::Null => Box::new(NullSink),
                 EventsTarget::Stdout => Box::new(JsonlSink::new(io::stdout())),
@@ -154,7 +167,11 @@ fn main() -> miette::Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-            run_pipeline(cli.workspace, sink, log_dir)
+            let (meta, secrets) = match dispatch {
+                Some(path) => load_dispatch(&path)?,
+                None => (placeholder_meta(), HashMap::new()),
+            };
+            run_pipeline(cli.workspace, sink, log_dir, meta, secrets)
         }
     }
 }
@@ -184,10 +201,40 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
     Ok(())
 }
 
+/// Standalone runs synthesize a placeholder `quire/push`. Real meta
+/// arrives via `--dispatch` from the orchestrator.
+fn placeholder_meta() -> RunMeta {
+    RunMeta {
+        sha: "0".repeat(40),
+        r#ref: "HEAD".to_string(),
+        pushed_at: jiff::Timestamp::now(),
+    }
+}
+
+/// Read and parse the dispatch file the orchestrator wrote before
+/// spawning. Wraps revealed secret values back into `SecretString`.
+fn load_dispatch(
+    path: &std::path::Path,
+) -> miette::Result<(RunMeta, HashMap<String, quire_core::secret::SecretString>)> {
+    use quire_core::ci::dispatch::Dispatch;
+    use quire_core::secret::SecretString;
+
+    let bytes = fs_err::read(path).into_diagnostic()?;
+    let dispatch: Dispatch = serde_json::from_slice(&bytes).into_diagnostic()?;
+    let secrets = dispatch
+        .secrets
+        .into_iter()
+        .map(|(name, value)| (name, SecretString::from(value)))
+        .collect();
+    Ok((dispatch.meta, secrets))
+}
+
 fn run_pipeline(
     workspace: PathBuf,
     sink: Box<dyn EventSink>,
     log_dir: PathBuf,
+    meta: RunMeta,
+    secrets: HashMap<String, quire_core::secret::SecretString>,
 ) -> miette::Result<()> {
     let pipeline = compile_at(&workspace)?;
 
@@ -202,20 +249,9 @@ fn run_pipeline(
 
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
-    let meta = RunMeta {
-        sha: "0".repeat(40),
-        r#ref: "HEAD".to_string(),
-        pushed_at: jiff::Timestamp::now(),
-    };
-
     let git_dir = workspace.join(".git");
     let runtime = Rc::new(Runtime::new(
-        pipeline,
-        HashMap::new(),
-        &meta,
-        &git_dir,
-        workspace,
-        log_dir,
+        pipeline, secrets, &meta, &git_dir, workspace, log_dir,
     ));
 
     // Active job pointer, shared between the main loop and the

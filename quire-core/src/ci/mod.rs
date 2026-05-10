@@ -5,6 +5,7 @@
 //! (where `quire-ci` invokes them) and on the server (where the
 //! orchestrator drives them).
 
+pub mod dispatch;
 pub mod event;
 pub mod logs;
 pub mod mirror;
