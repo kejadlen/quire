@@ -66,6 +66,13 @@ pub enum Error {
 
     #[error("quire-ci exited with status {exit:?}")]
     QuireCiExit { exit: Option<i32> },
+
+    #[error("failed to parse quire-ci event stream at {path}")]
+    EventStreamParse {
+        path: std::path::PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

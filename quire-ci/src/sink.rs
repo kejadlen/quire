@@ -7,7 +7,7 @@
 
 use std::io::{self, Write};
 
-use crate::event::Event;
+use quire_core::ci::event::Event;
 
 /// A consumer of pipeline events.
 pub trait EventSink {
@@ -54,7 +54,7 @@ impl<W: Write> EventSink for JsonlSink<W> {
 mod tests {
     use super::*;
 
-    use crate::event::EventKind;
+    use quire_core::ci::event::EventKind;
 
     fn sample_started(job_id: &str) -> Event {
         Event {

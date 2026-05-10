@@ -1,4 +1,3 @@
-mod event;
 mod sink;
 
 use std::cell::RefCell;
@@ -9,11 +8,11 @@ use std::rc::Rc;
 
 use clap::Parser;
 use miette::IntoDiagnostic;
+use quire_core::ci::event::{Event, EventKind, JobOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 
-use crate::event::{Event, EventKind, JobOutcome};
 use crate::sink::{EventSink, JsonlSink, NullSink};
 
 /// Run a quire CI pipeline locally.
