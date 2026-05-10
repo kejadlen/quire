@@ -9,7 +9,11 @@
 //! values.
 //!
 //! The file contains live secret values; callers must restrict
-//! permissions (mode 0600 on Unix) before writing.
+//! permissions (mode 0600 on Unix) before writing. The file is a
+//! one-shot handoff: `quire-ci` unlinks it as soon as it has read
+//! the bytes into memory, and the orchestrator best-effort unlinks
+//! after the subprocess exits as a safety net. Plaintext secrets
+//! should never persist in the run directory.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

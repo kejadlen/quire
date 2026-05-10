@@ -302,6 +302,12 @@ fn placeholder_meta() -> RunMeta {
 
 /// Read and parse the dispatch file the orchestrator wrote before
 /// spawning. Wraps revealed secret values back into `SecretString`.
+///
+/// Unlinks the file as soon as the bytes are in memory — secrets only
+/// need to live on disk for the moment between `write_dispatch` and
+/// this read, and getting them off disk early limits the blast radius
+/// of a later panic or crash leaving a 0600 file behind.
+///
 /// The Sentry handoff, when present, carries the DSN and the
 /// orchestrator's trace id — the 0600 dispatch file is the line of
 /// defense for both.
@@ -318,6 +324,15 @@ fn load_dispatch(
     use quire_core::secret::SecretString;
 
     let bytes = fs_err::read(path).into_diagnostic()?;
+    if let Err(e) = fs_err::remove_file(path) {
+        // Don't abort — the bytes are already loaded and the server
+        // will best-effort unlink after we exit. But this is a
+        // security-relevant cleanup, so it's worth surfacing.
+        eprintln!(
+            "warning: failed to remove dispatch file {}: {e}",
+            path.display()
+        );
+    }
     let dispatch: Dispatch = serde_json::from_slice(&bytes).into_diagnostic()?;
     let secrets = dispatch
         .secrets
@@ -488,5 +503,31 @@ mod tests {
             panic!("expected File target");
         };
         assert_eq!(path, PathBuf::from("/tmp/run.jsonl"));
+    }
+
+    #[test]
+    fn load_dispatch_unlinks_after_read() {
+        use quire_core::ci::dispatch::Dispatch;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dispatch.json");
+        let dispatch = Dispatch {
+            meta: RunMeta {
+                sha: "0".repeat(40),
+                r#ref: "HEAD".to_string(),
+                pushed_at: jiff::Timestamp::now(),
+            },
+            git_dir: PathBuf::from("/tmp/repo.git"),
+            secrets: HashMap::from([("token".to_string(), "shh".to_string())]),
+            sentry: None,
+        };
+        fs_err::write(&path, serde_json::to_vec(&dispatch).unwrap()).expect("write");
+
+        let (git_dir, meta, secrets, sentry) = load_dispatch(&path).expect("load");
+        assert!(!path.exists(), "dispatch file should be removed after read");
+        assert_eq!(git_dir, PathBuf::from("/tmp/repo.git"));
+        assert_eq!(meta.r#ref, "HEAD");
+        assert_eq!(secrets.len(), 1);
+        assert!(sentry.is_none());
     }
 }

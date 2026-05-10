@@ -316,6 +316,21 @@ impl Run {
                 source,
             })?;
 
+        // quire-ci unlinks the dispatch file after `load_dispatch`;
+        // this is a best-effort safety net for paths where it didn't
+        // get that far (spawn failed mid-exec, arg parsing rejected
+        // input, panic before read). `NotFound` is the expected case.
+        if let Err(e) = fs_err::remove_file(&dispatch_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                run_id = %self.id,
+                path = %dispatch_path.display(),
+                error = %e,
+                "failed to remove dispatch file after run"
+            );
+        }
+
         // Ingest events whether or not the run succeeded — partial
         // results are still useful in the UI. A failure to read or
         // parse the file goes to the log but doesn't mask the run's
