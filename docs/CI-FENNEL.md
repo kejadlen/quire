@@ -231,6 +231,34 @@ Each of these blocks the Fennel function until it returns. Multi-`sh`-call paral
 
 The execute VM is sandboxed (no `io`/`os`/`debug`), so `runtime.sh` is the documented chokepoint for any host effect — `os.execute` and `io.open` are not available alternates. See CI.md for the full sandbox shape and the bwrap opt-in for the untrusted-code threat model.
 
+`runtime` is also reachable as a module: `(let [{: sh : secret} (require :quire.runtime)] …)`. Same table, same closures — useful for library code that wants its dependencies explicit.
+
+## Stdlib (`quire.stdlib`)
+
+Helpers that compose runtime primitives into common recipes. Embedded into the binary; available via `(require :quire.stdlib)` from any run-fn.
+
+The kernel (`sh`/`secret`/`jobs`) stays small. Higher-level operations like tag-and-push live in Fennel where they're easier to read and evolve.
+
+```
+(local {: mirror} (require :quire.stdlib))
+
+(ci.job :mirror [:quire/push :test]
+  (fn []
+    (let [push (runtime.jobs :quire/push)]
+      (mirror {:url     "https://github.com/example/repo.git"
+               :secret  :github_auth_header
+               :sha     push.sha
+               :tag     (.. "quire-" (string.sub push.sha 1 8))
+               :git-dir (. push :git-dir)
+               :refs    ["refs/heads/main"]}))))
+```
+
+Available helpers:
+
+* `(mirror opts)` — tag a commit and push it (plus optional refs) to a remote. `opts.url`, `opts.secret`, `opts.sha`, `opts.tag`, and `opts.git-dir` are required; `opts.refs` defaults to `[]`. The auth header (resolved via `runtime.secret`) is passed via `GIT_CONFIG_*` env vars rather than `-c http.extraHeader=…` in argv, so it doesn't appear in `ps` listings. Returns `{:tag :pushed_refs}`. Raises on missing required opts, unknown secrets, or non-zero git exits.
+
+`(ci.mirror …)` (the registration-time form) remains as a convenience wrapper that registers a singleton `quire/mirror` job. Use the stdlib form when you want to mirror conditionally or as part of a larger run-fn.
+
 ## A worked example
 
 ```

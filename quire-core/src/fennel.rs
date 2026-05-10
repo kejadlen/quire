@@ -6,6 +6,12 @@ use thiserror::Error;
 
 const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
 
+/// Embedded Fennel stdlib source — exposed as `(require :quire.stdlib)`
+/// to user pipelines. Shipping helpers here keeps the runtime kernel
+/// (`sh`/`secret`/`jobs`) small while letting common recipes live in
+/// Fennel where they're easier to evolve.
+const STDLIB_FNL: &str = include_str!("ci/stdlib.fnl");
+
 /// Error kinds from the Fennel loader.
 #[derive(Debug, Error, Diagnostic)]
 pub enum FennelError {
@@ -71,7 +77,32 @@ impl Fennel {
 
         lua.globals().set("fennel", fennel_module)?;
 
-        Ok(Self { lua })
+        // Stub `runtime` so the embedded stdlib (and user pipelines)
+        // compile under Fennel's strict-globals check. Mirror it into
+        // `package.loaded["quire.runtime"]` so library code can write
+        // `(require :quire.runtime)` instead of touching the global.
+        // Both slots are replaced at execution time by
+        // `RuntimeHandle::install`.
+        let stub: mlua::Table = lua.create_table()?;
+        lua.globals().set("runtime", stub.clone())?;
+        let package: mlua::Table = lua.globals().get("package")?;
+        let loaded: mlua::Table = package.get("loaded")?;
+        loaded.set("quire.runtime", stub)?;
+
+        let f = Self { lua };
+        f.preload_stdlib()?;
+        Ok(f)
+    }
+
+    /// Compile the embedded `quire.stdlib` and register it in
+    /// `package.loaded` so `(require :quire.stdlib)` returns the
+    /// module table without hitting the filesystem.
+    fn preload_stdlib(&self) -> Result<(), FennelError> {
+        let module = self.eval_raw(STDLIB_FNL, "quire.stdlib", |_| Ok(()))?;
+        let package: mlua::Table = self.lua.globals().get("package")?;
+        let loaded: mlua::Table = package.get("loaded")?;
+        loaded.set("quire.stdlib", module)?;
+        Ok(())
     }
 
     /// Borrow the underlying Lua VM. Useful for callers that need to
@@ -400,6 +431,35 @@ mod tests {
             })
             .expect("eval_raw should succeed");
         assert_eq!(result.as_integer(), Some(42));
+    }
+
+    #[test]
+    fn stdlib_module_preloaded_at_construction() {
+        let f = fennel();
+        let module: mlua::Table = f
+            .lua()
+            .load(r#"return require("quire.stdlib")"#)
+            .eval()
+            .expect("require quire.stdlib");
+        let _: mlua::Function = module.get("mirror").expect("mirror should be a function");
+    }
+
+    #[test]
+    fn quire_runtime_module_preloaded_to_stub() {
+        let f = fennel();
+        // Before install, `(require :quire.runtime)` returns the stub
+        // table — same reference as the `runtime` global.
+        let stub_via_require: mlua::Table = f
+            .lua()
+            .load(r#"return require("quire.runtime")"#)
+            .eval()
+            .expect("require quire.runtime");
+        let stub_via_global: mlua::Table =
+            f.lua().globals().get("runtime").expect("runtime global");
+        assert!(
+            stub_via_require.equals(&stub_via_global).unwrap(),
+            "require and global should resolve to the same stub"
+        );
     }
 
     #[test]
