@@ -1,241 +1,163 @@
 //! `(ci.mirror url opts)`: registers the singleton `quire/mirror`
-//! job, whose Rust run-fn tags the pushed commit and `git push`es
-//! the configured refs (or the trigger ref) plus the tag.
+//! job, whose Lua run-fn delegates to `(require :quire.stdlib).mirror`
+//! for the tag-and-push at execute time.
 //!
-//! `:refs` serves double duty: it gates whether the mirror job runs
-//! at all (trigger filter) and controls what gets pushed (push
-//! filter). If the trigger ref is not in `:refs`, the job is a
-//! no-op — no tag is created, no push is attempted. When `:refs` is
-//! empty (the default), the trigger ref is used for the push and
-//! the mirror always runs.
-//!
-//! Lives at the ci-feature layer rather than under `lua/` because
-//! mirror is a CI capability that happens to be exposed via the
-//! Lua DSL — most of its body is git plumbing, and it produces a
-//! `RunFn::Rust` rather than running through the Lua callback path.
+//! This shim handles the `ci.mirror`-specific concerns: resolving
+//! the `:secret` name into an auth header, invoking the `:tag`
+//! callback, and gating on `:refs`. The actual git plumbing lives
+//! in `stdlib.fnl`.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use mlua::{Lua, LuaSerdeExt};
 
 use super::pipeline::{self, DefinitionError, Job, RunFn};
 use super::registration::Registration;
-use super::runtime::{Cmd, Runtime, RuntimeError, RuntimeResult, ShOpts};
 
-/// Closure state for the `quire/mirror` job's run-fn: everything the
-/// tag-and-push needs at execute time, captured once at registration.
-pub struct MirrorJob {
-    url: String,
-    secret: String,
-    /// Refs to push to the remote. Empty means "push whatever ref
-    /// triggered the run."
-    refs: Vec<String>,
-    /// Tag callback. Called at execute time with the push table to
-    /// produce the tag name; the helper then tags `push.sha` and
-    /// pushes that tag alongside the refs.
-    tag: mlua::Function,
-}
+/// Body of `(ci.mirror url opts)`. Validates opts and registers an
+/// internal job at `quire/mirror` whose Lua run-fn delegates to
+/// `stdlib.mirror` at execute time. Singleton-ness is enforced by
+/// generic id uniqueness in `Registration::add_job`.
+pub fn register(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
+    let r = lua
+        .app_data_ref::<Registration>()
+        .ok_or_else(|| mlua::Error::external("quire.ci registration not installed on Lua VM"))?;
+    let line = lua
+        .inspect_stack(1, |d| d.current_line())
+        .flatten()
+        .map(|l| l as u32)
+        .unwrap_or(0);
+    let span = || pipeline::span_for_line(&r.source, line);
+    let invalid = |msg: String, s: _| DefinitionError::InvalidMirrorCall {
+        message: msg,
+        span: s,
+    };
 
-impl MirrorJob {
-    /// Run the tag-and-push against the bare git dir from the runtime's
-    /// `quire/push` data. Side effects only — outputs are recorded
-    /// against the calling job via the sh-capture channel. Returns
-    /// `Ok(())` whether or not the remote push succeeded; non-zero
-    /// `git push` exit lands in the run log alongside any other shell
-    /// output. Returns `Err` only for setup failures (unknown secret,
-    /// failed tag, base64 spawn).
-    fn execute(&self, rt: &Runtime) -> RuntimeResult<()> {
-        let calling = rt.current_job.borrow();
-        let calling = calling
-            .as_ref()
-            .expect("mirror run-fn invoked without an active job");
-
-        // Pull push data from this job's inputs view. Reachability is
-        // a structural fact established at registration; the unwraps
-        // are program invariants, not user-reachable conditions.
-        let view = rt
-            .inputs
-            .get(calling)
-            .unwrap_or_else(|| unreachable!("no inputs view for calling job '{calling}'"));
-        let push_table = view
-            .get("quire/push")
-            .and_then(|v| v.as_ref())
-            .and_then(|v| v.as_table())
-            .expect("quire/push table absent from quire/mirror inputs view");
-        let sha: String = push_table.get("sha")?;
-        let pushed_ref: String = push_table.get("ref")?;
-
-        // Gate: if :refs is set, only run when the trigger ref matches.
-        if !self.refs.is_empty() && !self.refs.contains(&pushed_ref) {
-            tracing::info!(
-                ref_name = %pushed_ref,
-                "skipping mirror — trigger ref not in :refs"
-            );
+    // :tag — required function.
+    let tag: mlua::Function = match opts.get::<mlua::Value>("tag")? {
+        mlua::Value::Function(f) => f,
+        mlua::Value::Nil => {
+            r.errors.borrow_mut().push(invalid(
+                ":tag is required (a function returning the tag name)".into(),
+                span(),
+            ));
             return Ok(());
-        };
-        let git_dir: String = push_table.get("git-dir")?;
+        }
+        other => {
+            r.errors.borrow_mut().push(invalid(
+                format!(":tag must be a function, got {}", other.type_name()),
+                span(),
+            ));
+            return Ok(());
+        }
+    };
 
-        let git_opts = ShOpts {
-            env: HashMap::from([("GIT_DIR".to_string(), git_dir)]),
-        };
+    // :secret — required string.
+    let secret: String = match opts.get::<mlua::Value>("secret")? {
+        mlua::Value::String(s) => s.to_str()?.to_string(),
+        mlua::Value::Nil => {
+            r.errors
+                .borrow_mut()
+                .push(invalid("missing field `secret`".into(), span()));
+            return Ok(());
+        }
+        other => {
+            r.errors.borrow_mut().push(invalid(
+                format!(":secret must be a string, got {}", other.type_name()),
+                span(),
+            ));
+            return Ok(());
+        }
+    };
 
-        // Tag step.
-        let tag_name: String = self.tag.call(push_table.clone())?;
-        let tag_result = rt.sh(
-            Cmd::Argv {
-                program: "git".to_string(),
-                args: vec!["tag".to_string(), tag_name.clone(), sha],
-            },
-            git_opts.clone(),
-        )?;
-        if tag_result.exit != 0 {
-            return Err(RuntimeError::Git(format!(
-                "git tag failed: {}",
-                tag_result.stderr.trim()
-            )));
+    // :refs, :after — optional string lists.
+    let refs: Vec<String> = opts.get::<Option<Vec<String>>>("refs")?.unwrap_or_default();
+    let after: Vec<String> = opts
+        .get::<Option<Vec<String>>>("after")?
+        .unwrap_or_default();
+
+    // Reject unknown keys.
+    for pair in opts.pairs::<String, mlua::Value>() {
+        let (k, _) = pair?;
+        if !matches!(k.as_str(), "tag" | "secret" | "refs" | "after") {
+            r.errors
+                .borrow_mut()
+                .push(invalid(format!("unknown field `{k}`"), span()));
+            return Ok(());
+        }
+    }
+
+    // Build the Lua run-fn. Closes over registration-time values;
+    // at execute time the ambient runtime provides push data and
+    // secret resolution.
+    let url = Rc::new(url);
+    let secret = Rc::new(secret);
+    let refs = Rc::new(refs);
+
+    let run_fn = lua.create_function(move |lua, ()| {
+        let mirror: mlua::Function = lua
+            .globals()
+            .get::<mlua::Table>("package")?
+            .get::<mlua::Table>("loaded")?
+            .get::<mlua::Table>("quire.stdlib")?
+            .get("mirror")?;
+
+        let runtime: mlua::Table = lua.globals().get("runtime")?;
+        let push: mlua::Table = runtime.get::<mlua::Function>("jobs")?.call("quire/push")?;
+        let pushed_ref: String = push.get("ref")?;
+
+        // Gate: skip if :refs is set and trigger ref doesn't match.
+        if !refs.is_empty() && !refs.iter().any(|r| r == &pushed_ref) {
+            return Ok(mlua::Value::Nil);
         }
 
-        // Push the configured refs (or the trigger ref, if none) plus the tag.
-        let auth_header = rt.secret(&self.secret)?;
-        let mut push_args = vec![
-            "-c".to_string(),
-            format!("http.extraHeader={auth_header}"),
-            "push".to_string(),
-            "--porcelain".to_string(),
-            self.url.clone(),
-        ];
-        if self.refs.is_empty() {
-            push_args.push(pushed_ref);
+        let tag_name: String = tag.call(push.clone())?;
+        let auth_header: String = runtime
+            .get::<mlua::Function>("secret")?
+            .call(secret.as_str())?;
+
+        let push_refs = if refs.is_empty() {
+            vec![pushed_ref]
         } else {
-            push_args.extend(self.refs.iter().cloned());
-        }
-        push_args.push(format!("refs/tags/{tag_name}"));
-        rt.sh(
-            Cmd::Argv {
-                program: "git".to_string(),
-                args: push_args,
-            },
-            git_opts,
-        )?;
-
-        Ok(())
-    }
-
-    /// Parse `(ci.mirror url opts)` into a `MirrorJob` and the
-    /// `:after` list. `:after` only affects sequencing (extra inputs
-    /// on the registered job), so it stays out of the closure state.
-    ///
-    /// `:tag` is extracted manually since `mlua::Function` isn't
-    /// serde-deserializable; the rest go through `lua.from_value`
-    /// with `deny_unknown_fields` so typos surface as registration
-    /// errors.
-    ///
-    /// Errors are returned as `mlua::Error::external` so callers can
-    /// render them via `Display` into a
-    /// `DefinitionError::InvalidMirrorCall` at the call site.
-    fn parse(lua: &Lua, url: String, opts: mlua::Table) -> mlua::Result<(Self, Vec<String>)> {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Fields {
-            secret: String,
-            #[serde(default)]
-            refs: Vec<String>,
-            #[serde(default)]
-            after: Vec<String>,
-        }
-
-        // Pull :tag separately — it's a Lua function, not deserializable.
-        let tag: mlua::Function = match opts.get::<mlua::Value>("tag")? {
-            mlua::Value::Function(f) => f,
-            mlua::Value::Nil => {
-                return Err(mlua::Error::external(
-                    ":tag is required (a function returning the tag name)",
-                ));
-            }
-            other => {
-                return Err(mlua::Error::external(format!(
-                    ":tag must be a function, got {}",
-                    other.type_name()
-                )));
-            }
+            refs.to_vec()
         };
 
-        // Build a copy of the opts table without :tag so
-        // `deny_unknown_fields` doesn't trip on it.
-        let stripped = lua.create_table()?;
-        for pair in opts.pairs::<String, mlua::Value>() {
-            let (k, v) = pair?;
-            if k != "tag" {
-                stripped.set(k, v)?;
-            }
-        }
+        let mopts = lua.create_table()?;
+        mopts.set("url", url.as_str())?;
+        mopts.set("auth-header", auth_header)?;
+        mopts.set("sha", push.get::<String>("sha")?)?;
+        mopts.set("tag", tag_name)?;
+        mopts.set("git-dir", push.get::<String>("git-dir")?)?;
+        mopts.set("refs", lua.to_value(&push_refs)?)?;
 
-        let fields: Fields = lua.from_value(mlua::Value::Table(stripped))?;
+        mirror.call(mopts)
+    })?;
 
-        Ok((
-            Self {
-                url,
-                secret: fields.secret,
-                refs: fields.refs,
-                tag,
-            },
-            fields.after,
-        ))
+    let mut inputs = vec!["quire/push".to_string()];
+    inputs.extend(after);
+    match Job::new(
+        "quire/mirror".into(),
+        inputs,
+        RunFn::Lua(run_fn),
+        line,
+        &r.source,
+    ) {
+        Ok(job) => r.add_job(job, line),
+        Err(e) => r.errors.borrow_mut().push(e),
     }
-
-    /// Body of `(ci.mirror url opts)`. Parses opts and registers an
-    /// internal job at `quire/mirror` whose run-fn performs the
-    /// tag-and-push at execute time. Singleton-ness is enforced by
-    /// generic id uniqueness in `Registration::add_job` — a second
-    /// `(ci.mirror …)` collides on the `quire/mirror` id.
-    pub fn register(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<()> {
-        let r = lua.app_data_ref::<Registration>().ok_or_else(|| {
-            mlua::Error::external("quire.ci registration not installed on Lua VM")
-        })?;
-        let line = lua
-            .inspect_stack(1, |d| d.current_line())
-            .flatten()
-            .map(|l| l as u32)
-            .unwrap_or(0);
-
-        let (job, after) = match Self::parse(lua, url, opts) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                let span = pipeline::span_for_line(&r.source, line);
-                r.errors
-                    .borrow_mut()
-                    .push(DefinitionError::InvalidMirrorCall {
-                        message: e.to_string(),
-                        span,
-                    });
-                return Ok(());
-            }
-        };
-
-        let run_fn = RunFn::Rust(Rc::new(move |rt: &Runtime| job.execute(rt)));
-
-        // Inputs: always quire/push first (the push data source), then
-        // any extra dependencies from :after for sequencing.
-        let mut inputs = vec!["quire/push".to_string()];
-        inputs.extend(after);
-
-        match Job::new("quire/mirror".to_string(), inputs, run_fn, line, &r.source) {
-            Ok(job) => r.add_job(job, line),
-            Err(e) => r.errors.borrow_mut().push(e),
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::ci::pipeline::{Diagnostic, RustRunFn, compile};
+    use std::collections::HashMap;
+
+    use crate::ci::pipeline::{Diagnostic, compile};
     use crate::ci::run::RunMeta;
     use crate::ci::runtime::RuntimeHandle;
-    use crate::secret::{Error as SecretError, SecretString};
+    use crate::secret::SecretString;
 
     /// Set up a bare git repo with one commit. Returns the tempdir,
     /// the bare repo path, and the head SHA.
@@ -294,8 +216,59 @@ mod tests {
         (dir, bare, sha)
     }
 
-    /// Pull the mirror job out of a compiled pipeline. Panics if no
-    /// `quire/mirror` job is present.
+    /// Build a source bare repo with one commit and an empty target
+    /// bare repo. Returns (tempdir, source bare, target bare, sha).
+    fn bare_repo_with_target() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        String,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let work = dir.path().join("work");
+        let bare = dir.path().join("repo.git");
+        let target = dir.path().join("target.git");
+
+        fs_err::create_dir_all(&work).expect("mkdir work");
+        let env_vars: [(&str, &str); 6] = [
+            ("GIT_AUTHOR_NAME", "test"),
+            ("GIT_AUTHOR_EMAIL", "test@test"),
+            ("GIT_COMMITTER_NAME", "test"),
+            ("GIT_COMMITTER_EMAIL", "test@test"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ];
+        let git = |args: &[&str], cwd: &std::path::Path| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .envs(env_vars)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {:?} failed", args);
+            out
+        };
+        git(&["init", "-b", "main"], &work);
+        git(&["commit", "--allow-empty", "-m", "initial"], &work);
+        let sha = String::from_utf8(git(&["rev-parse", "HEAD"], &work).stdout)
+            .expect("utf8")
+            .trim()
+            .to_string();
+        git(
+            &[
+                "clone",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+            dir.path(),
+        );
+        git(&["init", "--bare", target.to_str().unwrap()], dir.path());
+
+        (dir, bare, target, sha)
+    }
+
+    /// Pull the mirror job's inputs from a compiled pipeline.
     fn mirror_job_inputs(source: &str) -> Vec<String> {
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         pipeline
@@ -417,15 +390,16 @@ mod tests {
         );
     }
 
-    /// Compile a mirror source and return the registered Rust
-    /// run-fn ready to be invoked with a runtime that has
-    /// `:quire/push` populated.
+    /// Compile a mirror source and return the runtime and the mirror
+    /// job's Lua run-fn ready to be invoked with the ambient runtime
+    /// installed.
     fn mirror_run_fn(
         source: &str,
         secrets: HashMap<String, SecretString>,
         meta: &RunMeta,
         git_dir: &std::path::Path,
-    ) -> (Rc<Runtime>, RustRunFn) {
+    ) -> (Rc<crate::ci::runtime::Runtime>, mlua::Function) {
+        use crate::ci::runtime::Runtime;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let run_fn = match pipeline
             .jobs()
@@ -435,8 +409,8 @@ mod tests {
             .run_fn
             .clone()
         {
-            RunFn::Rust(f) => f,
-            RunFn::Lua(_) => panic!("mirror should register a RunFn::Rust"),
+            RunFn::Lua(f) => f,
+            RunFn::Rust(_) => panic!("mirror should register a RunFn::Lua"),
         };
         let log_dir = tempfile::tempdir().expect("tempdir for mirror logs").keep();
         let runtime = Rc::new(Runtime::new(
@@ -455,7 +429,7 @@ mod tests {
 
     #[test]
     fn mirror_executes_tag_callback_and_pushes() {
-        let (_dir, bare, sha) = bare_repo();
+        let (_dir, bare, target, sha) = bare_repo_with_target();
         let pushed_at: jiff::Timestamp = "2026-05-01T12:00:00Z".parse().unwrap();
         let meta = RunMeta {
             sha: sha.clone(),
@@ -464,45 +438,55 @@ mod tests {
         };
 
         let mut secrets = HashMap::new();
-        secrets.insert("github_token".to_string(), SecretString::from("fake_token"));
+        secrets.insert(
+            "github_token".to_string(),
+            SecretString::from("Authorization: Bearer test-token"),
+        );
 
-        let source = r#"(local ci (require :quire.ci))
-(ci.mirror "https://github.com/example/repo.git"
-  {:secret :github_token
-   :tag (fn [push] (.. "release-" (string.sub push.sha 1 8)))})"#;
-        let (runtime, run_fn) = mirror_run_fn(source, secrets, &meta, &bare);
+        let source = format!(
+            r#"(local ci (require :quire.ci))
+(ci.mirror "{url}"
+  {{:secret :github_token
+   :tag (fn [push] (.. "release-" (string.sub push.sha 1 8)))}})"#,
+            url = format!("file://{}", target.display()),
+        );
+        let (runtime, run_fn) = mirror_run_fn(&source, secrets, &meta, &bare);
 
         runtime.enter_job("quire/mirror");
-        run_fn(&runtime).expect("mirror should succeed");
+        let _: mlua::Value = run_fn.call(()).expect("mirror should succeed");
         runtime.leave_job();
 
-        // Tag was created in the bare repo with the callback's name.
+        // Tag landed in the target repo via the push.
         let expected_tag = format!("release-{}", &sha[..8]);
         let tag_output = std::process::Command::new("git")
             .args(["tag", "-l"])
-            .current_dir(&bare)
+            .current_dir(&target)
             .output()
             .expect("git tag -l");
         let tags = String::from_utf8(tag_output.stdout).expect("utf8");
         assert!(
             tags.contains(&expected_tag),
-            "tag should exist in bare repo: {tags}"
+            "tag should exist in target repo: {tags}"
         );
 
-        // Outputs were recorded for the tag step and the push step
-        // (push to a fake URL fails non-zero, not via Err).
+        // Tag and push outputs were recorded.
         let outputs = runtime.take_outputs();
         let recorded = outputs
             .get("quire/mirror")
             .expect("mirror outputs recorded");
         assert_eq!(recorded.len(), 2, "expected tag + push outputs");
-        let push = recorded.last().unwrap();
-        assert_ne!(push.exit, 0, "push to fake URL should fail");
     }
 
     #[test]
     fn mirror_pushes_listed_refs_when_trigger_ref_matches() {
-        let (_dir, bare, sha) = bare_repo();
+        let (_dir, bare, target, sha) = bare_repo_with_target();
+        // Create a release branch so git can push it.
+        std::process::Command::new("git")
+            .args(["branch", "release"])
+            .current_dir(&bare)
+            .output()
+            .expect("git branch release");
+
         let pushed_at: jiff::Timestamp = "2026-05-01T12:00:00Z".parse().unwrap();
         let meta = RunMeta {
             sha,
@@ -511,19 +495,25 @@ mod tests {
         };
 
         let mut secrets = HashMap::new();
-        secrets.insert("github_token".to_string(), SecretString::from("fake_token"));
+        secrets.insert(
+            "github_token".to_string(),
+            SecretString::from("Authorization: Bearer test-token"),
+        );
 
         // :refs is set and the trigger ref matches, so the mirror
         // should push the listed refs verbatim.
-        let source = r#"(local ci (require :quire.ci))
-(ci.mirror "https://github.com/example/repo.git"
-  {:secret :github_token
+        let source = format!(
+            r#"(local ci (require :quire.ci))
+(ci.mirror "{url}"
+  {{:secret :github_token
    :tag (fn [_] "v1")
-   :refs ["refs/heads/main" "refs/heads/release"]})"#;
-        let (runtime, run_fn) = mirror_run_fn(source, secrets, &meta, &bare);
+   :refs ["refs/heads/main" "refs/heads/release"]}})"#,
+            url = format!("file://{}", target.display()),
+        );
+        let (runtime, run_fn) = mirror_run_fn(&source, secrets, &meta, &bare);
 
         runtime.enter_job("quire/mirror");
-        run_fn(&runtime).expect("mirror should succeed");
+        let _: mlua::Value = run_fn.call(()).expect("mirror should succeed");
         runtime.leave_job();
 
         let outputs = runtime.take_outputs();
@@ -548,7 +538,10 @@ mod tests {
         };
 
         let mut secrets = HashMap::new();
-        secrets.insert("github_token".to_string(), SecretString::from("fake_token"));
+        secrets.insert(
+            "github_token".to_string(),
+            SecretString::from("Authorization: Bearer test-token"),
+        );
 
         // Trigger ref is feature, but :refs only lists main — mirror
         // should be a no-op.
@@ -560,7 +553,7 @@ mod tests {
         let (runtime, run_fn) = mirror_run_fn(source, secrets, &meta, &bare);
 
         runtime.enter_job("quire/mirror");
-        run_fn(&runtime).expect("mirror should succeed (no-op)");
+        let _: mlua::Value = run_fn.call(()).expect("mirror should succeed (no-op)");
         runtime.leave_job();
 
         let outputs = runtime.take_outputs();
@@ -596,12 +589,13 @@ mod tests {
         let (runtime, run_fn) = mirror_run_fn(source, HashMap::new(), &meta, &bare);
 
         runtime.enter_job("quire/mirror");
-        let err = run_fn(&runtime).expect_err("should fail for missing secret");
+        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         runtime.leave_job();
 
+        let msg = err.to_string();
         assert!(
-            matches!(err, RuntimeError::Secret(SecretError::UnknownSecret(ref name)) if name == "missing"),
-            "expected UnknownSecret(\"missing\"), got: {err:?}"
+            msg.contains("missing"),
+            "expected UnknownSecret(\"missing\"), got: {msg}"
         );
     }
 }
