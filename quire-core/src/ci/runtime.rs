@@ -975,11 +975,12 @@ mod tests {
 (local {{: mirror}} (require :quire.stdlib))
 (ci.job :go [:quire/push]
   (fn []
-    (mirror {{:url "{url}"
-             :secret :github_token
-             :sha "{sha}"
-             :tag "v1"
-             :git-dir "{git_dir}"}})))"#,
+    (let [auth (runtime.secret :github_token)]
+      (mirror {{:url "{url}"
+               :auth-header auth
+               :sha "{sha}"
+               :tag "v1"
+               :git-dir "{git_dir}"}}))))"#,
             url = format!("file://{}", target.display()),
             sha = sha,
             git_dir = bare.display(),
@@ -999,39 +1000,13 @@ mod tests {
 (local {: mirror} (require :quire.stdlib))
 (ci.job :go [:quire/push]
   (fn []
-    (mirror {:secret :github_token :sha "x" :tag "v1" :git-dir "/tmp"})))"#;
+    (mirror {:auth-header "x" :sha "x" :tag "v1" :git-dir "/tmp"})))"#;
         let (_runtime, run_fn) = rt(source, HashMap::new());
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("missing required option :url"),
+            msg.contains("Missing argument url"),
             "expected missing-:url error, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn stdlib_mirror_errors_on_unknown_secret() {
-        let (_dir, bare, target, sha) = bare_repo_with_target();
-        let source = format!(
-            r#"(local ci (require :quire.ci))
-(local {{: mirror}} (require :quire.stdlib))
-(ci.job :go [:quire/push]
-  (fn []
-    (mirror {{:url "{url}"
-             :secret :nope
-             :sha "{sha}"
-             :tag "v1"
-             :git-dir "{git_dir}"}})))"#,
-            url = format!("file://{}", target.display()),
-            sha = sha,
-            git_dir = bare.display(),
-        );
-        let (_runtime, run_fn) = rt(&source, HashMap::new());
-        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown secret") && msg.contains("nope"),
-            "expected unknown-secret error mentioning the name, got: {msg}"
         );
     }
 }

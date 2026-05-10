@@ -244,18 +244,19 @@ The kernel (`sh`/`secret`/`jobs`) stays small. Higher-level operations like tag-
 
 (ci.job :mirror [:quire/push :test]
   (fn []
-    (let [push (runtime.jobs :quire/push)]
-      (mirror {:url     "https://github.com/example/repo.git"
-               :secret  :github_auth_header
-               :sha     push.sha
-               :tag     (.. "quire-" (string.sub push.sha 1 8))
-               :git-dir (. push :git-dir)
-               :refs    ["refs/heads/main"]}))))
+    (let [push (runtime.jobs :quire/push)
+          auth (runtime.secret :github_auth_header)]
+      (mirror {:url         "https://github.com/example/repo.git"
+               :auth-header auth
+               :sha         push.sha
+               :tag         (.. "quire-" (string.sub push.sha 1 8))
+               :git-dir     (. push :git-dir)
+               :refs        ["refs/heads/main"]}))))
 ```
 
 Available helpers:
 
-* `(mirror opts)` — tag a commit and push it (plus optional refs) to a remote. `opts.url`, `opts.secret`, `opts.sha`, `opts.tag`, and `opts.git-dir` are required; `opts.refs` defaults to `[]`. The auth header (resolved via `runtime.secret`) is passed via `GIT_CONFIG_*` env vars rather than `-c http.extraHeader=…` in argv, so it doesn't appear in `ps` listings. Returns `{:tag :pushed_refs}`. Raises on missing required opts, unknown secrets, or non-zero git exits.
+* `(mirror opts)` — tag a commit and push it (plus optional refs) to a remote. `opts.url`, `opts.auth-header`, `opts.sha`, `opts.tag`, and `opts.git-dir` are required; `opts.refs` defaults to `[]`. The caller resolves the credential (typically via `runtime.secret`) and passes the full HTTP header line as `:auth-header`; mirror passes it to git via `GIT_CONFIG_*` env vars rather than `-c http.extraHeader=…` in argv, so it doesn't appear in `ps` listings. Returns `{:tag :pushed_refs}`. Raises on missing required opts or non-zero git exits.
 
 `(ci.mirror …)` (the registration-time form) remains as a convenience wrapper that registers a singleton `quire/mirror` job. Use the stdlib form when you want to mirror conditionally or as part of a larger run-fn.
 
