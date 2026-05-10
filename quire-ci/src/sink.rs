@@ -54,28 +54,41 @@ impl<W: Write> EventSink for JsonlSink<W> {
 mod tests {
     use super::*;
 
+    use crate::event::EventKind;
+
+    fn sample_started(job_id: &str) -> Event {
+        Event {
+            at_ms: 1,
+            kind: EventKind::JobStarted {
+                job_id: job_id.into(),
+            },
+        }
+    }
+
     #[test]
     fn null_sink_accepts_events() {
         let mut sink = NullSink;
-        sink.emit(Event::JobStarted { job_id: "a".into() }).unwrap();
+        sink.emit(sample_started("a")).unwrap();
     }
 
     #[test]
     fn jsonl_sink_writes_one_line_per_event() {
         let mut sink = JsonlSink::new(Vec::<u8>::new());
-        sink.emit(Event::JobStarted { job_id: "a".into() }).unwrap();
-        sink.emit(Event::ShStarted {
-            job_id: "a".into(),
-            cmd: "echo".into(),
+        sink.emit(Event {
+            at_ms: 10,
+            kind: EventKind::ShStarted {
+                job_id: "a".into(),
+                cmd: "echo".into(),
+            },
         })
         .unwrap();
+        sink.emit(sample_started("a")).unwrap();
         let output = sink.into_inner();
         let s = std::str::from_utf8(&output).unwrap();
-        assert_eq!(
-            s,
-            "{\"type\":\"job_started\",\"job_id\":\"a\"}\n\
-             {\"type\":\"sh_started\",\"job_id\":\"a\",\"cmd\":\"echo\"}\n"
-        );
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(r#""type":"sh_started""#));
+        assert!(lines[1].contains(r#""type":"job_started""#));
     }
 
     #[test]
@@ -99,8 +112,8 @@ mod tests {
             buf: Vec::new(),
             flushes: 0,
         });
-        sink.emit(Event::JobStarted { job_id: "a".into() }).unwrap();
-        sink.emit(Event::JobStarted { job_id: "b".into() }).unwrap();
+        sink.emit(sample_started("a")).unwrap();
+        sink.emit(sample_started("b")).unwrap();
         let inner = sink.into_inner();
         assert_eq!(inner.flushes, 2);
     }

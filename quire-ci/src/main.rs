@@ -13,7 +13,7 @@ use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 
-use crate::event::Event;
+use crate::event::{Event, EventKind, JobOutcome};
 use crate::sink::{EventSink, JsonlSink, NullSink};
 
 /// Run a quire CI pipeline locally.
@@ -41,9 +41,14 @@ enum Commands {
     /// runtime doesn't yet propagate run-fn outputs into downstream
     /// jobs' input views).
     Run {
-        /// Where to send structured run events.
-        #[arg(long, value_enum, default_value_t = EventsKind::Null)]
-        events: EventsKind,
+        /// Where to send the structured event stream. Accepts:
+        ///   `null`   — drop events (default).
+        ///   `stdout` — write JSONL to stdout.
+        ///   `<path>` — write JSONL to this file. The orchestrator
+        ///              reads the file post-run to populate `jobs`
+        ///              and `sh_events` database rows.
+        #[arg(long, default_value = "null", value_parser = parse_events_target)]
+        events: EventsTarget,
 
         /// Directory for per-sh CRI log files. Defaults to a fresh
         /// tempdir whose path is printed on stdout at the end of the
@@ -108,13 +113,21 @@ impl Drop for DumpLogsOnDrop {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "lowercase")]
-enum EventsKind {
-    /// Drop events.
+/// Where the event stream is written. Resolved into a concrete
+/// [`EventSink`] at run time.
+#[derive(Clone, Debug)]
+enum EventsTarget {
     Null,
-    /// JSONL on stdout, one event per line.
     Stdout,
+    File(PathBuf),
+}
+
+fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
+    match s {
+        "null" => Ok(EventsTarget::Null),
+        "stdout" => Ok(EventsTarget::Stdout),
+        path => Ok(EventsTarget::File(PathBuf::from(path))),
+    }
 }
 
 fn main() -> miette::Result<()> {
@@ -124,8 +137,12 @@ fn main() -> miette::Result<()> {
         Commands::Validate => validate(cli.workspace),
         Commands::Run { events, out_dir } => {
             let sink: Box<dyn EventSink> = match events {
-                EventsKind::Null => Box::new(NullSink),
-                EventsKind::Stdout => Box::new(JsonlSink::new(io::stdout())),
+                EventsTarget::Null => Box::new(NullSink),
+                EventsTarget::Stdout => Box::new(JsonlSink::new(io::stdout())),
+                EventsTarget::File(path) => {
+                    let file = fs_err::File::create(&path).into_diagnostic()?;
+                    Box::new(JsonlSink::new(io::BufWriter::new(file.into_parts().0)))
+                }
             };
             let (log_dir, _dump) = match out_dir {
                 Some(path) => {
@@ -202,8 +219,10 @@ fn run_pipeline(
         log_dir,
     ));
 
-    // Active job pointer, shared between the main loop and the runtime
-    // callback (which translates RuntimeEvent → wire Event).
+    // Active job pointer, shared between the main loop and the
+    // runtime callback. The callback translates RuntimeEvent into
+    // wire events; consumers pair ShStarted/ShFinished by job_id +
+    // sequence to assemble a per-sh DB row.
     let current_job: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     {
@@ -214,17 +233,21 @@ fn run_pipeline(
                 .borrow()
                 .clone()
                 .expect("runtime fires sh events only inside enter_job/leave_job");
-            let wire_event = match event {
-                RuntimeEvent::ShStarted { cmd } => Event::ShStarted {
+            let kind = match event {
+                RuntimeEvent::ShStarted { cmd } => EventKind::ShStarted {
                     job_id,
                     cmd: cmd.to_string(),
                 },
-                RuntimeEvent::ShFinished { exit } => Event::ShFinished {
+                RuntimeEvent::ShFinished { exit } => EventKind::ShFinished {
                     job_id,
                     exit_code: exit,
                 },
             };
-            cb_sink.borrow_mut().emit(wire_event).expect("emit event");
+            let wire = Event {
+                at_ms: jiff::Timestamp::now().as_millisecond(),
+                kind,
+            };
+            cb_sink.borrow_mut().emit(wire).expect("emit sh event");
         }));
     }
 
@@ -239,8 +262,11 @@ fn run_pipeline(
         *current_job.borrow_mut() = Some(job_id.clone());
 
         sink.borrow_mut()
-            .emit(Event::JobStarted {
-                job_id: job_id.clone(),
+            .emit(Event {
+                at_ms: jiff::Timestamp::now().as_millisecond(),
+                kind: EventKind::JobStarted {
+                    job_id: job_id.clone(),
+                },
             })
             .expect("emit job_started");
 
@@ -260,18 +286,20 @@ fn run_pipeline(
         };
         runtime.leave_job();
 
-        let finish_event = if result.is_ok() {
-            Event::JobCompleted {
-                job_id: job_id.clone(),
-            }
+        let outcome = if result.is_ok() {
+            JobOutcome::Complete
         } else {
-            Event::JobFailed {
-                job_id: job_id.clone(),
-            }
+            JobOutcome::Failed
         };
         sink.borrow_mut()
-            .emit(finish_event)
-            .expect("emit job finish");
+            .emit(Event {
+                at_ms: jiff::Timestamp::now().as_millisecond(),
+                kind: EventKind::JobFinished {
+                    job_id: job_id.clone(),
+                    outcome,
+                },
+            })
+            .expect("emit job_finished");
 
         *current_job.borrow_mut() = None;
 
@@ -295,4 +323,25 @@ fn compile_at(workspace: &std::path::Path) -> miette::Result<Pipeline> {
     let path = workspace.join(".quire").join("ci.fnl");
     let source = fs_err::read_to_string(&path).into_diagnostic()?;
     Ok(pipeline::compile(&source, &path.display().to_string())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_events_target_classifies_input() {
+        assert!(matches!(
+            parse_events_target("null"),
+            Ok(EventsTarget::Null)
+        ));
+        assert!(matches!(
+            parse_events_target("stdout"),
+            Ok(EventsTarget::Stdout)
+        ));
+        let Ok(EventsTarget::File(path)) = parse_events_target("/tmp/run.jsonl") else {
+            panic!("expected File target");
+        };
+        assert_eq!(path, PathBuf::from("/tmp/run.jsonl"));
+    }
 }
