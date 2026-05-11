@@ -94,6 +94,29 @@ Run-fns are zero-arg functions. The runtime is available as a global `runtime` t
 
 The `runtime.` prefix is a visible explicit-context marker so reviewers can grep for effect sites. Accessing `runtime` outside a run-fn raises: `runtime accessed outside a job — primitives are only available while a run-fn is executing`.
 
+When a run-fn destructures several primitives the `runtime.` prefix gets repetitive; the `defrun` macro takes the destructure pattern as its arglist and expands to the `let`-from-runtime shape:
+
+```
+(import-macros {: defrun} :quire.ci)
+
+(job :test [:quire/push]
+  (defrun [{: sh : jobs}]
+    (let [push (jobs :quire/push)]
+      (sh ["cargo" "test"]))))
+```
+
+expands to
+
+```
+(job :test [:quire/push]
+  (fn []
+    (let [{: sh : jobs} runtime]
+      (let [push (jobs :quire/push)]
+        (sh ["cargo" "test"])))))
+```
+
+`defrun` itself is the effect-site marker — reviewers grep for `defrun` (and any remaining bare `runtime.`) to find places that touch the host. The bare `(fn [] (runtime.X …))` form stays available for one-off use; the explicit `(let [{: sh} runtime] …)` form is also fine when you want the destructure visible without the macro.
+
 > **v0 status:** `(jobs :quire/push)` is wired. Job-to-job outputs (where `(jobs :build)` returns a job's `run-fn` return value) are not — there's no writer API yet, and a reachable name with no recorded outputs returns `nil`.
 
 ### Sources
