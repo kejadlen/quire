@@ -22,9 +22,8 @@ pub struct GlobalConfig {
     /// Each value is a `SecretString` (plain literal or `{:file "..."}`).
     #[serde(default)]
     pub secrets: HashMap<String, SecretString>,
-    /// How the orchestrator dispatches CI runs. Defaults to in-process
-    /// host evaluation; set `:executor :quire-ci` to opt into shelling
-    /// out to the `quire-ci` binary.
+    /// How the orchestrator dispatches CI runs. Defaults to shelling
+    /// out to the `quire-ci` binary via `Executor::QuireCi`.
     #[serde(default)]
     pub executor: Executor,
 }

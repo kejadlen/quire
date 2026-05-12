@@ -38,25 +38,23 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 /// Execute a repo's ci.fnl locally for testing.
 ///
 /// Loads the pipeline at the resolved commit (working-copy `@` by
-/// default), creates a transient Run rooted at a tempdir, drives the
-/// pipeline through it, and prints each job's `(ci.sh …)` output to
-/// stdout. The tempdir is removed when the command exits.
+/// default), creates a transient Run rooted at a tempdir, dispatches
+/// to `quire-ci` via `execute_via_quire_ci`, and prints the combined
+/// log to stdout. The tempdir is removed when the command exits.
 pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path.clone());
 
     // Pull secrets from the global config; absence is fine for local
-    // testing. A broken-but-present config is a real error. Secrets
-    // are passed to `Run::execute` rather than `Ci::pipeline` since they
-    // only matter when the run-fns actually fire.
+    // testing. A broken-but-present config is a real error.
     let secrets = match quire.global_config() {
         Ok(c) => c.secrets,
         Err(quire::Error::ConfigNotFound(_)) => std::collections::HashMap::new(),
         Err(e) => return Err(e).into_diagnostic(),
     };
 
-    let Some(pipeline) = ci.pipeline(&commit)? else {
+    let Some(_pipeline) = ci.pipeline(&commit)? else {
         println!("No ci.fnl found at {}.", commit.display);
         return Ok(());
     };
@@ -78,9 +76,10 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     };
 
     let run = runs.create(&meta)?;
+    let run_id = run.id().to_string();
     println!(
         "Run {}: executing at {} ({})",
-        run.id(),
+        run_id,
         commit.display,
         &commit.sha[..commit.sha.len().min(12)],
     );
@@ -88,27 +87,17 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
         .into_diagnostic()?;
-    let exec_result = run.execute(pipeline, secrets, &repo_path.join(".git"), &workspace);
+    let exec_result =
+        run.execute_via_quire_ci(&repo_path.join(".git"), &workspace, &meta, &secrets, None);
+
+    // Print the combined quire-ci log regardless of outcome.
+    let log_path = tmp.path().join(&run_id).join("quire-ci.log");
+    if let Ok(log) = fs_err::read_to_string(&log_path) {
+        print!("{log}");
+    }
 
     match exec_result {
-        Ok(outputs) => {
-            for (job_id, job_outputs) in &outputs {
-                if job_outputs.is_empty() {
-                    continue;
-                }
-                println!("\n==> {}", job_id);
-                for o in job_outputs {
-                    if !o.stdout.is_empty() {
-                        print!("{}", o.stdout);
-                    }
-                    if !o.stderr.is_empty() {
-                        eprint!("{}", o.stderr);
-                    }
-                    if o.exit != 0 {
-                        println!("(exit {})", o.exit);
-                    }
-                }
-            }
+        Ok(()) => {
             println!("\nRun complete.");
             Ok(())
         }

@@ -28,13 +28,6 @@ pub enum Error {
     #[error(transparent)]
     Lua(Box<mlua::Error>),
 
-    #[error("job '{job}' failed")]
-    JobFailed {
-        job: String,
-        #[source]
-        source: Box<Error>,
-    },
-
     #[error("workspace materialization failed")]
     WorkspaceMaterializationFailed {
         #[source]
