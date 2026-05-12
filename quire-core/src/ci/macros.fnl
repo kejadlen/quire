@@ -2,9 +2,9 @@
 ;;
 ;; `defrun` is sugar for the common run-fn shape: a zero-arg function
 ;; whose body needs `sh` / `secret` / `jobs` / `mirror` from the
-;; ambient `runtime` global. Writing `(let [{: sh} runtime] …)` at the
-;; top of every job becomes the macro itself, with the destructure
-;; pattern as the apparent argument list.
+;; runtime. Writing `(let [{: sh} (. (require :quire.ci) :runtime)] …)`
+;; at the top of every job becomes the macro itself, with the
+;; destructure pattern as the apparent argument list.
 ;;
 ;;   (defrun [{: sh : jobs}]
 ;;     (let [push (jobs :quire/push)]
@@ -13,7 +13,7 @@
 ;; expands to:
 ;;
 ;;   (fn []
-;;     (let [{: sh : jobs} runtime]
+;;     (let [{: sh : jobs} (. (require :quire.ci) :runtime)]
 ;;       (let [push (jobs :quire/push)]
 ;;         (sh ["cargo" "test"]))))
 ;;
@@ -30,7 +30,7 @@
         `(fn []
            ,(unpack body))
         `(fn []
-           (let [,(. arglist 1) runtime]
+           (let [,(. arglist 1) (. (require :quire.ci) :runtime)]
              ,(unpack body))))))
 
 {: defrun}

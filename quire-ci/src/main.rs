@@ -344,7 +344,7 @@ fn run_pipeline(
         }
     }
 
-    lua.remove_app_data::<Rc<Runtime>>();
+    RuntimeHandle::uninstall(lua).expect("uninstall runtime");
 
     if let Some((_, err)) = failed_job {
         return Err(err.into());

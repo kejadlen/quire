@@ -290,7 +290,7 @@ impl Run {
         // jobs that did run before the failure are useful context.
         let outputs = runtime.take_outputs();
         let timings = runtime.take_sh_timings();
-        lua.remove_app_data::<Rc<Runtime>>();
+        RuntimeHandle::uninstall(lua).expect("uninstall runtime");
 
         self.write_sh_records(&outputs, &timings)?;
 
@@ -1032,8 +1032,8 @@ mod tests {
         fs_err::write(workspace.join("marker"), "x").expect("write marker");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :pwd [:quire/push] (fn [] (runtime.sh ["ls"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :pwd [:quire/push] (fn [] (runtime.sh ["ls"])))"#,
         );
 
         let outputs = run
@@ -1060,9 +1060,9 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [] (runtime.sh ["echo" "from-a"])))
-(ci.job :b [:a] (fn [] (runtime.sh ["echo" "from-b"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :a [:quire/push] (fn [] (runtime.sh ["echo" "from-a"])))
+(job :b [:a] (fn [] (runtime.sh ["echo" "from-b"])))"#,
         );
 
         let run_id = run.id().to_string();
@@ -1096,9 +1096,9 @@ mod tests {
         let log = quire.base_dir().join("order.log");
         let log_str = log.to_string_lossy();
         let source = format!(
-            r#"(local ci (require :quire.ci))
-(ci.job :b [:a] (fn [] (runtime.sh (.. "echo b >> {log}"))))
-(ci.job :a [:quire/push] (fn [] (runtime.sh (.. "echo a >> {log}"))))"#,
+            r#"(local {{: job : runtime}} (require :quire.ci))
+(job :b [:a] (fn [] (runtime.sh (.. "echo b >> {log}"))))
+(job :a [:quire/push] (fn [] (runtime.sh (.. "echo a >> {log}"))))"#,
             log = log_str
         );
         let pipeline = load(&source);
@@ -1122,9 +1122,9 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [] (error "boom")))
-(ci.job :b [:a] (fn [] (runtime.sh ["echo" "should-not-run"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :a [:quire/push] (fn [] (error "boom")))
+(job :b [:a] (fn [] (runtime.sh ["echo" "should-not-run"])))"#,
         );
 
         let run_id = run.id().to_string();
@@ -1150,8 +1150,8 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push]
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push]
   (fn []
     (let [push (runtime.jobs :quire/push)]
       (runtime.sh ["echo" push.sha push.ref]))))"#,
@@ -1178,9 +1178,9 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [] nil))
-(ci.job :b [:a]
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :a [:quire/push] (fn [] nil))
+(job :b [:a]
   (fn []
     (let [push (runtime.jobs :quire/push)]
       (runtime.sh ["echo" push.sha]))))"#,
@@ -1207,8 +1207,8 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [] (runtime.jobs :nope)))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push] (fn [] (runtime.jobs :nope)))"#,
         );
 
         let err = run
@@ -1237,9 +1237,9 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :peer [:quire/push] (fn [] nil))
-(ci.job :grab [:quire/push] (fn [] (runtime.jobs :peer)))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :peer [:quire/push] (fn [] nil))
+(job :grab [:quire/push] (fn [] (runtime.jobs :peer)))"#,
         );
 
         let err = run
@@ -1267,8 +1267,8 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [] (runtime.jobs :grab)))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push] (fn [] (runtime.jobs :grab)))"#,
         );
 
         let err = run
@@ -1296,9 +1296,9 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [] nil))
-(ci.job :b [:a]
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :a [:quire/push] (fn [] nil))
+(job :b [:a]
   (fn []
     (let [a-outputs (runtime.jobs :a)]
       (runtime.sh ["echo" (tostring a-outputs)]))))"#,
@@ -1324,8 +1324,8 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :greet [:quire/push] (fn [] (runtime.sh ["echo" "hello"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :greet [:quire/push] (fn [] (runtime.sh ["echo" "hello"])))"#,
         );
 
         let run_id = run.id().to_string();
@@ -1369,9 +1369,9 @@ mod tests {
 
         // `a` succeeds, `b` fails — log for `a` should still be written.
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :a [:quire/push] (fn [] (runtime.sh ["echo" "from-a"])))
-(ci.job :b [:a] (fn [] (error "boom")))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :a [:quire/push] (fn [] (runtime.sh ["echo" "from-a"])))
+(job :b [:a] (fn [] (error "boom")))"#,
         );
 
         let run_id = run.id().to_string();
@@ -1402,11 +1402,11 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.image "alpine")
-(ci.job :bad [:quire/push]
+            r#"(local {: job : image} (require :quire.ci))
+(image "alpine")
+(job :bad [:quire/push]
   (fn []
-    (ci.image "sneaky")))"#,
+    (image "sneaky")))"#,
         );
 
         let err = run
@@ -1437,8 +1437,8 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let mut pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :only [:quire/push] (fn [] nil))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :only [:quire/push] (fn [] nil))"#,
         );
 
         let called = Rc::new(Cell::new(false));
@@ -1465,8 +1465,8 @@ mod tests {
         let run = runs.create(&test_meta()).expect("create");
 
         let mut pipeline = load(
-            r#"(local ci (require :quire.ci))
-(ci.job :boom [:quire/push] (fn [] nil))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :boom [:quire/push] (fn [] nil))"#,
         );
 
         pipeline.replace_first_run_fn(RunFn::Rust(Rc::new(|_rt| {

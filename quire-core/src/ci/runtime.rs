@@ -364,19 +364,28 @@ impl Runtime {
     }
 }
 
-/// Install the ambient `runtime` global on the Lua VM.
+/// Install the runtime primitives on the Lua VM.
 ///
-/// Stows the `Rc<Runtime>` as app data and sets a `runtime` global
-/// table holding `sh`, `secret`, and `jobs` — closures over the
-/// active runtime. An `__index` metatable raises a clear error for
-/// any other key. The active job slot is set/cleared by the executor
-/// around each run-fn invocation via [`Runtime::enter_job`] /
-/// [`Runtime::leave_job`].
+/// Stows the `Rc<Runtime>` as app data and populates the stub seeded
+/// at `package.loaded["quire.runtime"]` by
+/// [`crate::fennel::Fennel::new`] with `sh`, `secret`, and `jobs`
+/// closures over the active runtime. An `__index` metatable raises a
+/// clear error for any other key. The active job slot is set/cleared
+/// by the executor around each run-fn invocation via
+/// [`Runtime::enter_job`] / [`Runtime::leave_job`].
+///
+/// The stub is mutated in place rather than replaced so that
+/// references captured during registration — e.g.
+/// `(require :quire.runtime)` directly, or
+/// `(local {: runtime} (require :quire.ci))` — see the populated
+/// table at call time. There is no `runtime` global; user code must
+/// reach the primitives via one of the require paths.
 pub struct RuntimeHandle(pub Rc<Runtime>);
 
 impl RuntimeHandle {
-    /// Install the ambient runtime on the Lua VM. Call once before
-    /// executing any run-fns.
+    /// Install the runtime on the Lua VM. Call once before executing
+    /// any run-fns; pair with [`RuntimeHandle::uninstall`] when the
+    /// run is done.
     pub fn install(self, lua: &Lua) -> mlua::Result<()> {
         fn runtime(lua: &Lua) -> mlua::Result<mlua::AppDataRef<'_, Rc<Runtime>>> {
             lua.app_data_ref::<Rc<Runtime>>()
@@ -384,7 +393,7 @@ impl RuntimeHandle {
         }
 
         lua.set_app_data(self.0);
-        let rt = lua.create_table()?;
+        let rt: mlua::Table = runtime_stub(lua)?;
 
         rt.set(
             "sh",
@@ -450,15 +459,36 @@ impl RuntimeHandle {
             )?,
         )?;
         rt.set_metatable(Some(mt))?;
-        lua.globals().set("runtime", rt.clone())?;
-        // Mirror into `package.loaded["quire.runtime"]` so library
-        // code can do `(let [{: sh} (require :quire.runtime)] …)`.
-        // Same table — destructures and ambient access stay in sync.
-        let package: mlua::Table = lua.globals().get("package")?;
-        let loaded: mlua::Table = package.get("loaded")?;
-        loaded.set("quire.runtime", rt)?;
         Ok(())
     }
+
+    /// Tear down the ambient runtime: clear `sh`/`secret`/`jobs` from
+    /// the runtime table, drop the metatable, and remove the
+    /// `Rc<Runtime>` app data. Idempotent — calling twice is a no-op.
+    ///
+    /// In practice the Lua VM is dropped right after a run, so this
+    /// is hygiene rather than necessity; pair it with `install` so
+    /// the install/uninstall lifecycle is explicit at the call site.
+    pub fn uninstall(lua: &Lua) -> mlua::Result<()> {
+        let rt: mlua::Table = runtime_stub(lua)?;
+        rt.set("sh", mlua::Value::Nil)?;
+        rt.set("secret", mlua::Value::Nil)?;
+        rt.set("jobs", mlua::Value::Nil)?;
+        rt.set_metatable(None)?;
+        lua.remove_app_data::<Rc<Runtime>>();
+        Ok(())
+    }
+}
+
+/// The runtime stub at `package.loaded["quire.ci"].runtime`. Seeded
+/// as a placeholder by `Fennel::new`, threaded through
+/// `registration::register`, mutated by `install`, cleared by
+/// `uninstall`.
+fn runtime_stub(lua: &Lua) -> mlua::Result<mlua::Table> {
+    let package: mlua::Table = lua.globals().get("package")?;
+    let loaded: mlua::Table = package.get("loaded")?;
+    let ci: mlua::Table = loaded.get("quire.ci")?;
+    ci.get::<mlua::Table>("runtime")
 }
 
 /// The two valid shapes of `cmd` for `(sh cmd …)`. A bare string
@@ -640,8 +670,8 @@ mod tests {
             "github_token".to_string(),
             SecretString::from("ghp_test_value"),
         );
-        let source = r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [] (runtime.secret :github_token)))"#;
+        let source = r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push] (fn [] (runtime.secret :github_token)))"#;
         let (_runtime, run_fn) = rt(source, secrets);
         let token: String = run_fn
             .call::<String>(())
@@ -650,9 +680,54 @@ mod tests {
     }
 
     #[test]
+    fn runtime_destructured_from_quire_ci_resolves_after_install() {
+        // (local {: runtime} (require :quire.ci)) must bind to the
+        // same table that `RuntimeHandle::install` mutates in place,
+        // so `runtime.secret` works inside a run-fn.
+        let mut secrets = HashMap::new();
+        secrets.insert("k".to_string(), SecretString::from("v"));
+        let source = r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push] (fn [] (runtime.secret :k)))"#;
+        let (_runtime, run_fn) = rt(source, secrets);
+        let token: String = run_fn.call::<String>(()).expect("run_fn");
+        assert_eq!(token, "v");
+    }
+
+    #[test]
+    fn uninstall_clears_runtime_table_and_app_data() {
+        let source = r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push] (fn [] (runtime.secret :anything)))"#;
+        let (runtime, _run_fn) = rt(source, HashMap::new());
+        let lua = runtime.lua();
+        RuntimeHandle::uninstall(lua).expect("uninstall");
+
+        let rt: mlua::Table = runtime_stub(lua).expect("runtime stub");
+        assert!(matches!(
+            rt.get::<mlua::Value>("sh").expect("sh"),
+            mlua::Value::Nil
+        ));
+        assert!(matches!(
+            rt.get::<mlua::Value>("secret").expect("secret"),
+            mlua::Value::Nil
+        ));
+        assert!(matches!(
+            rt.get::<mlua::Value>("jobs").expect("jobs"),
+            mlua::Value::Nil
+        ));
+        assert!(rt.metatable().is_none(), "metatable should be cleared");
+        assert!(
+            lua.app_data_ref::<Rc<Runtime>>().is_none(),
+            "app data should be removed"
+        );
+
+        // Idempotent.
+        RuntimeHandle::uninstall(lua).expect("uninstall twice");
+    }
+
+    #[test]
     fn secret_errors_for_unknown_name() {
-        let source = r#"(local ci (require :quire.ci))
-(ci.job :grab [:quire/push] (fn [] (runtime.secret :missing)))"#;
+        let source = r#"(local {: job : runtime} (require :quire.ci))
+(job :grab [:quire/push] (fn [] (runtime.secret :missing)))"#;
         let (_runtime, run_fn) = rt(source, HashMap::new());
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
@@ -668,8 +743,8 @@ mod tests {
         let received_clone = received.clone();
 
         let (runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
         runtime.set_event_callback(Box::new(move |event| match event {
@@ -697,8 +772,8 @@ mod tests {
     #[test]
     fn sh_writes_cri_log_inline() {
         let (runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
         let log_dir = runtime.log_dir().to_path_buf();
@@ -721,8 +796,8 @@ mod tests {
         let count_clone = count.clone();
 
         let (runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
         );
         runtime.set_event_callback(Box::new(move |_event| {
@@ -751,8 +826,8 @@ mod tests {
             "github_token".to_string(),
             SecretString::from("ghp_long_secret_value"),
         );
-        let source = r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push]
+        let source = r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push]
   (fn []
     (let [tok (runtime.secret :github_token)]
       (runtime.sh ["echo" tok]))))"#;
@@ -795,8 +870,8 @@ mod tests {
     #[test]
     fn sh_runs_argv_and_captures_stdout() {
         let r = run_sh_via_job(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh ["echo" "hello"])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh ["echo" "hello"])))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "hello\n");
@@ -806,8 +881,8 @@ mod tests {
     #[test]
     fn sh_runs_string_under_shell() {
         let r = run_sh_via_job(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh "echo hello | tr a-z A-Z")))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh "echo hello | tr a-z A-Z")))"#,
         );
         assert_eq!(r.exit, 0);
         assert_eq!(r.stdout, "HELLO\n");
@@ -816,8 +891,8 @@ mod tests {
     #[test]
     fn sh_reports_nonzero_exit_without_erroring() {
         let r = run_sh_via_job(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh "exit 7")))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh "exit 7")))"#,
         );
         assert_eq!(r.exit, 7);
     }
@@ -829,8 +904,8 @@ mod tests {
             std::env::set_var("CI_SH_INHERITED_TEST", "from-parent");
         }
         let r = run_sh_via_job(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push]
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push]
   (fn []
     (runtime.sh "echo $CI_SH_INHERITED_TEST $CI_SH_OVERRIDE_TEST"
         {:env {:CI_SH_OVERRIDE_TEST "from-opts"}})))"#,
@@ -842,8 +917,8 @@ mod tests {
     #[test]
     fn sh_rejects_unknown_opt_key() {
         let (_runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh "echo hi" {:cwdir "/tmp"})))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh "echo hi" {:cwdir "/tmp"})))"#,
             HashMap::new(),
         );
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
@@ -857,8 +932,8 @@ mod tests {
     #[test]
     fn sh_rejects_non_sequence_table_as_cmd() {
         let (_runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh {:env {:FOO "bar"}})))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh {:env {:FOO "bar"}})))"#,
             HashMap::new(),
         );
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
@@ -872,8 +947,8 @@ mod tests {
     #[test]
     fn sh_rejects_empty_argv() {
         let (_runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh [])))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh [])))"#,
             HashMap::new(),
         );
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
@@ -887,8 +962,8 @@ mod tests {
     #[test]
     fn sh_rejects_number_as_cmd() {
         let (_runtime, run_fn) = rt(
-            r#"(local ci (require :quire.ci))
-(ci.job :go [:quire/push] (fn [] (runtime.sh 42)))"#,
+            r#"(local {: job : runtime} (require :quire.ci))
+(job :go [:quire/push] (fn [] (runtime.sh 42)))"#,
             HashMap::new(),
         );
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
@@ -971,9 +1046,9 @@ mod tests {
         );
 
         let source = format!(
-            r#"(local ci (require :quire.ci))
+            r#"(local {{: job : runtime}} (require :quire.ci))
 (local {{: mirror}} (require :quire.stdlib))
-(ci.job :go [:quire/push]
+(job :go [:quire/push]
   (fn []
     (let [auth (runtime.secret :github_token)]
       (mirror {{:url "{url}"
@@ -996,9 +1071,9 @@ mod tests {
 
     #[test]
     fn stdlib_mirror_errors_on_missing_required_opt() {
-        let source = r#"(local ci (require :quire.ci))
+        let source = r#"(local {: job} (require :quire.ci))
 (local {: mirror} (require :quire.stdlib))
-(ci.job :go [:quire/push]
+(job :go [:quire/push]
   (fn []
     (mirror {:auth-header "x" :sha "x" :tag "v1" :git-dir "/tmp"})))"#;
         let (_runtime, run_fn) = rt(source, HashMap::new());

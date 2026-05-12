@@ -95,14 +95,13 @@ pub fn register(lua: &Lua, (url, opts): (String, mlua::Table)) -> mlua::Result<(
     let refs = Rc::new(refs);
 
     let run_fn = lua.create_function(move |lua, ()| {
-        let mirror: mlua::Function = lua
+        let loaded: mlua::Table = lua
             .globals()
             .get::<mlua::Table>("package")?
-            .get::<mlua::Table>("loaded")?
-            .get::<mlua::Table>("quire.stdlib")?
-            .get("mirror")?;
+            .get::<mlua::Table>("loaded")?;
+        let mirror: mlua::Function = loaded.get::<mlua::Table>("quire.stdlib")?.get("mirror")?;
 
-        let runtime: mlua::Table = lua.globals().get("runtime")?;
+        let runtime: mlua::Table = loaded.get::<mlua::Table>("quire.ci")?.get("runtime")?;
         let push: mlua::Table = runtime.get::<mlua::Function>("jobs")?.call("quire/push")?;
         let pushed_ref: String = push.get("ref")?;
 

@@ -1,7 +1,7 @@
 ;; quire.stdlib — helpers callable from inside any run-fn via
 ;; `(require :quire.stdlib)`. Each function pulls its runtime
-;; primitives from `(require :quire.runtime)` at call time so the
-;; binding always tracks the currently-installed runtime.
+;; primitives from `(. (require :quire.ci) :runtime)` at call time so
+;; the binding always tracks the currently-installed runtime.
 
 (local M {})
 
@@ -34,7 +34,7 @@
 ;; non-zero git exits. `lambda` checks the required bindings for nil
 ;; at the call site.
 (λ M.mirror [{: url : auth-header : sha : tag : git-dir :refs ?refs}]
-  (let [{: sh} (require :quire.runtime)
+  (let [{: sh} (. (require :quire.ci) :runtime)
         refs (or ?refs [])
         ;; Pass http.extraHeader via GIT_CONFIG_* env (git 2.31+)
         ;; instead of `-c http.extraHeader=…` in argv. Keeps the auth

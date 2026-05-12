@@ -83,17 +83,21 @@ impl Fennel {
 
         lua.globals().set("fennel", fennel_module)?;
 
-        // Stub `runtime` so the embedded stdlib (and user pipelines)
-        // compile under Fennel's strict-globals check. Mirror it into
-        // `package.loaded["quire.runtime"]` so library code can write
-        // `(require :quire.runtime)` instead of touching the global.
-        // Both slots are replaced at execution time by
-        // `RuntimeHandle::install`.
+        // Seed a placeholder `quire.ci` module exposing only an empty
+        // `runtime` stub. The stub is the canonical runtime table:
+        // `RuntimeHandle::install` mutates it in place and `uninstall`
+        // clears it. `registration::register` overwrites the rest of
+        // `quire.ci` (job/image/mirror) but carries this same stub
+        // forward as the new module's `runtime` field, so references
+        // captured before, during, and after registration all point at
+        // the same Lua table. There is no `quire.runtime` module — all
+        // access flows through `(require :quire.ci) → .runtime`.
         let stub: mlua::Table = lua.create_table()?;
-        lua.globals().set("runtime", stub.clone())?;
+        let placeholder: mlua::Table = lua.create_table()?;
+        placeholder.set("runtime", stub)?;
         let package: mlua::Table = lua.globals().get("package")?;
         let loaded: mlua::Table = package.get("loaded")?;
-        loaded.set("quire.runtime", stub)?;
+        loaded.set("quire.ci", placeholder)?;
 
         let f = Self { lua };
         f.preload_stdlib()?;
@@ -485,14 +489,19 @@ mod tests {
     }
 
     #[test]
-    fn defrun_destructures_from_ambient_runtime() {
+    fn defrun_destructures_from_quire_ci_runtime() {
         let f = fennel();
 
-        // Replace the stub with a runtime table whose `sh` records calls.
+        // Populate the runtime stub with a `sh` that records calls.
+        // defrun expands to `(let [<pat> (. (require :quire.ci) :runtime)] …)`,
+        // so the destructure pulls `sh` straight from this table.
         let calls: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let cb_calls = calls.clone();
-        let rt = f.lua().create_table().expect("rt");
+        let package: mlua::Table = f.lua().globals().get("package").expect("package");
+        let loaded: mlua::Table = package.get("loaded").expect("package.loaded");
+        let ci: mlua::Table = loaded.get("quire.ci").expect("quire.ci placeholder");
+        let rt: mlua::Table = ci.get("runtime").expect("quire.ci.runtime stub");
         rt.set(
             "sh",
             f.lua()
@@ -503,7 +512,6 @@ mod tests {
                 .expect("create sh"),
         )
         .expect("set sh");
-        f.lua().globals().set("runtime", rt).expect("set runtime");
 
         let source = r#"
 (import-macros {: defrun} :quire.ci)
@@ -553,21 +561,30 @@ mod tests {
     }
 
     #[test]
-    fn quire_runtime_module_preloaded_to_stub() {
+    fn quire_ci_placeholder_exposes_empty_runtime_stub() {
         let f = fennel();
-        // Before install, `(require :quire.runtime)` returns the stub
-        // table — same reference as the `runtime` global.
-        let stub_via_require: mlua::Table = f
+        // Before registration runs, `(require :quire.ci)` returns a
+        // placeholder table with only an empty `runtime` stub —
+        // primitives are nil until `RuntimeHandle::install` populates
+        // them. There is no `quire.runtime` module and no `runtime`
+        // global; the placeholder is the only access path.
+        let stub: mlua::Table = f
             .lua()
-            .load(r#"return require("quire.runtime")"#)
+            .load(r#"return require("quire.ci").runtime"#)
             .eval()
-            .expect("require quire.runtime");
-        let stub_via_global: mlua::Table =
-            f.lua().globals().get("runtime").expect("runtime global");
-        assert!(
-            stub_via_require.equals(&stub_via_global).unwrap(),
-            "require and global should resolve to the same stub"
-        );
+            .expect("require quire.ci.runtime");
+        assert!(matches!(
+            stub.get::<mlua::Value>("sh").expect("sh"),
+            mlua::Value::Nil
+        ));
+        let global: mlua::Value = f.lua().globals().get("runtime").expect("globals lookup");
+        assert!(matches!(global, mlua::Value::Nil));
+        let quire_runtime: mlua::Value = f
+            .lua()
+            .load(r#"return package.loaded["quire.runtime"]"#)
+            .eval()
+            .expect("eval");
+        assert!(matches!(quire_runtime, mlua::Value::Nil));
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub enum DefinitionError {
     },
 
     #[error(
-        "Job '{job_id}' run-fn takes an argument — run-fns must be zero-arg `(fn [] …)`; use `runtime.sh`, `runtime.secret`, and `runtime.jobs` instead of destructuring a handle."
+        "Job '{job_id}' run-fn takes an argument — run-fns must be zero-arg `(fn [] …)`; bind the runtime via `(local runtime (require :quire.runtime))` or destructure it from `(require :quire.ci)` instead of destructuring a handle."
     )]
     ArityViolation {
         job_id: String,

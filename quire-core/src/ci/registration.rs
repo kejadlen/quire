@@ -53,11 +53,6 @@ pub fn register(fennel: &Fennel, source: &str, name: &str) -> CompileResult<Regi
                 source: src.clone(),
             },
         )?;
-        // Declare `runtime` as a known global so Fennel compilation
-        // doesn't reject `runtime.sh` / `runtime.secret` / `runtime.jobs`
-        // as unknown identifiers. The real value is installed at execution
-        // time by `RuntimeHandle::install`.
-        lua.globals().set("runtime", lua.create_table()?)?;
         Ok(())
     })?;
 
@@ -111,6 +106,18 @@ impl IntoLua for Registration {
         table.set("job", lua.create_function(register_job)?)?;
         table.set("image", lua.create_function(register_image)?)?;
         table.set("mirror", lua.create_function(mirror::register)?)?;
+        // Carry forward the runtime stub from the placeholder
+        // `quire.ci` table seeded by `Fennel::new`. `register_module`
+        // overwrites `package.loaded["quire.ci"]` with the value we
+        // return; reusing the existing stub keeps references captured
+        // before registration (and any held by previously preloaded
+        // modules like `quire.stdlib`) pointing at the same Lua table
+        // that `RuntimeHandle::install` mutates.
+        let package: mlua::Table = lua.globals().get("package")?;
+        let loaded: mlua::Table = package.get("loaded")?;
+        let placeholder: mlua::Table = loaded.get("quire.ci")?;
+        let runtime: mlua::Table = placeholder.get("runtime")?;
+        table.set("runtime", runtime)?;
         table.into_lua(lua)
     }
 }
