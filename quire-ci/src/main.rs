@@ -167,11 +167,15 @@ fn main() -> miette::Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-            let (meta, secrets) = match dispatch {
+            let (git_dir, meta, secrets) = match dispatch {
                 Some(path) => load_dispatch(&path)?,
-                None => (placeholder_meta(), HashMap::new()),
+                None => (
+                    cli.workspace.join(".git"),
+                    placeholder_meta(),
+                    HashMap::new(),
+                ),
             };
-            run_pipeline(cli.workspace, sink, log_dir, meta, secrets)
+            run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
         }
     }
 }
@@ -215,7 +219,11 @@ fn placeholder_meta() -> RunMeta {
 /// spawning. Wraps revealed secret values back into `SecretString`.
 fn load_dispatch(
     path: &std::path::Path,
-) -> miette::Result<(RunMeta, HashMap<String, quire_core::secret::SecretString>)> {
+) -> miette::Result<(
+    PathBuf,
+    RunMeta,
+    HashMap<String, quire_core::secret::SecretString>,
+)> {
     use quire_core::ci::dispatch::Dispatch;
     use quire_core::secret::SecretString;
 
@@ -226,13 +234,14 @@ fn load_dispatch(
         .into_iter()
         .map(|(name, value)| (name, SecretString::from(value)))
         .collect();
-    Ok((dispatch.meta, secrets))
+    Ok((dispatch.git_dir, dispatch.meta, secrets))
 }
 
 fn run_pipeline(
     workspace: PathBuf,
     sink: Box<dyn EventSink>,
     log_dir: PathBuf,
+    git_dir: PathBuf,
     meta: RunMeta,
     secrets: HashMap<String, quire_core::secret::SecretString>,
 ) -> miette::Result<()> {
@@ -249,7 +258,6 @@ fn run_pipeline(
 
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
-    let git_dir = workspace.join(".git");
     let runtime = Rc::new(Runtime::new(
         pipeline, secrets, &meta, &git_dir, workspace, log_dir,
     ));

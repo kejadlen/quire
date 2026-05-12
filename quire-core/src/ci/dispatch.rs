@@ -12,6 +12,7 @@
 //! permissions (mode 0600 on Unix) before writing.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +25,15 @@ use crate::ci::run::RunMeta;
 /// orchestrator reveals values into this map before writing the
 /// file (mode 0600); quire-ci wraps them back into `SecretString`s
 /// on read.
+///
+/// `git_dir` is the bare repo the run is scoped to. quire-ci surfaces
+/// it via `(jobs :quire/push).git-dir`, which the mirror job's run-fn
+/// passes to git as `GIT_DIR`. The materialized workspace is a flat
+/// `git archive` extract with no `.git` inside, so quire-ci has no
+/// way to recover this path on its own.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dispatch {
     pub meta: RunMeta,
+    pub git_dir: PathBuf,
     pub secrets: HashMap<String, String>,
 }

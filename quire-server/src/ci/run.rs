@@ -328,6 +328,7 @@ impl Run {
     /// partial progress.
     pub fn execute_via_quire_ci(
         mut self,
+        git_dir: &Path,
         workspace: &Path,
         meta: &RunMeta,
         secrets: &HashMap<String, SecretString>,
@@ -343,7 +344,7 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_dispatch(&dispatch_path, meta, secrets)?;
+        write_dispatch(&dispatch_path, git_dir, meta, secrets)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -615,6 +616,7 @@ impl Run {
 /// to set the mode aborts the dispatch (better than leaking).
 fn write_dispatch(
     path: &Path,
+    git_dir: &Path,
     meta: &RunMeta,
     secrets: &HashMap<String, SecretString>,
 ) -> Result<()> {
@@ -629,6 +631,7 @@ fn write_dispatch(
     }
     let dispatch = Dispatch {
         meta: meta.clone(),
+        git_dir: git_dir.to_path_buf(),
         secrets: revealed,
     };
     let json = serde_json::to_vec_pretty(&dispatch).map_err(std::io::Error::other)?;
@@ -822,6 +825,25 @@ mod tests {
         assert!(
             matches!(err, Error::WorkspaceMaterializationFailed { .. }),
             "expected WorkspaceMaterializationFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn write_dispatch_records_git_dir_for_quire_ci() {
+        use quire_core::ci::dispatch::Dispatch;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dispatch_path = dir.path().join("dispatch.json");
+        let git_dir = dir.path().join("repos").join("test.git");
+
+        write_dispatch(&dispatch_path, &git_dir, &test_meta(), &HashMap::new())
+            .expect("write_dispatch");
+
+        let bytes = fs_err::read(&dispatch_path).expect("read dispatch");
+        let dispatch: Dispatch = serde_json::from_slice(&bytes).expect("parse dispatch");
+        assert_eq!(
+            dispatch.git_dir, git_dir,
+            "quire-ci needs the bare repo path to set GIT_DIR for the mirror job"
         );
     }
 
