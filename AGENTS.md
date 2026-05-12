@@ -2,11 +2,13 @@
 
 ## Task management
 
-The backlog lives in the `ranger` CLI, not GitHub Issues. Use `ranger` to read and update tasks. `RANGER_DEFAULT_BACKLOG=quire` is set in the shell, so `--backlog` can be omitted — and you should never pass it. Don't run `ranger backlog list` either; the default is already correct, and listing other backlogs is out of scope for this project.
+The backlog lives in the `ranger` CLI, not GitHub Issues. Use `ranger` to read and update tasks.
+
+Skip pre-flight verification of things already guaranteed. `RANGER_DEFAULT_BACKLOG=quire` is set in the shell — don't `echo` it, don't pass `--backlog`, don't run `ranger backlog list` to "confirm." Ranger creates tags on first use, so `ranger tag list` before `tag add` is unnecessary. Investigation commands (`ranger task list`, `ranger task show`, reading code) are fine when they're actually useful for the work at hand — just don't run them reflexively before every operation.
+
+When the user asks to add a task, run `ranger task create` (plus `ranger tag add` for tags). Look at code, recent tasks, or whatever else if the task genuinely needs that context — e.g., capturing a finding from the conversation you just had. Write the description from what was discussed; don't pad it with material the user didn't raise.
 
 The backlog shifts between sessions and even within a session — tasks get reordered, retitled, moved between states, closed, or added by the user without notice. Before acting on a task you remember (or one referenced earlier in the conversation), re-run `ranger task show <key>` and confirm state, ordering, and description against ground truth. Do not trust earlier `ranger task list` output to still be accurate; refetch when placement matters (e.g. moving to top/back of ready).
-
-When the user asks to add a task, the only command you should run is `ranger task create`. Do not run `ranger backlog list`, `ranger task list`, `ranger task show`, or read any code files to "verify" or "scope" the task — write the task from what the user said, verbatim if possible. The default backlog is already set via `RANGER_DEFAULT_BACKLOG`, so `--backlog` is unnecessary. Investigate only if the user asks you to pick up the task.
 
 ## Before committing
 
