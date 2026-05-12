@@ -12,8 +12,11 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::sink::{EventSink, JsonlSink, NullSink};
+
+const VERSION: &str = env!("QUIRE_VERSION");
 
 /// Run a quire CI pipeline locally.
 #[derive(Parser)]
@@ -167,17 +170,75 @@ fn main() -> miette::Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-            let (git_dir, meta, secrets) = match dispatch {
+            let (git_dir, meta, secrets, sentry_dsn) = match dispatch {
                 Some(path) => load_dispatch(&path)?,
                 None => (
                     cli.workspace.join(".git"),
                     placeholder_meta(),
                     HashMap::new(),
+                    None,
                 ),
             };
+
+            // Sentry's reqwest transport spawns Tokio tasks for HTTP
+            // sends, so the client must be constructed and dropped from
+            // within a runtime context. A single worker thread is
+            // enough — the main thread does the synchronous pipeline
+            // work and only crosses into Tokio when sentry flushes.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .into_diagnostic()?;
+            let _enter = rt.enter();
+
+            // Drop order: `_sentry` flushes first (still inside the
+            // runtime), then `_enter`, then `rt`.
+            let _sentry = init_sentry(sentry_dsn.as_deref(), &meta);
+            init_tracing()?;
+
             run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
         }
     }
+}
+
+/// Initialize Sentry when the orchestrator passed a DSN. Tags the
+/// scope with `service=quire-ci` plus the run's sha and ref so events
+/// from this binary are distinguishable from quire-server's in the
+/// same project. Returns the guard the caller must keep alive.
+fn init_sentry(dsn: Option<&str>, meta: &RunMeta) -> Option<sentry::ClientInitGuard> {
+    let dsn = dsn?;
+    let guard = sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: Some(VERSION.into()),
+            ..Default::default()
+        },
+    ));
+    sentry::configure_scope(|scope| {
+        scope.set_tag("service", "quire-ci");
+        scope.set_tag("sha", &meta.sha);
+        scope.set_tag("ref", &meta.r#ref);
+    });
+    Some(guard)
+}
+
+/// Initialize tracing with a stderr fmt layer plus the sentry-tracing
+/// bridge so `tracing::error!` (and warn, if configured) events show
+/// up in Sentry alongside panics.
+fn init_tracing() -> miette::Result<()> {
+    let filter = EnvFilter::builder()
+        .with_env_var("QUIRE_LOG")
+        .from_env()
+        .into_diagnostic()?;
+
+    tracing_subscriber::registry()
+        .with(sentry_tracing::layer())
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(filter)
+        .init();
+
+    Ok(())
 }
 
 fn validate(workspace: PathBuf) -> miette::Result<()> {
@@ -217,12 +278,16 @@ fn placeholder_meta() -> RunMeta {
 
 /// Read and parse the dispatch file the orchestrator wrote before
 /// spawning. Wraps revealed secret values back into `SecretString`.
+/// The Sentry DSN, if any, comes through as a plain string — the
+/// 0600 dispatch file is the line of defense.
+#[allow(clippy::type_complexity)]
 fn load_dispatch(
     path: &std::path::Path,
 ) -> miette::Result<(
     PathBuf,
     RunMeta,
     HashMap<String, quire_core::secret::SecretString>,
+    Option<String>,
 )> {
     use quire_core::ci::dispatch::Dispatch;
     use quire_core::secret::SecretString;
@@ -234,7 +299,12 @@ fn load_dispatch(
         .into_iter()
         .map(|(name, value)| (name, SecretString::from(value)))
         .collect();
-    Ok((dispatch.git_dir, dispatch.meta, secrets))
+    Ok((
+        dispatch.git_dir,
+        dispatch.meta,
+        secrets,
+        dispatch.sentry_dsn,
+    ))
 }
 
 fn run_pipeline(

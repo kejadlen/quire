@@ -10,8 +10,12 @@ miette = "*"
 mlua = { version = "*", features = ["lua54", "serde", "vendored", "error-send"] }
 petgraph = "*"
 regex = "*"
+sentry = { version = "*", features = ["backtrace", "contexts", "debug-images", "panic", "release-health", "reqwest", "rustls", "tokio"], default-features = false }
+sentry-tracing = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 tempfile = "*"
 thiserror = "*"
+tokio = "*"
 tracing = "*"
+tracing-subscriber = { version = "*", features = ["env-filter"] }

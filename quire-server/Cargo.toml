@@ -36,12 +36,12 @@ clap = { workspace = true }
 clap_complete = "*"
 rusqlite = { version = "*", features = ["bundled"] }
 rusqlite_migration = "*"
-sentry = { version = "*", features = ["backtrace", "contexts", "debug-images", "panic", "release-health", "reqwest", "rustls", "tokio"], default-features = false }
-sentry-tracing = "*"
+sentry = { workspace = true }
+sentry-tracing = { workspace = true }
 serde_yaml_ng = "*"
 shell-words = "*"
-tokio = { version = "*", features = ["full"] }
-tracing-subscriber = { version = "*", features = ["env-filter", "json"] }
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true, features = ["json"] }
 uuid = { version = "*", features = ["v7"] }
 walkdir = "*"
 

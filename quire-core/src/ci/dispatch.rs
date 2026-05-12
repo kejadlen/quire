@@ -36,4 +36,9 @@ pub struct Dispatch {
     pub meta: RunMeta,
     pub git_dir: PathBuf,
     pub secrets: HashMap<String, String>,
+    /// Sentry DSN, when the orchestrator's global config sets one.
+    /// Plaintext, like the secrets above — the 0600 mode on the
+    /// dispatch file is the line of defense.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentry_dsn: Option<String>,
 }

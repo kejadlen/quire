@@ -332,6 +332,7 @@ impl Run {
         workspace: &Path,
         meta: &RunMeta,
         secrets: &HashMap<String, SecretString>,
+        sentry_dsn: Option<&str>,
     ) -> Result<()> {
         self.transition(RunState::Active)?;
 
@@ -344,7 +345,7 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_dispatch(&dispatch_path, git_dir, meta, secrets)?;
+        write_dispatch(&dispatch_path, git_dir, meta, secrets, sentry_dsn)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -619,6 +620,7 @@ fn write_dispatch(
     git_dir: &Path,
     meta: &RunMeta,
     secrets: &HashMap<String, SecretString>,
+    sentry_dsn: Option<&str>,
 ) -> Result<()> {
     use quire_core::ci::dispatch::Dispatch;
 
@@ -633,6 +635,7 @@ fn write_dispatch(
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
         secrets: revealed,
+        sentry_dsn: sentry_dsn.map(String::from),
     };
     let json = serde_json::to_vec_pretty(&dispatch).map_err(std::io::Error::other)?;
 
@@ -836,8 +839,14 @@ mod tests {
         let dispatch_path = dir.path().join("dispatch.json");
         let git_dir = dir.path().join("repos").join("test.git");
 
-        write_dispatch(&dispatch_path, &git_dir, &test_meta(), &HashMap::new())
-            .expect("write_dispatch");
+        write_dispatch(
+            &dispatch_path,
+            &git_dir,
+            &test_meta(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("write_dispatch");
 
         let bytes = fs_err::read(&dispatch_path).expect("read dispatch");
         let dispatch: Dispatch = serde_json::from_slice(&bytes).expect("parse dispatch");

@@ -128,6 +128,17 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
+    let sentry_dsn = config.sentry.as_ref().and_then(|s| match s.dsn.reveal() {
+        Ok(dsn) => Some(dsn.to_string()),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to resolve Sentry DSN, quire-ci runs will skip Sentry",
+            );
+            None
+        }
+    });
+
     let db_path = quire.db_path();
     for push_ref in event.updated_refs() {
         if let Err(e) = trigger_ref(
@@ -137,6 +148,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
             push_ref,
             &config.secrets,
             config.executor,
+            sentry_dsn.as_deref(),
         ) {
             tracing::error!(
                 repo = %event.repo,
@@ -156,6 +168,7 @@ fn trigger_ref(
     push_ref: &PushRef,
     secrets: &HashMap<String, quire_core::secret::SecretString>,
     executor: Executor,
+    sentry_dsn: Option<&str>,
 ) -> error::Result<()> {
     let ci = repo.ci();
 
@@ -197,7 +210,7 @@ fn trigger_ref(
             // The orchestrator already validated `pipeline` to fail-fast on
             // bad ci.fnl; `quire-ci` recompiles inside its own process.
             drop(pipeline);
-            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets)?;
+            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry_dsn)?;
         }
     }
     Ok(())
@@ -377,6 +390,7 @@ mod tests {
             &push_ref,
             &HashMap::new(),
             Executor::Host,
+            None,
         )
         .expect("trigger_ref should succeed");
 
@@ -411,6 +425,7 @@ mod tests {
             &push_ref,
             &HashMap::new(),
             Executor::Host,
+            None,
         )
         .expect("should succeed without ci.fnl");
     }
@@ -435,6 +450,7 @@ mod tests {
             &push_ref,
             &HashMap::new(),
             Executor::Host,
+            None,
         );
         assert!(result.is_err(), "invalid pipeline should fail");
     }
