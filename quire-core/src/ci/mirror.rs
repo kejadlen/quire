@@ -397,7 +397,11 @@ mod tests {
         secrets: HashMap<String, SecretString>,
         meta: &RunMeta,
         git_dir: &std::path::Path,
-    ) -> (Rc<crate::ci::runtime::Runtime>, mlua::Function) {
+    ) -> (
+        Rc<crate::ci::runtime::Runtime>,
+        mlua::Function,
+        RuntimeHandle,
+    ) {
         use crate::ci::runtime::Runtime;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let run_fn = match pipeline
@@ -420,10 +424,9 @@ mod tests {
             std::env::current_dir().expect("cwd"),
             log_dir,
         ));
-        RuntimeHandle(runtime.clone())
-            .install(runtime.lua())
-            .expect("install runtime");
-        (runtime, run_fn)
+        let guard =
+            RuntimeHandle::install(runtime.clone(), runtime.lua()).expect("install runtime");
+        (runtime, run_fn, guard)
     }
 
     #[test]
@@ -449,7 +452,7 @@ mod tests {
    :tag (fn [push] (.. "release-" (string.sub push.sha 1 8)))}})"#,
             url = format!("file://{}", target.display()),
         );
-        let (runtime, run_fn) = mirror_run_fn(&source, secrets, &meta, &bare);
+        let (runtime, run_fn, _guard) = mirror_run_fn(&source, secrets, &meta, &bare);
 
         runtime.enter_job("quire/mirror");
         let _: mlua::Value = run_fn.call(()).expect("mirror should succeed");
@@ -509,7 +512,7 @@ mod tests {
    :refs ["refs/heads/main" "refs/heads/release"]}})"#,
             url = format!("file://{}", target.display()),
         );
-        let (runtime, run_fn) = mirror_run_fn(&source, secrets, &meta, &bare);
+        let (runtime, run_fn, _guard) = mirror_run_fn(&source, secrets, &meta, &bare);
 
         runtime.enter_job("quire/mirror");
         let _: mlua::Value = run_fn.call(()).expect("mirror should succeed");
@@ -549,7 +552,7 @@ mod tests {
   {:secret :github_token
    :tag (fn [_] "v1")
    :refs ["refs/heads/main"]})"#;
-        let (runtime, run_fn) = mirror_run_fn(source, secrets, &meta, &bare);
+        let (runtime, run_fn, _guard) = mirror_run_fn(source, secrets, &meta, &bare);
 
         runtime.enter_job("quire/mirror");
         let _: mlua::Value = run_fn.call(()).expect("mirror should succeed (no-op)");
@@ -585,7 +588,7 @@ mod tests {
         let source = r#"(local ci (require :quire.ci))
 (ci.mirror "https://github.com/example/repo.git"
   {:secret :missing :tag (fn [_] "v1")})"#;
-        let (runtime, run_fn) = mirror_run_fn(source, HashMap::new(), &meta, &bare);
+        let (runtime, run_fn, _guard) = mirror_run_fn(source, HashMap::new(), &meta, &bare);
 
         runtime.enter_job("quire/mirror");
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();

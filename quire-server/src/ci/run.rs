@@ -233,9 +233,7 @@ impl Run {
             self.path(),
         ));
 
-        let lua = runtime.lua();
-        RuntimeHandle(runtime.clone())
-            .install(lua)
+        let runtime_guard = RuntimeHandle::install(runtime.clone(), runtime.lua())
             .expect("install runtime on Lua VM");
 
         let mut failed_job: Option<(String, Error)> = None;
@@ -290,14 +288,17 @@ impl Run {
         // jobs that did run before the failure are useful context.
         let outputs = runtime.take_outputs();
         let timings = runtime.take_sh_timings();
-        RuntimeHandle::uninstall(lua).expect("uninstall runtime");
+
+        // Drop the guard first so the runtime app data and stub
+        // entries are released before we drop the `Rc<Runtime>` that
+        // owns the Lua VM behind them.
+        drop(runtime_guard);
 
         self.write_sh_records(&outputs, &timings)?;
 
         // Drop the runtime *before* the final transition. In docker
         // mode this fires `DockerLifecycle::drop`, which stamps
         // `container_stopped_at` in the database.
-        let _ = lua; // release the Lua borrow tied to `runtime`.
         drop(runtime);
 
         if let Some((job, source)) = failed_job {

@@ -94,15 +94,10 @@ fn noop_event_callback() -> RuntimeCallback {
 /// names absent from the inner map are unreachable and produce a Lua
 /// error.
 ///
-/// Wrap an `Rc<Runtime>` in [`RuntimeHandle`] and convert it via
-/// [`IntoLua`] to install it on the Lua VM (sets app data, returns
-/// the handle table passed into each `run_fn`). The newtype is
-/// required because the orphan rule forbids `impl IntoLua` directly
-/// on `Rc<Runtime>`.
-///
-/// All three handle primitives — `(sh …)`, `(secret …)`, and
-/// `(jobs …)` — require a runtime to be installed on the VM. Calls
-/// from a VM without one error.
+/// Install onto the Lua VM via [`RuntimeHandle::install`]; the
+/// returned guard releases the install on drop. All three primitives
+/// — `(sh …)`, `(secret …)`, and `(jobs …)` — require a runtime
+/// installed on the VM; calls from a VM without one error.
 pub struct Runtime {
     pipeline: Pipeline,
     /// Unified secret store: holds declared secrets and their revealed
@@ -137,9 +132,7 @@ impl Runtime {
     /// Panics if any of the Lua table operations below fail. They run
     /// against a freshly initialized VM with `String`/`&str` keys and
     /// values, so the only realistic failure mode is allocation
-    /// failure — abort is the right answer there. The matching
-    /// `RuntimeHandle::into_lua` call at the executor's call site uses
-    /// the same boundary.
+    /// failure — abort is the right answer there.
     pub fn new(
         pipeline: Pipeline,
         secrets: HashMap<String, SecretString>,
@@ -364,41 +357,44 @@ impl Runtime {
     }
 }
 
-/// Install the runtime primitives on the Lua VM.
+/// RAII guard for the runtime installed on a Lua VM.
 ///
-/// Stows the `Rc<Runtime>` as app data and populates the stub seeded
-/// at `package.loaded["quire.runtime"]` by
-/// [`crate::fennel::Fennel::new`] with `sh`, `secret`, and `jobs`
-/// closures over the active runtime. An `__index` metatable raises a
-/// clear error for any other key. The active job slot is set/cleared
-/// by the executor around each run-fn invocation via
-/// [`Runtime::enter_job`] / [`Runtime::leave_job`].
+/// Obtain one via [`RuntimeHandle::install`]: that populates the stub
+/// at `(require :quire.ci).runtime` (seeded by
+/// [`crate::fennel::Fennel::new`]) with `sh`, `secret`, and `jobs`
+/// closures over the active runtime and stows the `Rc<Runtime>` as
+/// Lua app data. Dropping the guard tears that down — clears the
+/// fields, removes the metatable, and removes the app data — so the
+/// install/uninstall lifecycle is bound to the guard's scope and
+/// can't be skipped on early returns.
 ///
 /// The stub is mutated in place rather than replaced so that
 /// references captured during registration — e.g.
-/// `(require :quire.runtime)` directly, or
 /// `(local {: runtime} (require :quire.ci))` — see the populated
 /// table at call time. There is no `runtime` global; user code must
-/// reach the primitives via one of the require paths.
-pub struct RuntimeHandle(pub Rc<Runtime>);
+/// reach the primitives via `(require :quire.ci) → .runtime`. The
+/// active job slot is set/cleared by the executor around each run-fn
+/// invocation via [`Runtime::enter_job`] / [`Runtime::leave_job`].
+pub struct RuntimeHandle {
+    runtime: Rc<Runtime>,
+}
 
 impl RuntimeHandle {
-    /// Install the runtime on the Lua VM. Call once before executing
-    /// any run-fns; pair with [`RuntimeHandle::uninstall`] when the
-    /// run is done.
-    pub fn install(self, lua: &Lua) -> mlua::Result<()> {
-        fn runtime(lua: &Lua) -> mlua::Result<mlua::AppDataRef<'_, Rc<Runtime>>> {
+    /// Install the runtime on the Lua VM. Hold the returned guard for
+    /// the duration of the run; dropping it tears the install down.
+    pub fn install(runtime: Rc<Runtime>, lua: &Lua) -> mlua::Result<Self> {
+        fn rt_ref(lua: &Lua) -> mlua::Result<mlua::AppDataRef<'_, Rc<Runtime>>> {
             lua.app_data_ref::<Rc<Runtime>>()
                 .ok_or_else(|| mlua::Error::external("runtime not installed on Lua VM"))
         }
 
-        lua.set_app_data(self.0);
+        lua.set_app_data(runtime.clone());
         let rt: mlua::Table = runtime_stub(lua)?;
 
         rt.set(
             "sh",
             lua.create_function(|lua, (cmd, opts): (Cmd, Option<ShOpts>)| {
-                let rt = runtime(lua)?;
+                let rt = rt_ref(lua)?;
                 let output = rt
                     .sh(cmd, opts.unwrap_or_default())
                     .map_err(mlua::Error::external)?;
@@ -409,7 +405,7 @@ impl RuntimeHandle {
         rt.set(
             "secret",
             lua.create_function(|lua, name: String| {
-                let rt = runtime(lua)?;
+                let rt = rt_ref(lua)?;
                 rt.secret(&name).map_err(mlua::Error::external)
             })?,
         )?;
@@ -417,7 +413,7 @@ impl RuntimeHandle {
         rt.set(
             "jobs",
             lua.create_function(|lua, name: String| {
-                let rt = runtime(lua)?;
+                let rt = rt_ref(lua)?;
                 let calling = rt.current_job.borrow();
                 let calling = calling.as_ref().ok_or_else(|| {
                     mlua::Error::external(
@@ -459,17 +455,16 @@ impl RuntimeHandle {
             )?,
         )?;
         rt.set_metatable(Some(mt))?;
-        Ok(())
+
+        Ok(Self { runtime })
     }
 
-    /// Tear down the ambient runtime: clear `sh`/`secret`/`jobs` from
-    /// the runtime table, drop the metatable, and remove the
-    /// `Rc<Runtime>` app data. Idempotent — calling twice is a no-op.
-    ///
-    /// In practice the Lua VM is dropped right after a run, so this
-    /// is hygiene rather than necessity; pair it with `install` so
-    /// the install/uninstall lifecycle is explicit at the call site.
-    pub fn uninstall(lua: &Lua) -> mlua::Result<()> {
+    /// Tear down the runtime: clear `sh`/`secret`/`jobs` from the
+    /// runtime table, drop the metatable, remove the `Rc<Runtime>`
+    /// app data. Errors are swallowed because `Drop` can't return
+    /// them; in practice the Lua ops here can only fail under
+    /// allocation pressure, where the VM is about to drop anyway.
+    fn uninstall(lua: &Lua) -> mlua::Result<()> {
         let rt: mlua::Table = runtime_stub(lua)?;
         rt.set("sh", mlua::Value::Nil)?;
         rt.set("secret", mlua::Value::Nil)?;
@@ -477,6 +472,15 @@ impl RuntimeHandle {
         rt.set_metatable(None)?;
         lua.remove_app_data::<Rc<Runtime>>();
         Ok(())
+    }
+}
+
+impl Drop for RuntimeHandle {
+    fn drop(&mut self) {
+        // The Lua VM is owned through `runtime`'s pipeline; reaching
+        // it through `self.runtime.lua()` is safe — the VM outlives
+        // this drop because the Rc still holds a reference.
+        let _ = Self::uninstall(self.runtime.lua());
     }
 }
 
@@ -646,21 +650,25 @@ mod tests {
     use super::*;
     use crate::ci::pipeline::{RunFn, compile};
 
-    /// Consume the pipeline for its VM, build a minimal runtime,
-    /// and return the runtime and first job's Lua run_fn. Tests in
-    /// this module exercise the `RunFn::Lua` path; if the first job
-    /// turns out to be a `Rust` variant the test setup is wrong.
-    fn rt(source: &str, secrets: HashMap<String, SecretString>) -> (Rc<Runtime>, mlua::Function) {
+    /// Consume the pipeline for its VM, build a minimal runtime, and
+    /// return the runtime, the first job's Lua run_fn, and the
+    /// install guard. Tests must keep `_guard` alive (the RAII drop
+    /// tears down the install). Tests in this module exercise the
+    /// `RunFn::Lua` path; if the first job turns out to be a `Rust`
+    /// variant the test setup is wrong.
+    fn rt(
+        source: &str,
+        secrets: HashMap<String, SecretString>,
+    ) -> (Rc<Runtime>, mlua::Function, RuntimeHandle) {
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
         let run_fn = match pipeline.jobs()[0].run_fn.clone() {
             RunFn::Lua(f) => f,
             RunFn::Rust(_) => panic!("expected RunFn::Lua for test setup"),
         };
         let runtime = Rc::new(Runtime::for_test(pipeline, secrets));
-        RuntimeHandle(runtime.clone())
-            .install(runtime.lua())
-            .expect("install runtime");
-        (runtime, run_fn)
+        let guard =
+            RuntimeHandle::install(runtime.clone(), runtime.lua()).expect("install runtime");
+        (runtime, run_fn, guard)
     }
 
     #[test]
@@ -672,7 +680,7 @@ mod tests {
         );
         let source = r#"(local {: job : runtime} (require :quire.ci))
 (job :grab [:quire/push] (fn [] (runtime.secret :github_token)))"#;
-        let (_runtime, run_fn) = rt(source, secrets);
+        let (_runtime, run_fn, _guard) = rt(source, secrets);
         let token: String = run_fn
             .call::<String>(())
             .expect("run_fn should return the secret value");
@@ -688,18 +696,18 @@ mod tests {
         secrets.insert("k".to_string(), SecretString::from("v"));
         let source = r#"(local {: job : runtime} (require :quire.ci))
 (job :grab [:quire/push] (fn [] (runtime.secret :k)))"#;
-        let (_runtime, run_fn) = rt(source, secrets);
+        let (_runtime, run_fn, _guard) = rt(source, secrets);
         let token: String = run_fn.call::<String>(()).expect("run_fn");
         assert_eq!(token, "v");
     }
 
     #[test]
-    fn uninstall_clears_runtime_table_and_app_data() {
+    fn drop_guard_clears_runtime_table_and_app_data() {
         let source = r#"(local {: job : runtime} (require :quire.ci))
 (job :grab [:quire/push] (fn [] (runtime.secret :anything)))"#;
-        let (runtime, _run_fn) = rt(source, HashMap::new());
+        let (runtime, _run_fn, guard) = rt(source, HashMap::new());
         let lua = runtime.lua();
-        RuntimeHandle::uninstall(lua).expect("uninstall");
+        drop(guard);
 
         let rt: mlua::Table = runtime_stub(lua).expect("runtime stub");
         assert!(matches!(
@@ -719,16 +727,13 @@ mod tests {
             lua.app_data_ref::<Rc<Runtime>>().is_none(),
             "app data should be removed"
         );
-
-        // Idempotent.
-        RuntimeHandle::uninstall(lua).expect("uninstall twice");
     }
 
     #[test]
     fn secret_errors_for_unknown_name() {
         let source = r#"(local {: job : runtime} (require :quire.ci))
 (job :grab [:quire/push] (fn [] (runtime.secret :missing)))"#;
-        let (_runtime, run_fn) = rt(source, HashMap::new());
+        let (_runtime, run_fn, _guard) = rt(source, HashMap::new());
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -742,7 +747,7 @@ mod tests {
         let received: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let received_clone = received.clone();
 
-        let (runtime, run_fn) = rt(
+        let (runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
@@ -771,7 +776,7 @@ mod tests {
 
     #[test]
     fn sh_writes_cri_log_inline() {
-        let (runtime, run_fn) = rt(
+        let (runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
@@ -795,7 +800,7 @@ mod tests {
         let count = Rc::new(RefCell::new(0u32));
         let count_clone = count.clone();
 
-        let (runtime, run_fn) = rt(
+        let (runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh ["echo" "hi"])))"#,
             HashMap::new(),
@@ -814,7 +819,7 @@ mod tests {
     /// invoke it with the ambient runtime, and decode the resulting Lua
     /// table as ShOutput.
     fn run_sh_via_job(source: &str) -> ShOutput {
-        let (runtime, run_fn) = rt(source, HashMap::new());
+        let (runtime, run_fn, _guard) = rt(source, HashMap::new());
         let value: mlua::Value = run_fn.call(()).expect("sh call should return a value");
         runtime.lua().from_value(value).expect("decode ShOutput")
     }
@@ -831,7 +836,7 @@ mod tests {
   (fn []
     (let [tok (runtime.secret :github_token)]
       (runtime.sh ["echo" tok]))))"#;
-        let (runtime, run_fn) = rt(source, secrets);
+        let (runtime, run_fn, _guard) = rt(source, secrets);
 
         // Mark a current job so sh records into outputs. for_test seeds
         // an empty inputs map, so enter_job would panic; bypass the
@@ -916,7 +921,7 @@ mod tests {
 
     #[test]
     fn sh_rejects_unknown_opt_key() {
-        let (_runtime, run_fn) = rt(
+        let (_runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh "echo hi" {:cwdir "/tmp"})))"#,
             HashMap::new(),
@@ -931,7 +936,7 @@ mod tests {
 
     #[test]
     fn sh_rejects_non_sequence_table_as_cmd() {
-        let (_runtime, run_fn) = rt(
+        let (_runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh {:env {:FOO "bar"}})))"#,
             HashMap::new(),
@@ -946,7 +951,7 @@ mod tests {
 
     #[test]
     fn sh_rejects_empty_argv() {
-        let (_runtime, run_fn) = rt(
+        let (_runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh [])))"#,
             HashMap::new(),
@@ -961,7 +966,7 @@ mod tests {
 
     #[test]
     fn sh_rejects_number_as_cmd() {
-        let (_runtime, run_fn) = rt(
+        let (_runtime, run_fn, _guard) = rt(
             r#"(local {: job : runtime} (require :quire.ci))
 (job :go [:quire/push] (fn [] (runtime.sh 42)))"#,
             HashMap::new(),
@@ -1061,7 +1066,7 @@ mod tests {
             git_dir = bare.display(),
         );
 
-        let (_runtime, run_fn) = rt(&source, secrets);
+        let (_runtime, run_fn, _guard) = rt(&source, secrets);
         let _: mlua::Value = run_fn.call(()).expect("mirror should succeed");
 
         // Tag landed in the target repo, pointing at the head SHA.
@@ -1076,7 +1081,7 @@ mod tests {
 (job :go [:quire/push]
   (fn []
     (mirror {:auth-header "x" :sha "x" :tag "v1" :git-dir "/tmp"})))"#;
-        let (_runtime, run_fn) = rt(source, HashMap::new());
+        let (_runtime, run_fn, _guard) = rt(source, HashMap::new());
         let err = run_fn.call::<mlua::Value>(()).unwrap_err();
         let msg = err.to_string();
         assert!(

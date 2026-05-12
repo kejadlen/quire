@@ -286,11 +286,12 @@ fn run_pipeline(
         }));
     }
 
-    // Install the ambient runtime on the Lua VM once for the whole run.
-    let lua = runtime.lua();
-    RuntimeHandle(runtime.clone())
-        .install(lua)
-        .expect("install runtime on Lua VM");
+    // Install the runtime on the Lua VM for the duration of this
+    // function. Dropping `_runtime_guard` at end of scope tears the
+    // install down — including on the early `Err(err.into())` return
+    // below.
+    let _runtime_guard =
+        RuntimeHandle::install(runtime.clone(), runtime.lua()).expect("install runtime on Lua VM");
 
     let mut failed_job: Option<(String, RuntimeError)> = None;
     for job_id in &job_ids {
@@ -343,8 +344,6 @@ fn run_pipeline(
             break;
         }
     }
-
-    RuntimeHandle::uninstall(lua).expect("uninstall runtime");
 
     if let Some((_, err)) = failed_job {
         return Err(err.into());
