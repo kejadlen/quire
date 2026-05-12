@@ -170,7 +170,7 @@ fn main() -> miette::Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-            let (git_dir, meta, secrets, sentry_dsn) = match dispatch {
+            let (git_dir, meta, secrets, sentry_handoff) = match dispatch {
                 Some(path) => load_dispatch(&path)?,
                 None => (
                     cli.workspace.join(".git"),
@@ -194,7 +194,7 @@ fn main() -> miette::Result<()> {
 
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
-            let _sentry = init_sentry(sentry_dsn.as_deref(), &meta);
+            let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
             init_tracing()?;
 
             run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
@@ -202,14 +202,20 @@ fn main() -> miette::Result<()> {
     }
 }
 
-/// Initialize Sentry when the orchestrator passed a DSN. Tags the
-/// scope with `service=quire-ci` plus the run's sha and ref so events
-/// from this binary are distinguishable from quire-server's in the
-/// same project. Returns the guard the caller must keep alive.
-fn init_sentry(dsn: Option<&str>, meta: &RunMeta) -> Option<sentry::ClientInitGuard> {
-    let dsn = dsn?;
+/// Initialize Sentry when the orchestrator passed a handoff. Tags
+/// the scope with `service=quire-ci` plus the run's sha and ref so
+/// events from this binary are distinguishable from quire-server's
+/// in the same project, and attaches the orchestrator's trace id so
+/// the two sides' events group on the same trace. A malformed
+/// trace_id (shouldn't happen — the orchestrator emits the canonical
+/// hex form) is logged and skipped rather than aborting Sentry init.
+fn init_sentry(
+    handoff: Option<&quire_core::ci::dispatch::SentryHandoff>,
+    meta: &RunMeta,
+) -> Option<sentry::ClientInitGuard> {
+    let handoff = handoff?;
     let guard = sentry::init((
-        dsn,
+        handoff.dsn.as_str(),
         sentry::ClientOptions {
             release: Some(VERSION.into()),
             ..Default::default()
@@ -219,6 +225,26 @@ fn init_sentry(dsn: Option<&str>, meta: &RunMeta) -> Option<sentry::ClientInitGu
         scope.set_tag("service", "quire-ci");
         scope.set_tag("sha", &meta.sha);
         scope.set_tag("ref", &meta.r#ref);
+        match handoff.trace_id.parse::<sentry::protocol::TraceId>() {
+            Ok(trace_id) => {
+                scope.set_context(
+                    "trace",
+                    sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
+                        trace_id,
+                        span_id: sentry::protocol::SpanId::default(),
+                        op: Some("quire.ci.run".into()),
+                        ..Default::default()
+                    })),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    trace_id = %handoff.trace_id,
+                    error = %e,
+                    "malformed trace_id in dispatch; quire-ci events won't link to orchestrator",
+                );
+            }
+        }
     });
     Some(guard)
 }
@@ -278,8 +304,9 @@ fn placeholder_meta() -> RunMeta {
 
 /// Read and parse the dispatch file the orchestrator wrote before
 /// spawning. Wraps revealed secret values back into `SecretString`.
-/// The Sentry DSN, if any, comes through as a plain string — the
-/// 0600 dispatch file is the line of defense.
+/// The Sentry handoff, when present, carries the DSN and the
+/// orchestrator's trace id — the 0600 dispatch file is the line of
+/// defense for both.
 #[allow(clippy::type_complexity)]
 fn load_dispatch(
     path: &std::path::Path,
@@ -287,7 +314,7 @@ fn load_dispatch(
     PathBuf,
     RunMeta,
     HashMap<String, quire_core::secret::SecretString>,
-    Option<String>,
+    Option<quire_core::ci::dispatch::SentryHandoff>,
 )> {
     use quire_core::ci::dispatch::Dispatch;
     use quire_core::secret::SecretString;
@@ -299,12 +326,7 @@ fn load_dispatch(
         .into_iter()
         .map(|(name, value)| (name, SecretString::from(value)))
         .collect();
-    Ok((
-        dispatch.git_dir,
-        dispatch.meta,
-        secrets,
-        dispatch.sentry_dsn,
-    ))
+    Ok((dispatch.git_dir, dispatch.meta, secrets, dispatch.sentry))
 }
 
 fn run_pipeline(

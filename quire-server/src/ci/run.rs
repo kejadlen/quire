@@ -332,7 +332,7 @@ impl Run {
         workspace: &Path,
         meta: &RunMeta,
         secrets: &HashMap<String, SecretString>,
-        sentry_dsn: Option<&str>,
+        sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
     ) -> Result<()> {
         self.transition(RunState::Active)?;
 
@@ -345,7 +345,7 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_dispatch(&dispatch_path, git_dir, meta, secrets, sentry_dsn)?;
+        write_dispatch(&dispatch_path, git_dir, meta, secrets, sentry)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -620,9 +620,9 @@ fn write_dispatch(
     git_dir: &Path,
     meta: &RunMeta,
     secrets: &HashMap<String, SecretString>,
-    sentry_dsn: Option<&str>,
+    sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
 ) -> Result<()> {
-    use quire_core::ci::dispatch::Dispatch;
+    use quire_core::ci::dispatch::{Dispatch, SentryHandoff};
 
     let mut revealed: HashMap<String, String> = HashMap::with_capacity(secrets.len());
     for (name, value) in secrets {
@@ -635,7 +635,10 @@ fn write_dispatch(
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
         secrets: revealed,
-        sentry_dsn: sentry_dsn.map(String::from),
+        sentry: sentry.map(|s| SentryHandoff {
+            dsn: s.dsn.clone(),
+            trace_id: s.trace_id.clone(),
+        }),
     };
     let json = serde_json::to_vec_pretty(&dispatch).map_err(std::io::Error::other)?;
 

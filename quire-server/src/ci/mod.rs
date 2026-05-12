@@ -141,22 +141,54 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 
     let db_path = quire.db_path();
     for push_ref in event.updated_refs() {
-        if let Err(e) = trigger_ref(
-            &repo,
-            &db_path,
-            event.pushed_at,
-            push_ref,
-            &config.secrets,
-            config.executor,
-            sentry_dsn.as_deref(),
-        ) {
-            tracing::error!(
-                repo = %event.repo,
-                sha = %push_ref.new_sha, // cov-excl-line
-                error = %display_chain(&e),
-                "CI trigger failed"
-            );
-        }
+        // One trace per push_ref. The trace context is set on the
+        // orchestrator's scope for the duration of this iteration and
+        // propagated to quire-ci through the dispatch file, so a
+        // quire-ci panic and the orchestrator-side "CI trigger
+        // failed" event end up on the same trace in Sentry. DSN and
+        // trace_id travel together — no DSN, no handoff, no trace
+        // tagging is observable.
+        let trace_id = sentry::protocol::TraceId::default();
+        let span_id = sentry::protocol::SpanId::default();
+        let sentry_handoff =
+            sentry_dsn
+                .as_ref()
+                .map(|dsn| quire_core::ci::dispatch::SentryHandoff {
+                    dsn: dsn.clone(),
+                    trace_id: trace_id.to_string(),
+                });
+
+        sentry::with_scope(
+            |scope| {
+                scope.set_context(
+                    "trace",
+                    sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
+                        trace_id,
+                        span_id,
+                        op: Some("quire.ci.run".into()),
+                        ..Default::default()
+                    })),
+                );
+            },
+            || {
+                if let Err(e) = trigger_ref(
+                    &repo,
+                    &db_path,
+                    event.pushed_at,
+                    push_ref,
+                    &config.secrets,
+                    config.executor,
+                    sentry_handoff.as_ref(),
+                ) {
+                    tracing::error!(
+                        repo = %event.repo,
+                        sha = %push_ref.new_sha, // cov-excl-line
+                        error = %display_chain(&e),
+                        "CI trigger failed"
+                    );
+                }
+            },
+        );
     }
 }
 
@@ -168,7 +200,7 @@ fn trigger_ref(
     push_ref: &PushRef,
     secrets: &HashMap<String, quire_core::secret::SecretString>,
     executor: Executor,
-    sentry_dsn: Option<&str>,
+    sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
 ) -> error::Result<()> {
     let ci = repo.ci();
 
@@ -210,7 +242,7 @@ fn trigger_ref(
             // The orchestrator already validated `pipeline` to fail-fast on
             // bad ci.fnl; `quire-ci` recompiles inside its own process.
             drop(pipeline);
-            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry_dsn)?;
+            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry)?;
         }
     }
     Ok(())

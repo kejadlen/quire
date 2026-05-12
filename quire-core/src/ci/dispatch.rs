@@ -36,9 +36,21 @@ pub struct Dispatch {
     pub meta: RunMeta,
     pub git_dir: PathBuf,
     pub secrets: HashMap<String, String>,
-    /// Sentry DSN, when the orchestrator's global config sets one.
-    /// Plaintext, like the secrets above — the 0600 mode on the
-    /// dispatch file is the line of defense.
+    /// Sentry handoff, present only when the orchestrator's global
+    /// config sets a DSN. Carries the matching trace id so both
+    /// sides' events land on the same trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sentry_dsn: Option<String>,
+    pub sentry: Option<SentryHandoff>,
+}
+
+/// What quire-ci needs to mirror the orchestrator's Sentry context.
+///
+/// The DSN is plaintext like the secrets — the 0600 mode on the
+/// dispatch file is the line of defense. `trace_id` is the hex form
+/// of [`sentry::protocol::TraceId`]; kept as a string here so
+/// `quire-core` doesn't grow a `sentry` dep.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SentryHandoff {
+    pub dsn: String,
+    pub trace_id: String,
 }
