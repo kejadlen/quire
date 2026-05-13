@@ -17,7 +17,6 @@ path = "src/bin/quire/main.rs"
 
 [dependencies]
 quire-core = { path = "../quire-core" }
-quire-telemetry = { path = "../quire-telemetry" }
 
 fs-err = { workspace = true, features = ["tokio"] }
 jiff = { workspace = true }

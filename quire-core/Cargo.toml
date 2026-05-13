@@ -10,10 +10,12 @@ miette = { workspace = true }
 mlua = { workspace = true }
 petgraph = { workspace = true }
 regex = { workspace = true }
+sentry = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = { workspace = true }

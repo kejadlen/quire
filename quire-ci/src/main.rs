@@ -211,7 +211,7 @@ fn main() -> miette::Result<()> {
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
             let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
-            let miette_layer = quire_telemetry::MietteLayer::new()
+            let miette_layer = quire_core::telemetry::MietteLayer::new()
                 .with_type::<JobError>()
                 .with_type::<quire_core::fennel::FennelError>();
             init_tracing(miette_layer)?;
@@ -237,7 +237,7 @@ fn init_sentry(
         handoff.dsn.as_str(),
         sentry::ClientOptions {
             release: Some(VERSION.into()),
-            before_send: Some(std::sync::Arc::new(quire_telemetry::before_send)),
+            before_send: Some(std::sync::Arc::new(quire_core::telemetry::before_send)),
             ..Default::default()
         },
     ));
@@ -272,7 +272,7 @@ fn init_sentry(
 /// Initialize tracing with a stderr fmt layer plus the sentry-tracing
 /// bridge so `tracing::error!` (and warn, if configured) events show
 /// up in Sentry alongside panics.
-fn init_tracing(miette_layer: quire_telemetry::MietteLayer) -> miette::Result<()> {
+fn init_tracing(miette_layer: quire_core::telemetry::MietteLayer) -> miette::Result<()> {
     let filter = EnvFilter::builder()
         .with_env_var("QUIRE_LOG")
         .from_env()

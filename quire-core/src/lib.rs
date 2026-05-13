@@ -4,3 +4,4 @@
 pub mod ci;
 pub mod fennel;
 pub mod secret;
+pub mod telemetry;

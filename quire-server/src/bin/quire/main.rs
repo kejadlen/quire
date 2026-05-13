@@ -131,7 +131,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
         dsn,
         sentry::ClientOptions {
             release: Some(VERSION.into()),
-            before_send: Some(std::sync::Arc::new(quire_telemetry::before_send)),
+            before_send: Some(std::sync::Arc::new(quire_core::telemetry::before_send)),
             ..Default::default()
         },
     ));
@@ -143,7 +143,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
 ///
 /// Emits structured JSON when stderr is not a terminal (e.g. piped to a log
 /// collector), and human-readable text when running interactively.
-fn init_tracing(miette_layer: quire_telemetry::MietteLayer) -> Result<()> {
+fn init_tracing(miette_layer: quire_core::telemetry::MietteLayer) -> Result<()> {
     let filter = EnvFilter::builder()
         .with_env_var("QUIRE_LOG")
         .from_env()
@@ -175,7 +175,7 @@ async fn main() -> Result<()> {
         None => Quire::default(),
     };
     let _sentry = init_sentry(&quire);
-    let miette_layer = quire_telemetry::MietteLayer::new()
+    let miette_layer = quire_core::telemetry::MietteLayer::new()
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
         .with_type::<quire_core::fennel::FennelError>();
