@@ -92,8 +92,13 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
 
     // Print the combined quire-ci log regardless of outcome.
     let log_path = tmp.path().join(&run_id).join("quire-ci.log");
-    if let Ok(log) = fs_err::read_to_string(&log_path) {
-        print!("{log}");
+    match fs_err::read_to_string(&log_path) {
+        Ok(log) => print!("{log}"),
+        Err(e) => tracing::debug!(
+            path = %log_path.display(),
+            error = %e,
+            "quire-ci log not found (binary may have failed to start)",
+        ),
     }
 
     match exec_result {

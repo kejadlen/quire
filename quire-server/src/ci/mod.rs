@@ -398,8 +398,60 @@ mod tests {
         assert!(content.contains(":x"));
     }
 
+    /// Serialize PATH mutations so concurrent tests don't observe each
+    /// other's fake binaries.
+    static PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Create a temp directory containing a fake `quire-ci` that exits
+    /// with the given code. Returns the temp dir (for lifetime) and the
+    /// new PATH value.
+    fn fake_quire_ci(exit_code: i32) -> (tempfile::TempDir, std::ffi::OsString) {
+        let dir = tempfile::tempdir().expect("tempdir for fake quire-ci");
+        if cfg!(unix) {
+            let path = dir.path().join("quire-ci");
+            fs_err::write(&path, format!("#!/bin/sh\nexit {exit_code}\n"))
+                .expect("write fake quire-ci");
+            use std::os::unix::fs::PermissionsExt;
+            fs_err::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake quire-ci");
+        } else {
+            let path = dir.path().join("quire-ci.bat");
+            fs_err::write(&path, format!("@echo off\nexit /b {exit_code}\n"))
+                .expect("write fake quire-ci");
+        }
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = dir.path().as_os_str().to_owned();
+        new_path.push(std::ffi::OsString::from(if cfg!(windows) {
+            ";"
+        } else {
+            ":"
+        }));
+        new_path.push(&old_path);
+        (dir, new_path)
+    }
+
+    /// Run a closure with a modified PATH, restoring it afterward.
+    /// Acquires a global mutex so concurrent tests don't race on PATH.
+    fn with_path<F, R>(new_path: &std::ffi::OsString, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = PATH_MUTEX.lock().unwrap();
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        // SAFETY: the mutex guarantees no other thread is reading or
+        // writing PATH during this scope.
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+        let result = f();
+        unsafe {
+            std::env::set_var("PATH", &old);
+        }
+        result
+    }
+
     #[test]
-    fn trigger_ref_creates_run_and_materializes_workspace() {
+    fn trigger_ref_drives_run_to_complete_with_fake_quire_ci() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
@@ -412,27 +464,22 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        // trigger_ref shells out to quire-ci which isn't available in
-        // test, so we verify the run was created and the workspace was
-        // materialized by checking the dispatch file was written.
-        let result = trigger_ref(
-            &repo,
-            &quire.db_path(),
-            pushed_at,
-            &push_ref,
-            &HashMap::new(),
-            Executor::QuireCi,
-            None,
-        );
+        let (_fake_dir, fake_path) = fake_quire_ci(0);
+        let trigger_result = with_path(&fake_path, || {
+            trigger_ref(
+                &repo,
+                &quire.db_path(),
+                pushed_at,
+                &push_ref,
+                &HashMap::new(),
+                Executor::QuireCi,
+                None,
+            )
+        });
 
-        // quire-ci is not on PATH, so we expect a CommandSpawnFailed.
-        let err = result.expect_err("should fail without quire-ci binary");
-        assert!(
-            err.to_string().contains("command spawn failed"),
-            "expected CommandSpawnFailed, got: {err}"
-        );
+        trigger_result.expect("trigger_ref should succeed with fake quire-ci");
 
-        // The run should have been created and transitioned to active.
+        // The run should have reached complete.
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let state: String = conn
             .query_row(
@@ -442,8 +489,65 @@ mod tests {
             )
             .expect("should have a run");
         assert_eq!(
-            state, "active",
-            "run should be active (not completed since quire-ci was not found)"
+            state, "complete",
+            "run should be complete after fake quire-ci exits 0"
+        );
+
+        // No pending or active rows left behind.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE state IN ('pending', 'active')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 0, "run should be complete, not orphaned");
+    }
+
+    #[test]
+    fn trigger_ref_transitions_to_failed_when_quire_ci_exits_nonzero() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.job :build [:quire/push] (fn [] nil))"#;
+        let (_dir, quire, name) = bare_repo_with_ci(source);
+        let repo = quire.repo(&name).expect("repo");
+        let sha = head_sha(&repo);
+        let pushed_at: jiff::Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
+        let push_ref = PushRef {
+            old_sha: "0000000000000000000000000000000000000000".to_string(),
+            new_sha: sha.clone(),
+            r#ref: "refs/heads/main".to_string(),
+        };
+
+        let (_fake_dir, fake_path) = fake_quire_ci(1);
+        let trigger_result = with_path(&fake_path, || {
+            trigger_ref(
+                &repo,
+                &quire.db_path(),
+                pushed_at,
+                &push_ref,
+                &HashMap::new(),
+                Executor::QuireCi,
+                None,
+            )
+        });
+
+        let err = trigger_result.expect_err("should fail when quire-ci exits nonzero");
+        assert!(
+            err.to_string().contains("quire-ci exited"),
+            "expected QuireCiExit error, got: {err}"
+        );
+
+        let conn = crate::db::open(&quire.db_path()).expect("db");
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM runs WHERE sha = ?1",
+                rusqlite::params![&sha],
+                |row| row.get(0),
+            )
+            .expect("should have a run");
+        assert_eq!(
+            state, "failed",
+            "run should be failed after quire-ci exits 1"
         );
     }
 
