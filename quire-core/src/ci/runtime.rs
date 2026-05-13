@@ -29,7 +29,7 @@ pub enum RuntimeError {
     #[error(transparent)]
     Lua(Box<mlua::Error>),
 
-    #[error("command spawn failed: {program} in {cwd}")]
+    #[error("command spawn failed: {program} in {}: {source}", cwd.display())]
     CommandSpawnFailed {
         program: String,
         cwd: std::path::PathBuf,
@@ -40,7 +40,7 @@ pub enum RuntimeError {
     #[error("git error: {0}")]
     Git(String),
 
-    #[error("failed to write CRI log at {path}")]
+    #[error("failed to write CRI log at {}: {source}", path.display())]
     LogWriteFailed {
         path: std::path::PathBuf,
         #[source]

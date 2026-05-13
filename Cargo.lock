@@ -2138,6 +2138,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2153,11 +2154,13 @@ dependencies = [
  "mlua",
  "petgraph",
  "regex",
+ "sentry",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

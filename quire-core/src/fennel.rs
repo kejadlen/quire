@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use miette::{Diagnostic, SourceOffset};
+use miette::{Diagnostic, NamedSource, SourceOffset};
 use mlua::{Lua, LuaSerdeExt};
 use thiserror::Error;
 
@@ -29,17 +29,17 @@ pub enum FennelError {
     #[diagnostic(code(fennel::internal))]
     Internal(#[from] mlua::Error),
 
-    /// Fennel/Lua evaluation failed. `message` is just the source
-    /// name so miette renders `× <name>`; the actual Lua error text
-    /// is reachable via the `#[source]` chain. Plain `Display` will
-    /// only show the name — walk the chain (e.g. via
-    /// `display_chain`) to surface the underlying error.
+    /// Fennel/Lua evaluation failed. `message` is pre-formatted as
+    /// `"{name}: {lua_error}"` so plain `Display` carries the full
+    /// diagnostic (suitable for tracing/Sentry). The `#[source]`
+    /// chain is kept so structured tools (and miette's `╰─▶` line)
+    /// can still walk to the underlying `mlua::Error`.
     #[error("{message}")]
     #[diagnostic(code(fennel::eval))]
     Eval {
         message: String,
         #[source_code]
-        source_code: String,
+        source_code: NamedSource<String>,
         #[label("here")]
         label: Option<SourceOffset>,
         #[source]
@@ -47,8 +47,8 @@ pub enum FennelError {
     },
 
     /// Result couldn't be deserialized into the requested type.
-    /// Same display caveat as `Eval`: `message` is the source name,
-    /// the deser error is in the `#[source]` chain.
+    /// `message` is pre-formatted as `"{name}: {deser_error}"`; see
+    /// `Eval` for the rationale.
     #[error("{message}")]
     #[diagnostic(code(fennel::type_mismatch))]
     TypeMismatch {
@@ -187,12 +187,13 @@ impl Fennel {
     {
         let result = self.eval_raw(source, name, |_| Ok(()))?;
 
-        self.lua
-            .from_value(result)
-            .map_err(|e| FennelError::TypeMismatch {
-                message: name.to_string(),
+        self.lua.from_value(result).map_err(|e| {
+            let message = format!("{name}: {e}");
+            FennelError::TypeMismatch {
+                message,
                 source: Box::new(e),
-            })
+            }
+        })
     }
 
     /// Load and evaluate a Fennel file from disk, deserializing the result
@@ -209,12 +210,11 @@ impl Fennel {
 impl FennelError {
     /// Construct an `Eval` error from an mlua error, extracting line
     /// information when available.
-    pub(crate) fn from_lua(source: &str, name: &str, err: mlua::Error) -> Self {
-        // Use only the filename/location as the message. The source chain
-        // carries the full error details, so including them here would
-        // duplicate the output in miette's × and ╰─▶ sections.
-        let message = name.to_string();
-
+    /// Wrap an `mlua::Error` in an `Eval` variant with source-code
+    /// context. Used at compile time by the Fennel loader and at run
+    /// time by the executor so a failing run-fn surfaces with the
+    /// same inline source annotation as a compile error.
+    pub fn from_lua(source: &str, name: &str, err: mlua::Error) -> Self {
         // Try to extract a line (and optional column) from the Lua
         // error for a label. None when the error message doesn't carry
         // a line — miette renders the source block without an inline
@@ -222,9 +222,15 @@ impl FennelError {
         let label = extract_line_col(&err.to_string())
             .and_then(|(line, col)| line_col_offset(source, line, col));
 
+        // Fold the source name + lua error into the top-level message
+        // so plain `Display` (tracing, Sentry, logs) carries the full
+        // diagnostic. `#[source]` retains the mlua error for the
+        // structural chain.
+        let message = format!("{name}: {err}");
+
         FennelError::Eval {
             message,
-            source_code: source.to_string(),
+            source_code: NamedSource::new(name, source.to_string()),
             label,
             source: Box::new(err),
         }
@@ -379,8 +385,15 @@ mod tests {
         else {
             panic!("expected Eval, got {err:?}");
         };
-        assert_eq!(message, "bad.fnl");
-        assert_eq!(source_code, source);
+        assert!(
+            message.starts_with("bad.fnl: "),
+            "message should fold name + lua error: {message}"
+        );
+        assert!(
+            message.len() > "bad.fnl: ".len(),
+            "message should include the lua error detail, got {message:?}"
+        );
+        assert_eq!(source_code.inner(), source);
         assert!(
             label.is_some(),
             "label should be set for line-bearing error"
@@ -392,9 +405,16 @@ mod tests {
         let f = fennel();
         let result: Result<MirrorConfig, _> = f.load_string("{:mirror {:url 42}}", "types.fnl");
         let err = result.unwrap_err();
+        let FennelError::TypeMismatch { message, .. } = &err else {
+            panic!("expected TypeMismatch, got {err:?}");
+        };
         assert!(
-            matches!(&err, FennelError::TypeMismatch { message, .. } if message == "types.fnl"),
-            "expected TypeMismatch, got {err:?}",
+            message.starts_with("types.fnl: "),
+            "message should fold name + deser error: {message}"
+        );
+        assert!(
+            message.len() > "types.fnl: ".len(),
+            "message should include the deser error detail, got {message:?}"
         );
     }
 
