@@ -2133,6 +2133,7 @@ dependencies = [
  "miette",
  "mlua",
  "quire-core",
+ "quire-telemetry",
  "sentry",
  "sentry-tracing",
  "serde",
@@ -2179,6 +2180,7 @@ dependencies = [
  "petgraph",
  "predicates",
  "quire-core",
+ "quire-telemetry",
  "regex",
  "rusqlite",
  "rusqlite_migration",
@@ -2196,6 +2198,17 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "quire-telemetry"
+version = "0.1.0"
+dependencies = [
+ "miette",
+ "sentry",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
