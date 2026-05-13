@@ -10,6 +10,7 @@ jiff = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 mlua = { workspace = true }
 quire-core = { path = "../quire-core" }
+quire-telemetry = { path = "../quire-telemetry" }
 sentry = { workspace = true }
 sentry-tracing = { workspace = true }
 serde = { workspace = true }

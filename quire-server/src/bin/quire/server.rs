@@ -78,7 +78,7 @@ async fn event_listener(listener: tokio::net::UnixListener, quire: Quire) {
                 tokio::spawn(handle_event_connection(stream, quire));
             }
             Err(e) => {
-                tracing::error!(error = %e, "failed to accept event connection");
+                tracing::error!(error = &e as &(dyn std::error::Error + 'static), "failed to accept event connection");
             }
         }
     }
@@ -95,7 +95,7 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
         Ok(0) => return, // empty connection, ignore
         Ok(_) => {}
         Err(e) => {
-            tracing::error!(error = %e, "failed to read event from socket");
+            tracing::error!(error = &e as &(dyn std::error::Error + 'static), "failed to read event from socket");
             return;
         }
     }
@@ -103,7 +103,7 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
     let event: PushEvent = match serde_json::from_str(&line) {
         Ok(e) => e,
         Err(e) => {
-            tracing::error!(error = %e, "failed to parse push event");
+            tracing::error!(error = &e as &(dyn std::error::Error + 'static), "failed to parse push event");
             return;
         }
     };

@@ -26,7 +26,7 @@ fn render<T: Template>(tmpl: &T) -> Response {
     match tmpl.render() {
         Ok(body) => Html(body).into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "template render failed");
+            tracing::error!(error = &e as &(dyn std::error::Error + 'static), "template render failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
@@ -56,7 +56,7 @@ async fn read_log(path: &std::path::Path) -> String {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "failed to read CRI log");
+            tracing::warn!(path = %path.display(), error = &e as &(dyn std::error::Error + 'static), "failed to read CRI log");
             String::new()
         }
     }
@@ -74,7 +74,7 @@ fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -
     match tmpl.render() {
         Ok(body) => (status, Html(body)).into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "error template render failed");
+            tracing::error!(error = &e as &(dyn std::error::Error + 'static), "error template render failed");
             (status, format!("{title}\n\n{detail}\n")).into_response()
         }
     }
@@ -92,7 +92,7 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
     let runs = match tokio::task::spawn_blocking(move || db::load_runs(&q, &repo_name)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            tracing::error!(repo = %repo, error = %e, "failed to load runs");
+            tracing::error!(repo = %repo, error = &e as &(dyn std::error::Error + 'static), "failed to load runs");
             return render_error(
                 repo_display,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -149,7 +149,7 @@ pub async fn run_detail(
         Ok(Ok(d)) => d,
         Ok(Err(ref e)) if is_no_rows(e) => return StatusCode::NOT_FOUND.into_response(),
         Ok(Err(e)) => {
-            tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
+            tracing::error!(repo = %repo, run_id = %run_id, error = &e as &(dyn std::error::Error + 'static), "failed to load run detail");
             return render_error(
                 repo_display,
                 StatusCode::INTERNAL_SERVER_ERROR,

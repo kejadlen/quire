@@ -113,7 +113,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
     let config = match quire.global_config() {
         Ok(config) => config,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to load global config, skipping Sentry init");
+            tracing::warn!(error = &e as &(dyn std::error::Error + 'static), "failed to load global config, skipping Sentry init");
             return None;
         }
     };
@@ -122,7 +122,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
     let dsn = match sentry_config.dsn.reveal() {
         Ok(dsn) => dsn,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to resolve Sentry DSN, skipping Sentry init");
+            tracing::warn!(error = &e as &(dyn std::error::Error + 'static), "failed to resolve Sentry DSN, skipping Sentry init");
             return None;
         }
     };
@@ -131,6 +131,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
         dsn,
         sentry::ClientOptions {
             release: Some(VERSION.into()),
+            before_send: Some(std::sync::Arc::new(quire_telemetry::before_send)),
             ..Default::default()
         },
     ));
@@ -142,7 +143,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
 ///
 /// Emits structured JSON when stderr is not a terminal (e.g. piped to a log
 /// collector), and human-readable text when running interactively.
-fn init_tracing() -> Result<()> {
+fn init_tracing(miette_layer: quire_telemetry::MietteLayer) -> Result<()> {
     let filter = EnvFilter::builder()
         .with_env_var("QUIRE_LOG")
         .from_env()
@@ -157,6 +158,7 @@ fn init_tracing() -> Result<()> {
 
     tracing_subscriber::registry()
         .with(sentry_tracing::layer())
+        .with(miette_layer)
         .with(fmt_layer)
         .with(filter)
         .init();
@@ -173,7 +175,11 @@ async fn main() -> Result<()> {
         None => Quire::default(),
     };
     let _sentry = init_sentry(&quire);
-    init_tracing()?;
+    let miette_layer = quire_telemetry::MietteLayer::new()
+        .with_type::<quire::Error>()
+        .with_type::<quire::ci::Error>()
+        .with_type::<quire_core::fennel::FennelError>();
+    init_tracing(miette_layer)?;
 
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "quire", &mut std::io::stdout());

@@ -211,7 +211,10 @@ fn main() -> miette::Result<()> {
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
             let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
-            init_tracing()?;
+            let miette_layer = quire_telemetry::MietteLayer::new()
+                .with_type::<JobError>()
+                .with_type::<quire_core::fennel::FennelError>();
+            init_tracing(miette_layer)?;
 
             run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
         }
@@ -234,6 +237,7 @@ fn init_sentry(
         handoff.dsn.as_str(),
         sentry::ClientOptions {
             release: Some(VERSION.into()),
+            before_send: Some(std::sync::Arc::new(quire_telemetry::before_send)),
             ..Default::default()
         },
     ));
@@ -268,7 +272,7 @@ fn init_sentry(
 /// Initialize tracing with a stderr fmt layer plus the sentry-tracing
 /// bridge so `tracing::error!` (and warn, if configured) events show
 /// up in Sentry alongside panics.
-fn init_tracing() -> miette::Result<()> {
+fn init_tracing(miette_layer: quire_telemetry::MietteLayer) -> miette::Result<()> {
     let filter = EnvFilter::builder()
         .with_env_var("QUIRE_LOG")
         .from_env()
@@ -276,6 +280,7 @@ fn init_tracing() -> miette::Result<()> {
 
     tracing_subscriber::registry()
         .with(sentry_tracing::layer())
+        .with(miette_layer)
         .with(fmt::layer().with_writer(std::io::stderr))
         .with(filter)
         .init();
@@ -475,7 +480,7 @@ fn run_pipeline(
         // the failure (terminal output is handled by miette via the
         // returned `Err`). `%err` carries the full diagnostic now
         // that error Display impls are self-contained.
-        tracing::error!(job = %job_id, error = %err, "job run-fn failed");
+        tracing::error!(job = %job_id, error = &err as &(dyn std::error::Error + 'static), "job run-fn failed");
         return Err(err.into());
     }
 

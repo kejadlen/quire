@@ -114,7 +114,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
             return;
         }
         Err(e) => {
-            tracing::error!(repo = %event.repo, error = format!("{e:#}"), "invalid repo name in event");
+            tracing::error!(repo = %event.repo, error = %e, "invalid repo name in event");
             return;
         }
     };
@@ -122,7 +122,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
     let config = match quire.global_config() {
         Ok(config) => config,
         Err(e) => {
-            tracing::error!(repo = %event.repo, error = %e, "failed to load global config");
+            tracing::error!(repo = %event.repo, error = &e as &(dyn std::error::Error + 'static), "failed to load global config");
             return;
         }
     };
@@ -131,7 +131,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         Ok(dsn) => Some(dsn.to_string()),
         Err(e) => {
             tracing::warn!(
-                error = %e,
+                error = &e as &(dyn std::error::Error + 'static),
                 "failed to resolve Sentry DSN, quire-ci runs will skip Sentry",
             );
             None
@@ -182,7 +182,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
                     tracing::error!(
                         repo = %event.repo,
                         sha = %push_ref.new_sha, // cov-excl-line
-                        error = %e,
+                        error = &e as &(dyn std::error::Error + 'static),
                         "CI trigger failed"
                     );
                 }
