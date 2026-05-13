@@ -83,9 +83,9 @@ all: fmt clippy test
 install:
     cargo install --locked --path quire-server
 
-# Escape hatch: tag a revision (default: @-) as v<UTC-date>-<short-sha> and push to github.
-# This triggers the CI release workflow which builds + publishes a container image.
-escape-hatch rev="@-":
+# Manual release: tag a revision (default: @-) as v<UTC-date>-<short-sha> and push to github.
+# Use this when the normal CI path is not working. Triggers the release workflow.
+manual-release rev="@-":
     #!/usr/bin/env bash
     set -euo pipefail
     sha=$(jj log -r {{rev}} --no-graph -T commit_id --limit 1)
