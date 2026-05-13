@@ -413,9 +413,11 @@ fn run_pipeline(
             .clone();
 
         runtime.enter_job(job_id);
+        let rt =
+            RuntimeHandle::runtime_table(runtime.lua()).expect("runtime table should be installed");
         let result: Result<(), RuntimeError> = match run_fn {
             RunFn::Lua(f) => f
-                .call::<mlua::Value>(())
+                .call::<mlua::Value>(rt)
                 .map(|_| ())
                 .map_err(RuntimeError::from),
             RunFn::Rust(f) => f(&runtime),

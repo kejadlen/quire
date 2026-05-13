@@ -380,6 +380,13 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    /// The Lua table at `package.loaded["quire.ci"].runtime`.
+    /// Populated by [`install`](Self::install) and cleared by
+    /// [`uninstall`](Self::uninstall).
+    pub fn runtime_table(lua: &Lua) -> mlua::Result<mlua::Table> {
+        runtime_stub(lua)
+    }
+
     /// Install the runtime on the Lua VM. Hold the returned guard for
     /// the duration of the run; dropping it tears the install down.
     pub fn install(runtime: Rc<Runtime>, lua: &Lua) -> mlua::Result<Self> {
@@ -656,6 +663,13 @@ mod tests {
     /// tears down the install). Tests in this module exercise the
     /// `RunFn::Lua` path; if the first job turns out to be a `Rust`
     /// variant the test setup is wrong.
+    /// Call `run_fn` with the runtime table as its argument, matching
+    /// how the executor invokes Lua run-fns.
+    fn call_fn(runtime: &Rc<Runtime>, run_fn: &mlua::Function) -> mlua::Result<mlua::Value> {
+        let rt = runtime_stub(runtime.lua()).expect("runtime table");
+        run_fn.call(rt)
+    }
+
     fn rt(
         source: &str,
         secrets: HashMap<String, SecretString>,
@@ -762,7 +776,7 @@ mod tests {
         }));
         *runtime.current_job.borrow_mut() = Some("go".to_string());
 
-        let _: mlua::Value = run_fn.call(()).expect("sh call");
+        let _: mlua::Value = call_fn(&runtime, &run_fn).expect("sh call");
 
         let calls = received.borrow();
         assert_eq!(calls.len(), 2, "expected 2 events, got: {calls:?}");
@@ -784,7 +798,7 @@ mod tests {
         let log_dir = runtime.log_dir().to_path_buf();
         *runtime.current_job.borrow_mut() = Some("go".to_string());
 
-        let _: mlua::Value = run_fn.call(()).expect("sh call");
+        let _: mlua::Value = call_fn(&runtime, &run_fn).expect("sh call");
 
         let log_path = log_dir.join("jobs").join("go").join("sh-1.log");
         assert!(log_path.exists(), "expected sh-1.log at {log_path:?}");
@@ -810,7 +824,7 @@ mod tests {
         }));
         // No enter_job — current_job stays None.
 
-        let _: mlua::Value = run_fn.call(()).expect("sh call");
+        let _: mlua::Value = call_fn(&runtime, &run_fn).expect("sh call");
 
         assert_eq!(*count.borrow(), 0, "callback should not fire outside a job");
     }
@@ -820,7 +834,7 @@ mod tests {
     /// table as ShOutput.
     fn run_sh_via_job(source: &str) -> ShOutput {
         let (runtime, run_fn, _guard) = rt(source, HashMap::new());
-        let value: mlua::Value = run_fn.call(()).expect("sh call should return a value");
+        let value: mlua::Value = call_fn(&runtime, &run_fn).expect("sh call should return a value");
         runtime.lua().from_value(value).expect("decode ShOutput")
     }
 
@@ -843,7 +857,7 @@ mod tests {
         // assertion by writing the field directly.
         *runtime.current_job.borrow_mut() = Some("go".to_string());
 
-        let value: mlua::Value = run_fn.call(()).expect("sh call");
+        let value: mlua::Value = call_fn(&runtime, &run_fn).expect("sh call");
         let returned: ShOutput = runtime.lua().from_value(value).expect("decode");
 
         // The Lua caller still sees the raw value — echo printed it.
@@ -1066,8 +1080,8 @@ mod tests {
             git_dir = bare.display(),
         );
 
-        let (_runtime, run_fn, _guard) = rt(&source, secrets);
-        let _: mlua::Value = run_fn.call(()).expect("mirror should succeed");
+        let (runtime, run_fn, _guard) = rt(&source, secrets);
+        let _: mlua::Value = call_fn(&runtime, &run_fn).expect("mirror should succeed");
 
         // Tag landed in the target repo, pointing at the head SHA.
         let resolved = git(&["rev-parse", "refs/tags/v1"], &target);

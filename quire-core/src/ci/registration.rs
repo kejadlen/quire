@@ -198,26 +198,6 @@ fn register_job(
         return Ok(());
     }
 
-    // Arity check: one-arg run-fns use the old `(fn [{: sh}] …)`
-    // pattern. Reject them so users get a clear message instead of
-    // a runtime-nil panic when the ambient runtime is absent.
-    //
-    // Fail open on `debug.getinfo` errors — if the debug library is
-    // unavailable or the call shape changes, treat the function as
-    // zero-arg and let the user surface any real arity mismatch at
-    // execution time.
-    let nparams: u32 = lua
-        .load("return debug.getinfo(...).nparams")
-        .call(&run_fn)
-        .unwrap_or(0);
-    if nparams != 0 {
-        let span = pipeline::span_for_line(&r.source, line);
-        r.errors
-            .borrow_mut()
-            .push(DefinitionError::ArityViolation { job_id: id, span });
-        return Ok(());
-    }
-
     match Job::new(id, inputs, RunFn::Lua(run_fn), line, &r.source) {
         Ok(job) => r.add_job(job, line),
         Err(e) => r.errors.borrow_mut().push(e),

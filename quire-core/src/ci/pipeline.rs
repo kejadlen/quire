@@ -46,15 +46,6 @@ pub enum DefinitionError {
         #[label("duplicate registration")]
         span: SourceSpan,
     },
-
-    #[error(
-        "Job '{job_id}' run-fn takes an argument — run-fns must be zero-arg `(fn [] …)`; bind the runtime via `(local runtime (require :quire.runtime))` or destructure it from `(require :quire.ci)` instead of destructuring a handle."
-    )]
-    ArityViolation {
-        job_id: String,
-        #[label("here")]
-        span: SourceSpan,
-    },
 }
 
 /// A post-graph structural error found after all jobs have been
