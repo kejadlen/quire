@@ -8,7 +8,6 @@
 pub mod dispatch;
 pub mod event;
 pub mod logs;
-pub mod mirror;
 pub mod pipeline;
 pub mod registration;
 pub mod run;

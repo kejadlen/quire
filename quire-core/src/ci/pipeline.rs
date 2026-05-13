@@ -47,13 +47,6 @@ pub enum DefinitionError {
         span: SourceSpan,
     },
 
-    #[error("ci.mirror: {message}")]
-    InvalidMirrorCall {
-        message: String,
-        #[label("here")]
-        span: SourceSpan,
-    },
-
     #[error(
         "Job '{job_id}' run-fn takes an argument — run-fns must be zero-arg `(fn [] …)`; bind the runtime via `(local runtime (require :quire.runtime))` or destructure it from `(require :quire.ci)` instead of destructuring a handle."
     )]
@@ -128,8 +121,8 @@ pub type RustRunFn =
 /// `Lua` is the user case: a Fennel function the executor calls
 /// through the Lua VM, passing the runtime handle table. `Rust` is
 /// the built-in case: a closure that receives the runtime directly,
-/// used by helpers (e.g. `(ci.mirror …)`) that do their work in
-/// plain Rust without round-tripping through Lua.
+/// used by helpers that do their work in plain Rust without
+/// round-tripping through Lua.
 ///
 /// Both variants are `Clone` so the executor can take an owned copy
 /// before invoking — `mlua::Function` is cheap to clone (a registry
@@ -137,7 +130,7 @@ pub type RustRunFn =
 #[derive(Clone)]
 pub enum RunFn {
     Lua(mlua::Function),
-    #[allow(dead_code)] // Wired up by `(ci.mirror …)` and friends.
+    #[allow(dead_code)] // Wired up by built-in helpers.
     Rust(RustRunFn),
 }
 

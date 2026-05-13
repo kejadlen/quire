@@ -11,7 +11,7 @@ pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
 pub use quire_core::ci::run::RunMeta;
-pub use quire_core::ci::{mirror, pipeline, registration, runtime};
+pub use quire_core::ci::{pipeline, registration, runtime};
 pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.

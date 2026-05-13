@@ -14,7 +14,6 @@ use mlua::{IntoLua, Lua};
 
 use miette::NamedSource;
 
-use super::mirror;
 use super::pipeline::{
     self, CompileResult, DefinitionError, Diagnostic, Job, PipelineError, RunFn,
 };
@@ -105,7 +104,6 @@ impl IntoLua for Registration {
         let table = lua.create_table()?;
         table.set("job", lua.create_function(register_job)?)?;
         table.set("image", lua.create_function(register_image)?)?;
-        table.set("mirror", lua.create_function(mirror::register)?)?;
         // Carry forward the runtime stub from the placeholder
         // `quire.ci` table seeded by `Fennel::new`. `register_module`
         // overwrites `package.loaded["quire.ci"]` with the value we
@@ -178,7 +176,7 @@ fn register_image(lua: &Lua, (name,): (String,)) -> mlua::Result<()> {
 /// from the Lua debug stack so per-job validation errors carry a span
 /// pointing back at the user's source. Enforces the user-facing
 /// reserved-slash rule: ids may not contain `/`, since the `quire/`
-/// namespace is reserved for built-in helpers (see `mirror::register_mirror`).
+/// namespace is reserved for built-in helpers.
 fn register_job(
     lua: &Lua,
     (id, inputs, run_fn): (String, Vec<String>, mlua::Function),

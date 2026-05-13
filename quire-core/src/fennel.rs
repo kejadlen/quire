@@ -87,7 +87,7 @@ impl Fennel {
         // `runtime` stub. The stub is the canonical runtime table:
         // `RuntimeHandle::install` mutates it in place and `uninstall`
         // clears it. `registration::register` overwrites the rest of
-        // `quire.ci` (job/image/mirror) but carries this same stub
+        // `quire.ci` (job/image) but carries this same stub
         // forward as the new module's `runtime` field, so references
         // captured before, during, and after registration all point at
         // the same Lua table. There is no `quire.runtime` module — all
