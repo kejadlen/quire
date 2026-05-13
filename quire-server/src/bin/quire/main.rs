@@ -6,7 +6,6 @@ use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
 use quire::Quire;
-use quire::display_chain;
 use sentry::ClientInitGuard;
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
@@ -114,7 +113,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
     let config = match quire.global_config() {
         Ok(config) => config,
         Err(e) => {
-            tracing::warn!(error = %display_chain(&e), "failed to load global config, skipping Sentry init");
+            tracing::warn!(error = %e, "failed to load global config, skipping Sentry init");
             return None;
         }
     };
@@ -123,7 +122,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
     let dsn = match sentry_config.dsn.reveal() {
         Ok(dsn) => dsn,
         Err(e) => {
-            tracing::warn!(error = %display_chain(&e), "failed to resolve Sentry DSN, skipping Sentry init");
+            tracing::warn!(error = %e, "failed to resolve Sentry DSN, skipping Sentry init");
             return None;
         }
     };

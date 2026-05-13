@@ -203,6 +203,16 @@ pub struct Pipeline {
     fennel: Fennel,
     /// Container image declared via `(ci.image "...")`, if any.
     image: Option<String>,
+    /// The original Fennel source — kept so runtime Lua errors raised
+    /// during job execution can be re-wrapped via
+    /// [`FennelError::from_lua`] with the same source-code annotation
+    /// that compile-time errors get.
+    ///
+    /// [`FennelError::from_lua`]: crate::fennel::FennelError::from_lua
+    source: String,
+    /// The source's display name (typically the .fnl path or a
+    /// synthetic label like `HEAD:.quire/ci.fnl`).
+    source_name: String,
 }
 
 impl Pipeline {
@@ -227,6 +237,20 @@ impl Pipeline {
     /// declared image → `.quire/Dockerfile` → default.
     pub fn image(&self) -> Option<&str> {
         self.image.as_deref()
+    }
+
+    /// The original Fennel source. Held so the executor can attach
+    /// source context to runtime Lua errors via
+    /// [`FennelError::from_lua`].
+    ///
+    /// [`FennelError::from_lua`]: crate::fennel::FennelError::from_lua
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The source's display name (path or synthetic label).
+    pub fn source_name(&self) -> &str {
+        &self.source_name
     }
 
     /// Return job IDs in topological order — dependencies before
@@ -401,6 +425,8 @@ pub fn compile(source: &str, name: &str) -> CompileResult<Pipeline> {
         node_index,
         fennel,
         image,
+        source: source.to_string(),
+        source_name: name.to_string(),
     })
 }
 

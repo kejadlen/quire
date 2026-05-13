@@ -11,7 +11,7 @@ use quire_core::secret;
 /// Errors produced by CI operations.
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum Error {
-    #[error("io error")]
+    #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
@@ -28,7 +28,7 @@ pub enum Error {
     #[error(transparent)]
     Lua(Box<mlua::Error>),
 
-    #[error("workspace materialization failed")]
+    #[error("workspace materialization failed: {source}")]
     WorkspaceMaterializationFailed {
         #[source]
         source: std::io::Error,
@@ -49,7 +49,7 @@ pub enum Error {
     #[error(transparent)]
     Secret(#[from] secret::Error),
 
-    #[error("command spawn failed: {program} in {cwd}")]
+    #[error("command spawn failed: {program} in {}: {source}", cwd.display())]
     CommandSpawnFailed {
         program: String,
         cwd: std::path::PathBuf,
@@ -60,7 +60,7 @@ pub enum Error {
     #[error("quire-ci exited with status {exit:?}")]
     QuireCiExit { exit: Option<i32> },
 
-    #[error("failed to parse quire-ci event stream at {path}")]
+    #[error("failed to parse quire-ci event stream at {}: {source}", path.display())]
     EventStreamParse {
         path: std::path::PathBuf,
         #[source]

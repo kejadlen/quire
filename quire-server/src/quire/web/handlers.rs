@@ -8,7 +8,6 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use super::db;
 use super::templates::*;
 use crate::Quire;
-use crate::error::display_chain;
 
 pub async fn repo_redirect(
     State(quire): State<Quire>,
@@ -93,12 +92,12 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
     let runs = match tokio::task::spawn_blocking(move || db::load_runs(&q, &repo_name)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            tracing::error!(repo = %repo, error = %display_chain(&e), "failed to load runs");
+            tracing::error!(repo = %repo, error = %e, "failed to load runs");
             return render_error(
                 repo_display,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to load runs",
-                display_chain(&e).to_string(),
+                e.to_string(),
             );
         }
         Err(_) => {
@@ -150,12 +149,12 @@ pub async fn run_detail(
         Ok(Ok(d)) => d,
         Ok(Err(ref e)) if is_no_rows(e) => return StatusCode::NOT_FOUND.into_response(),
         Ok(Err(e)) => {
-            tracing::error!(repo = %repo, run_id = %run_id, error = %display_chain(&e), "failed to load run detail");
+            tracing::error!(repo = %repo, run_id = %run_id, error = %e, "failed to load run detail");
             return render_error(
                 repo_display,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to load run",
-                display_chain(&e).to_string(),
+                e.to_string(),
             );
         }
         Err(_) => {

@@ -27,7 +27,6 @@ pub struct CommitRef {
 
 use std::path::{Path, PathBuf};
 
-use crate::display_chain;
 use crate::event::{PushEvent, PushRef};
 use crate::quire::Repo;
 
@@ -123,7 +122,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
     let config = match quire.global_config() {
         Ok(config) => config,
         Err(e) => {
-            tracing::error!(repo = %event.repo, error = %display_chain(&e), "failed to load global config");
+            tracing::error!(repo = %event.repo, error = %e, "failed to load global config");
             return;
         }
     };
@@ -183,7 +182,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
                     tracing::error!(
                         repo = %event.repo,
                         sha = %push_ref.new_sha, // cov-excl-line
-                        error = %display_chain(&e),
+                        error = %e,
                         "CI trigger failed"
                     );
                 }

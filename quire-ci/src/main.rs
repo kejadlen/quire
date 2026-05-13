@@ -12,7 +12,23 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
+use quire_core::fennel::FennelError;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+/// Errors from running a job's `run_fn`. Lua errors are re-wrapped
+/// via [`FennelError::from_lua`] so they carry the same source-code
+/// annotation that compile-time errors get — both miette (terminal)
+/// and `%err` (tracing/Sentry) see the full diagnostic.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+enum JobError {
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Fennel(#[from] Box<FennelError>),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Runtime(#[from] RuntimeError),
+}
 
 use crate::sink::{EventSink, JsonlSink, NullSink};
 
@@ -348,6 +364,12 @@ fn run_pipeline(
         return Ok(());
     }
 
+    // Keep the source around so a Lua failure inside a run-fn can be
+    // wrapped via `FennelError::from_lua` — same source-code-annotated
+    // diagnostic that compile-time errors get.
+    let source = pipeline.source().to_string();
+    let source_name = pipeline.source_name().to_string();
+
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
     let runtime = Rc::new(Runtime::new(
@@ -393,7 +415,7 @@ fn run_pipeline(
     let _runtime_guard =
         RuntimeHandle::install(runtime.clone(), runtime.lua()).expect("install runtime on Lua VM");
 
-    let mut failed_job: Option<(String, RuntimeError)> = None;
+    let mut failed_job: Option<(String, JobError)> = None;
     for job_id in &job_ids {
         *current_job.borrow_mut() = Some(job_id.clone());
 
@@ -413,12 +435,15 @@ fn run_pipeline(
             .clone();
 
         runtime.enter_job(job_id);
-        let result: Result<(), RuntimeError> = match run_fn {
-            RunFn::Lua(f) => f
-                .call::<mlua::Value>(())
-                .map(|_| ())
-                .map_err(RuntimeError::from),
-            RunFn::Rust(f) => f(&runtime),
+        let result: Result<(), JobError> = match run_fn {
+            RunFn::Lua(f) => f.call::<mlua::Value>(()).map(|_| ()).map_err(|lua_err| {
+                JobError::Fennel(Box::new(FennelError::from_lua(
+                    &source,
+                    &source_name,
+                    lua_err,
+                )))
+            }),
+            RunFn::Rust(f) => f(&runtime).map_err(JobError::from),
         };
         runtime.leave_job();
 
@@ -445,7 +470,12 @@ fn run_pipeline(
         }
     }
 
-    if let Some((_, err)) = failed_job {
+    if let Some((job_id, err)) = failed_job {
+        // Log before returning so the sentry-tracing layer captures
+        // the failure (terminal output is handled by miette via the
+        // returned `Err`). `%err` carries the full diagnostic now
+        // that error Display impls are self-contained.
+        tracing::error!(job = %job_id, error = %err, "job run-fn failed");
         return Err(err.into());
     }
 
