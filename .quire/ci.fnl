@@ -1,10 +1,16 @@
-(local {: job : mirror} (require :quire.ci))
+(local {: job} (require :quire.ci))
 (import-macros {: defrun} :quire.ci)
+(local {: mirror} (require :quire.stdlib))
 
 ; (job :test [:quire/push] (defrun [{: sh}] (sh [:cargo :test])))
 
-(mirror "https://github.com/kejadlen/quire.git"
-        {:refs [:refs/heads/main]
-         :secret :github_auth_header
-         :tag (fn [{: sha}]
-                (.. :v (os.date "!%Y-%m-%d") "-" (sha:sub 1 8)))})
+(job "quire/mirror" [:quire/push]
+  (defrun [jobs secret]
+    (let [push (jobs :quire/push)]
+      (when (= push.ref "refs/heads/main")
+        (mirror {:url "https://github.com/kejadlen/quire.git"
+                 :auth-header (secret :github_auth_header)
+                 :sha push.sha
+                 :tag (.. "v" (os.date "!%Y-%m-%d") "-" (push.sha:sub 1 8))
+                 :git-dir push.git-dir
+                 :refs ["refs/heads/main"]})))))
