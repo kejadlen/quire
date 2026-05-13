@@ -83,8 +83,9 @@ all: fmt clippy test
 install:
     cargo install --locked --path quire-server
 
-# Tag a revision (default: @-) as v<UTC-date>-<short-sha> for the github mirror.
-tag rev="@-":
+# Escape hatch: tag a revision (default: @-) as v<UTC-date>-<short-sha> and push to github.
+# This triggers the CI release workflow which builds + publishes a container image.
+escape-hatch rev="@-":
     #!/usr/bin/env bash
     set -euo pipefail
     sha=$(jj log -r {{rev}} --no-graph -T commit_id --limit 1)
@@ -92,5 +93,5 @@ tag rev="@-":
     date=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y-%m-%d "$sha")
     tag="v${date}-${short}"
     git tag "$tag" "$sha"
-    echo "Tagged $sha as $tag"
-    echo "Push with: git push github $tag"
+    git push github "$tag"
+    echo "Tagged and pushed $sha as $tag"
