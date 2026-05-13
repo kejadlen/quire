@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use miette::{Diagnostic, SourceOffset};
+use miette::{Diagnostic, NamedSource, SourceOffset};
 use mlua::{Lua, LuaSerdeExt};
 use thiserror::Error;
 
@@ -39,7 +39,7 @@ pub enum FennelError {
     Eval {
         message: String,
         #[source_code]
-        source_code: String,
+        source_code: NamedSource<String>,
         #[label("here")]
         label: Option<SourceOffset>,
         #[source]
@@ -230,7 +230,7 @@ impl FennelError {
 
         FennelError::Eval {
             message,
-            source_code: source.to_string(),
+            source_code: NamedSource::new(name, source.to_string()),
             label,
             source: Box::new(err),
         }
@@ -393,7 +393,7 @@ mod tests {
             message.len() > "bad.fnl: ".len(),
             "message should include the lua error detail, got {message:?}"
         );
-        assert_eq!(source_code, source);
+        assert_eq!(source_code.inner(), source);
         assert!(
             label.is_some(),
             "label should be set for line-bearing error"
