@@ -271,8 +271,7 @@ fn init_sentry(
 fn validate(workspace: PathBuf) -> miette::Result<()> {
     let pipeline = compile_at(&workspace)?;
 
-    let jobs = pipeline.jobs();
-    if jobs.is_empty() {
+    if pipeline.job_count() == 0 {
         println!("No jobs registered.");
         return Ok(());
     }
@@ -281,12 +280,10 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
         println!("Image: {image}");
     }
 
-    let topo = pipeline.topo_order();
     println!("Jobs (topological order):");
-    for id in &topo {
-        let job = pipeline.job(id).expect("topo_order returns valid ids");
+    for job in pipeline.jobs() {
         let inputs = job.inputs.join(", ");
-        println!("  {id} <- [{inputs}]");
+        println!("  {} <- [{inputs}]", job.id);
     }
 
     println!("\nAll validations passed.");
@@ -340,11 +337,7 @@ fn run_pipeline(
 ) -> miette::Result<()> {
     let pipeline = compile_at(&workspace)?;
 
-    let job_ids: Vec<String> = pipeline
-        .topo_order()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
+    let job_ids: Vec<String> = pipeline.jobs().iter().map(|j| j.id.clone()).collect();
     if job_ids.is_empty() {
         return Ok(());
     }
@@ -415,7 +408,7 @@ fn run_pipeline(
 
         let run_fn = runtime
             .job(job_id)
-            .expect("topo_order returns valid ids")
+            .expect("pipeline.jobs() returns valid ids")
             .run_fn
             .clone();
 

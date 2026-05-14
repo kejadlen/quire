@@ -19,14 +19,13 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
         return Ok(());
     };
 
-    let jobs = pipeline.jobs();
-    if jobs.is_empty() {
+    if pipeline.job_count() == 0 {
         println!("No jobs registered.");
         return Ok(());
     }
 
     println!("Jobs:");
-    for job in jobs {
+    for job in pipeline.jobs() {
         let inputs = job.inputs.join(", ");
         println!("  {} ← [{}]", job.id, inputs);
     }

@@ -361,8 +361,8 @@ mod tests {
             .pipeline(&commit)
             .expect("pipeline should succeed")
             .expect("should have pipeline");
-        assert_eq!(pipeline.jobs().len(), 1);
-        assert_eq!(pipeline.jobs()[0].id, "build");
+        assert_eq!(pipeline.job_count(), 1);
+        assert!(pipeline.job("build").is_some());
     }
 
     #[test]

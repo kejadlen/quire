@@ -190,9 +190,9 @@ impl Runtime {
         self.pipeline.fennel().lua()
     }
 
-    /// The topo-sorted job IDs in execution order.
-    pub fn topo_order(&self) -> Vec<&str> {
-        self.pipeline.topo_order()
+    /// Jobs in execution (topological) order.
+    pub fn jobs(&self) -> Vec<&Job> {
+        self.pipeline.jobs()
     }
 
     /// Look up a job by id.
@@ -675,7 +675,13 @@ mod tests {
         secrets: HashMap<String, SecretString>,
     ) -> (Rc<Runtime>, mlua::Function, RuntimeHandle) {
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
-        let run_fn = match pipeline.jobs()[0].run_fn.clone() {
+        let run_fn = match pipeline
+            .jobs()
+            .first()
+            .expect("test pipeline has one job")
+            .run_fn
+            .clone()
+        {
             RunFn::Lua(f) => f,
             RunFn::Rust(_) => panic!("expected RunFn::Lua for test setup"),
         };
