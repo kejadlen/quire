@@ -61,15 +61,7 @@ impl Ci {
         let Some(source) = self.source(&commit.sha)? else {
             return Ok(None);
         };
-        Ok(Some(self.compile(&source)?))
-    }
-
-    /// Compile `.quire/ci.fnl` source into a validated [`Pipeline`].
-    ///
-    /// Single chokepoint for compile + structural validation, used by
-    /// [`Ci::pipeline`] and `trigger_ref` so the two paths can't drift.
-    fn compile(&self, source: &str) -> error::Result<Pipeline> {
-        Ok(pipeline::compile(source, CI_FNL)?)
+        Ok(Some(pipeline::compile(&source, CI_FNL)?))
     }
 
     /// Read the contents of `.quire/ci.fnl` at a given commit SHA.
@@ -203,9 +195,9 @@ fn trigger_ref(
 ) -> error::Result<()> {
     let ci = repo.ci();
 
-    let Some(source) = ci.source(&push_ref.new_sha)? else {
+    if ci.source(&push_ref.new_sha)?.is_none() {
         return Ok(());
-    };
+    }
 
     let meta = RunMeta {
         sha: push_ref.new_sha.clone(),
@@ -213,7 +205,7 @@ fn trigger_ref(
         pushed_at,
     };
 
-    let mut run = repo.runs(db_path).create(&meta)?;
+    let run = repo.runs(db_path).create(&meta)?;
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
@@ -222,22 +214,12 @@ fn trigger_ref(
         "created CI run"
     );
 
-    let pipeline = match ci.compile(&source) {
-        Ok(p) => p,
-        Err(e) => {
-            run.transition(RunState::Active)?;
-            run.transition(RunState::Failed)?;
-            return Err(e);
-        }
-    };
-
     let workspace = run.path().join("workspace");
     run::materialize_workspace(&repo.path(), &push_ref.new_sha, &workspace)?;
     match executor {
         Executor::QuireCi => {
-            // The orchestrator already validated `pipeline` to fail-fast on
-            // bad ci.fnl; `quire-ci` recompiles inside its own process.
-            drop(pipeline);
+            // Compilation happens inside quire-ci so a malformed ci.fnl is
+            // reported once, with the worker's trace context.
             run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry)?;
         }
     }
@@ -572,31 +554,6 @@ mod tests {
             None,
         )
         .expect("should succeed without ci.fnl");
-    }
-
-    #[test]
-    fn trigger_errors_on_invalid_pipeline() {
-        let source = "(local ci (require :quire.ci))\n(ci.job :a [] (fn [] nil))";
-        let (_dir, quire, name) = bare_repo_with_ci(source);
-        let repo = quire.repo(&name).expect("repo");
-        let sha = head_sha(&repo);
-        let pushed_at: jiff::Timestamp = "2026-04-28T12:00:00Z".parse().unwrap();
-        let push_ref = PushRef {
-            old_sha: "0000000000000000000000000000000000000000".to_string(),
-            new_sha: sha,
-            r#ref: "refs/heads/main".to_string(),
-        };
-
-        let result = trigger_ref(
-            &repo,
-            &quire.db_path(),
-            pushed_at,
-            &push_ref,
-            &HashMap::new(),
-            Executor::QuireCi,
-            None,
-        );
-        assert!(result.is_err(), "invalid pipeline should fail");
     }
 
     fn push_event(repo: &str, sha: &str) -> PushEvent {

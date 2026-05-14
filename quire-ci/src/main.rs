@@ -213,6 +213,7 @@ fn main() -> miette::Result<()> {
             let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
             let miette_layer = MietteLayer::new()
                 .with_type::<JobError>()
+                .with_type::<pipeline::CompileError>()
                 .with_type::<quire_core::fennel::FennelError>();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
@@ -335,7 +336,18 @@ fn run_pipeline(
     meta: RunMeta,
     secrets: HashMap<String, quire_core::secret::SecretString>,
 ) -> miette::Result<()> {
-    let pipeline = compile_at(&workspace)?;
+    let path = workspace.join(".quire").join("ci.fnl");
+    let source = fs_err::read_to_string(&path).into_diagnostic()?;
+    let pipeline = match pipeline::compile(&source, &path.display().to_string()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(
+                error = &e as &(dyn std::error::Error + 'static),
+                "ci.fnl compilation failed",
+            );
+            return Err(e.into());
+        }
+    };
 
     let job_ids: Vec<String> = pipeline
         .topo_order()
