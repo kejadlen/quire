@@ -171,12 +171,27 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
                     config.executor,
                     sentry_handoff.as_ref(),
                 ) {
-                    tracing::error!(
-                        repo = %event.repo,
-                        sha = %push_ref.new_sha, // cov-excl-line
-                        error = &e as &(dyn std::error::Error + 'static),
-                        "CI trigger failed"
-                    );
+                    // QuireCiExit means quire-ci itself ran and reported a
+                    // user-pipeline failure (bad ci.fnl, failing job). That
+                    // shows up in the UI via the run state and CRI log —
+                    // log it at info so it doesn't trigger a Sentry event.
+                    // Everything else (db, git, spawn, materialize) is
+                    // operational and stays at error.
+                    if matches!(e, error::Error::QuireCiExit { .. }) {
+                        tracing::info!(
+                            repo = %event.repo,
+                            sha = %push_ref.new_sha, // cov-excl-line
+                            error = %e,
+                            "ci run finished with non-zero exit",
+                        );
+                    } else {
+                        tracing::error!(
+                            repo = %event.repo,
+                            sha = %push_ref.new_sha, // cov-excl-line
+                            error = &e as &(dyn std::error::Error + 'static),
+                            "CI trigger failed",
+                        );
+                    }
                 }
             },
         );

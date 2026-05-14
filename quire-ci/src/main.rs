@@ -211,10 +211,12 @@ fn main() -> miette::Result<()> {
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
             let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
-            let miette_layer = MietteLayer::new()
-                .with_type::<JobError>()
-                .with_type::<pipeline::CompileError>()
-                .with_type::<quire_core::fennel::FennelError>();
+            // No type registrations: quire-ci's user-level errors
+            // (CompileError, JobError, FennelError) are no longer logged
+            // at tracing::error, so the miette renderer would never fire
+            // for them. The layer stays installed in case future ops
+            // errors want to register types.
+            let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
             run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
@@ -456,11 +458,12 @@ fn run_pipeline(
     }
 
     if let Some((job_id, err)) = failed_job {
-        // Log before returning so the sentry-tracing layer captures
-        // the failure (terminal output is handled by miette via the
-        // returned `Err`). `%err` carries the full diagnostic now
-        // that error Display impls are self-contained.
-        tracing::error!(job = %job_id, error = &err as &(dyn std::error::Error + 'static), "job run-fn failed");
+        // Log at warn so it appears in stderr (and the run's CRI log
+        // viewed in the UI) without tripping sentry-tracing's ERROR →
+        // Event mapping. Job failures are user-pipeline issues, not
+        // ops, and miette prints the full diagnostic to stderr on the
+        // returned Err anyway.
+        tracing::warn!(job = %job_id, error = &err as &(dyn std::error::Error + 'static), "job run-fn failed");
         return Err(err.into());
     }
 
