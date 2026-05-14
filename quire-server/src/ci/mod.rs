@@ -361,8 +361,11 @@ mod tests {
             .pipeline(&commit)
             .expect("pipeline should succeed")
             .expect("should have pipeline");
-        assert_eq!(pipeline.job_count(), 1);
+        // 2 = 1 user job (`build`) + the built-in `quire/push` job
+        // that `compile` appends to every pipeline.
+        assert_eq!(pipeline.job_count(), 2);
         assert!(pipeline.job("build").is_some());
+        assert!(pipeline.job("quire/push").is_some());
     }
 
     #[test]

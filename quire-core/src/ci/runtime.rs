@@ -675,10 +675,14 @@ mod tests {
         secrets: HashMap<String, SecretString>,
     ) -> (Rc<Runtime>, mlua::Function, RuntimeHandle) {
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
+        // Find the first non-source job; `jobs()` includes built-in
+        // sources like `quire/push` (RunFn::Rust no-op) which aren't
+        // what these tests want to invoke.
         let run_fn = match pipeline
             .jobs()
-            .first()
-            .expect("test pipeline has one job")
+            .iter()
+            .find(|j| !j.inputs.is_empty())
+            .expect("test pipeline has one user job")
             .run_fn
             .clone()
         {

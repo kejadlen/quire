@@ -19,7 +19,7 @@ use crate::fennel::{Fennel, FennelError};
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum DefinitionError {
     #[error(
-        "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another input) so it has something to fire it."
+        "Job '{job_id}' has empty inputs. Pass [:quire/push] (or another trigger) so it has something to fire it."
     )]
     EmptyInputs {
         job_id: String,
@@ -59,7 +59,7 @@ pub enum StructureError {
         spans: Vec<SourceSpan>,
     },
 
-    #[error("Job '{job_id}' is not reachable from any source ref (e.g. :quire/push).")]
+    #[error("Job '{job_id}' is not reachable from any trigger (e.g. :quire/push).")]
     Unreachable {
         job_id: String,
         #[label("declared here")]
@@ -96,9 +96,11 @@ type JobGraph = Graph<Job, ()>;
 pub struct Job {
     pub id: String,
     pub inputs: Vec<String>,
-    /// Span covering the `(ci.job …)` call site. Used as the label
-    /// location for both per-job and post-graph diagnostics.
-    pub span: SourceSpan,
+    /// Span covering the `(ci.job …)` call site. `None` for built-in
+    /// source jobs (e.g. `quire/push`) registered by `compile` rather
+    /// than user code — they have no call site to point at. Diagnostic
+    /// labels just elide themselves for these.
+    pub span: Option<SourceSpan>,
     /// What to run when the executor reaches this job.
     pub run_fn: RunFn,
 }
@@ -165,7 +167,7 @@ impl Job {
         Ok(Self {
             id,
             inputs,
-            span,
+            span: Some(span),
             run_fn,
         })
     }
@@ -251,17 +253,13 @@ impl Pipeline {
         &self.source_name
     }
 
-    /// For each job, the set of input names — direct and transitive,
-    /// including source refs — reachable through the input graph. The
-    /// job's own id is not included.
+    /// For each job, the set of ancestor job ids reachable through the
+    /// input graph. The job's own id is not included.
     ///
     /// Used by the executor to validate `(jobs name)` lookups: the
-    /// calling job may only read outputs from names in its set.
-    ///
-    /// Walks the existing dependency graph in reverse (ancestors of
-    /// the job) via petgraph's BFS. Source refs aren't graph nodes,
-    /// so they're scooped up from the inputs lists of every visited
-    /// job.
+    /// calling job may only read outputs from names in its set. Built-in
+    /// sources (like `quire/push`) are real graph nodes, so they appear
+    /// in this set the same way user jobs do.
     pub fn transitive_inputs(&self) -> HashMap<String, HashSet<String>> {
         let reversed = Reversed(&self.graph);
         let mut result: HashMap<String, HashSet<String>> = HashMap::new();
@@ -269,14 +267,8 @@ impl Pipeline {
             let mut reachable = HashSet::new();
             let mut bfs = Bfs::new(reversed, start);
             while let Some(idx) = bfs.next(reversed) {
-                let visited = &self.graph[idx];
                 if idx != start {
-                    reachable.insert(visited.id.clone());
-                }
-                for input in &visited.inputs {
-                    if !self.by_id.contains_key(input) {
-                        reachable.insert(input.clone());
-                    }
+                    reachable.insert(self.graph[idx].id.clone());
                 }
             }
             result.insert(start_id.clone(), reachable);
@@ -390,6 +382,24 @@ impl From<PipelineError> for CompileError {
 
 pub type CompileResult<T> = std::result::Result<T, CompileError>;
 
+/// The built-in `quire/push` job: a real graph node that downstream
+/// user jobs depend on by listing `:quire/push` in their inputs.
+///
+/// The run-fn is a no-op — the runtime pre-populates each downstream
+/// job's input view with push data taken from the `RunMeta` it was
+/// constructed with. The job exists in the graph so reachability,
+/// validation, and `(jobs "quire/push")` lookups all use the same
+/// node-based machinery as user jobs, with no "synthetic source ref"
+/// concept to special-case.
+fn builtin_push_job() -> Job {
+    Job {
+        id: "quire/push".to_string(),
+        inputs: Vec::new(),
+        span: None,
+        run_fn: RunFn::Rust(std::rc::Rc::new(|_| Ok(()))),
+    }
+}
+
 /// Compile a ci.fnl source string into a validated [`Pipeline`].
 ///
 /// Two phases, fail-fast between them: [`registration::register`]
@@ -404,7 +414,15 @@ pub type CompileResult<T> = std::result::Result<T, CompileError>;
 /// not log; doing so would route every malformed `ci.fnl` to Sentry.
 pub fn compile(source: &str, name: &str) -> CompileResult<Pipeline> {
     let fennel = Fennel::new()?;
-    let Registrations { jobs, image } = registration::register(&fennel, source, name)?;
+    let Registrations { mut jobs, image } = registration::register(&fennel, source, name)?;
+
+    // Append the built-in push job so it's a real node in the
+    // dependency graph. Inputs like `:quire/push` resolve to edges
+    // against this node; nothing in the rest of the pipeline has to
+    // special-case "is this a source ref" anymore. Position in the
+    // Vec doesn't matter — the push job has no inputs, so topo order
+    // already puts it ahead of any dependent.
+    jobs.push(builtin_push_job());
 
     let (graph, by_id) = build_graph(jobs);
 
@@ -450,46 +468,46 @@ fn validate_post_graph(graph: &JobGraph) -> std::result::Result<(), Vec<Structur
             cycle_members.insert(j.id.as_str());
         }
         let cycle_jobs = members.iter().map(|j| j.id.clone()).collect();
-        let spans = members.iter().map(|j| j.span).collect();
+        // Triggers can't be in cycles (no inputs → no outgoing edges),
+        // so every member here has a span. filter_map is defensive.
+        let spans = members.iter().filter_map(|j| j.span).collect();
         errors.push(StructureError::Cycle { cycle_jobs, spans });
     }
 
-    // Reachability — every job's transitive inputs must include a source ref.
+    // Reachability — every job must transitively walk back to a
+    // trigger node (one with empty inputs, like `quire/push`).
+    // Triggers themselves are trivially reachable.
     //
-    // TODO: replace the `quire/` prefix check with a whitelist of real
-    // source refs (`quire/push`, etc.) once those are implemented, so
-    // typos like `:quire/posh` don't silently make a job "reachable."
-    let is_source = |name: &str| name.starts_with("quire/");
-
-    for job in graph.node_weights() {
-        // Cycle members are already reported via Cycle; skip them here so
-        // a single bad cycle doesn't generate N+1 errors.
+    // Walking the reversed graph (incoming edges) lets us find ancestors
+    // without re-resolving string ids against the input vectors. An
+    // unresolved input — a job that lists `:typo` where no `typo` job
+    // exists — produces no edge in `build_graph`, so the BFS just
+    // stops short and `found_trigger` stays false.
+    for node in graph.node_indices() {
+        let job = &graph[node];
         if cycle_members.contains(job.id.as_str()) {
             continue;
         }
-        let mut visited = std::collections::HashSet::new();
-        let mut stack: Vec<&str> = job.inputs.iter().map(|s| s.as_str()).collect();
-        let mut found_source = false;
-
-        while let Some(name) = stack.pop() {
-            if !visited.insert(name) {
-                continue;
-            }
-            if is_source(name) {
-                found_source = true;
+        if job.inputs.is_empty() {
+            // Trigger node: trivially reachable.
+            continue;
+        }
+        let reversed = Reversed(graph);
+        let mut bfs = Bfs::new(reversed, node);
+        let mut found_trigger = false;
+        while let Some(idx) = bfs.next(reversed) {
+            if graph[idx].inputs.is_empty() {
+                found_trigger = true;
                 break;
-            }
-            if let Some(upstream) = graph.node_weights().find(|j| j.id == name) {
-                for input in &upstream.inputs {
-                    stack.push(input.as_str());
-                }
             }
         }
 
-        if !found_source {
+        if !found_trigger {
+            // We `continue`'d above on `job.inputs.is_empty()`, so this
+            // branch only fires for user jobs — which always have a span.
             errors.push(StructureError::Unreachable {
                 job_id: job.id.clone(),
-                span: job.span,
+                span: job.span.expect("user jobs always have a span"),
             });
         }
     }
@@ -505,12 +523,22 @@ fn validate_post_graph(graph: &JobGraph) -> std::result::Result<(), Vec<Structur
 mod tests {
     use super::*;
 
+    /// Jobs registered by the ci.fnl, excluding the built-in
+    /// `quire/push` trigger that `compile` prepends to every pipeline.
+    fn user_jobs(pipeline: &Pipeline) -> Vec<&Job> {
+        pipeline
+            .jobs()
+            .into_iter()
+            .filter(|j| j.span.is_some())
+            .collect()
+    }
+
     #[test]
     fn compile_registers_a_job() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :test [:quire/push] (fn [] nil))"#;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
-        let jobs = pipeline.jobs();
+        let jobs = user_jobs(&pipeline);
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, "test");
         assert_eq!(jobs[0].inputs, vec!["quire/push"]);
@@ -524,8 +552,9 @@ mod tests {
 (ci.job :test [:build] (fn [] nil))
 "#;
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
-        // Topological order: build (depends only on quire/push) before test.
-        let jobs = pipeline.jobs();
+        // Topological order among user jobs: build (depends only on
+        // quire/push) before test.
+        let jobs = user_jobs(&pipeline);
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].id, "build");
         assert_eq!(jobs[0].inputs, vec!["quire/push"]);
@@ -542,10 +571,12 @@ mod tests {
 
 (ci.job :sixth [:quire/push] (fn [] nil))";
         let pipeline = compile(source, "ci.fnl").expect("compile should succeed");
-        let mut lines: Vec<usize> = pipeline
-            .jobs()
+        let mut lines: Vec<usize> = user_jobs(&pipeline)
             .iter()
-            .map(|j| 1 + source[..j.span.offset()].matches('\n').count())
+            .map(|j| {
+                let offset = j.span.expect("user jobs have spans").offset();
+                1 + source[..offset].matches('\n').count()
+            })
             .collect();
         // All three jobs depend only on quire/push, so topo order
         // among them isn't fixed — sort before comparing.
@@ -589,8 +620,11 @@ mod tests {
     }
 
     /// Run post-graph validation against `jobs`, building the dependency
-    /// graph the same way `compile` does.
-    fn validate(jobs: Vec<Job>) -> std::result::Result<(), Vec<StructureError>> {
+    /// graph the same way `compile` does — including the built-in push
+    /// job that `compile` appends so reachability has a trigger node
+    /// to walk back to.
+    fn validate(mut jobs: Vec<Job>) -> std::result::Result<(), Vec<StructureError>> {
+        jobs.push(builtin_push_job());
         let (graph, _) = build_graph(jobs);
         validate_post_graph(&graph)
     }
