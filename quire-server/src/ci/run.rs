@@ -89,6 +89,11 @@ impl Runs {
 
     /// Create a new run record in the `pending` state.
     ///
+    /// Before inserting, supersedes any existing `pending` or `active`
+    /// run for the same `(repo, ref)`. Pending runs are marked
+    /// superseded directly; active runs have their container killed
+    /// first, then marked superseded.
+    ///
     /// Inserts a row into `runs` and creates the run directory for
     /// workspace materialization and log storage.
     pub fn create(&self, meta: &RunMeta) -> Result<Run> {
@@ -96,6 +101,12 @@ impl Runs {
         let workspace_path = self.base_dir.join(&id).join("workspace");
 
         let db = crate::db::open(&self.db_path)?;
+
+        // Supersede any existing pending or active run for (repo, ref).
+        // Do this before inserting the new run so the new run is never
+        // caught by its own supersede query.
+        self.supersede_existing(&db, &meta.r#ref)?;
+
         db.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path)
              VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
@@ -122,6 +133,57 @@ impl Runs {
             state: RunState::Pending,
             base_dir: self.base_dir.clone(),
         })
+    }
+
+    /// Supersede any existing `pending` or `active` run for
+    /// `(repo, ref)`.
+    ///
+    /// Pending runs are transitioned directly to `superseded`. Active
+    /// runs have their container killed via `docker kill` before
+    /// transition. Different refs are unaffected.
+    fn supersede_existing(&self, db: &rusqlite::Connection, ref_name: &str) -> Result<()> {
+        let now = Timestamp::now().as_millisecond();
+
+        // Handle active runs first: kill the container, then mark superseded.
+        let active_rows: Vec<(String, Option<String>)> = db
+            .prepare(
+                "SELECT id, container_id FROM runs
+                 WHERE repo = ?1 AND ref_name = ?2 AND state = 'active'",
+            )?
+            .query_map(rusqlite::params![&self.repo, ref_name], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+
+        for (run_id, container_id) in &active_rows {
+            if let Some(cid) = container_id {
+                tracing::info!(run_id = %run_id, container_id = %cid, "killing superseded container");
+                let kill_status = std::process::Command::new("docker")
+                    .args(["kill", cid])
+                    .status();
+                if let Err(e) = kill_status {
+                    tracing::warn!(run_id = %run_id, error = %e, "docker kill failed");
+                }
+            }
+            db.execute(
+                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1, container_id = NULL
+                 WHERE id = ?2",
+                rusqlite::params![now, run_id],
+            )?;
+            tracing::info!(run_id = %run_id, "superseded active run");
+        }
+
+        // Handle pending runs: just mark superseded.
+        let pending_count = db.execute(
+            "UPDATE runs SET state = 'superseded', finished_at_ms = ?1
+             WHERE repo = ?2 AND ref_name = ?3 AND state = 'pending'",
+            rusqlite::params![now, &self.repo, ref_name],
+        )?;
+        if pending_count > 0 {
+            tracing::info!(count = pending_count, "superseded pending run(s)");
+        }
+
+        Ok(())
     }
 }
 
@@ -362,7 +424,12 @@ impl Run {
         use RunState::*;
         let allowed = matches!(
             (self.state, to),
-            (Pending, Active) | (Pending, Complete) | (Active, Complete) | (Active, Failed)
+            (Pending, Active)
+                | (Pending, Complete)
+                | (Pending, Superseded)
+                | (Active, Complete)
+                | (Active, Failed)
+                | (Active, Superseded)
         );
         if !allowed {
             return Err(Error::InvalidTransition {
@@ -383,7 +450,7 @@ impl Run {
                     rusqlite::params![now, &self.id],
                 )?;
             }
-            Complete | Failed => {
+            Complete | Failed | Superseded => {
                 db.execute(
                     "UPDATE runs SET state = ?1, \
                         started_at_ms = COALESCE(started_at_ms, ?2), \
@@ -393,7 +460,7 @@ impl Run {
                     rusqlite::params![to.as_str(), now, now, &self.id],
                 )?;
             }
-            _ => unreachable!("checked by allowed match above"),
+            Pending => unreachable!("transition to Pending is not valid"),
         }
 
         self.state = to;
@@ -1003,5 +1070,145 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn create_supersedes_pending_run_on_same_ref() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+
+        // Create first run.
+        let run1 = runs.create(&test_meta()).expect("create run1");
+        let run1_id = run1.id().to_string();
+        assert_eq!(run1.state(), RunState::Pending);
+
+        // Create second run for same (repo, ref) — should supersede the first.
+        let meta2 = RunMeta {
+            sha: "def456".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
+        };
+        let run2 = runs.create(&meta2).expect("create run2");
+        assert_eq!(run2.state(), RunState::Pending);
+
+        // First run should now be superseded.
+        let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Superseded);
+        assert!(
+            reopened.read_finished_at().expect("read").is_some(),
+            "superseded run should have finished_at"
+        );
+    }
+
+    #[test]
+    fn create_supersedes_active_run_on_same_ref() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+
+        // Create and activate first run.
+        let mut run1 = runs.create(&test_meta()).expect("create run1");
+        let run1_id = run1.id().to_string();
+        run1.transition(RunState::Active).expect("to active");
+
+        // Create second run for same (repo, ref).
+        let meta2 = RunMeta {
+            sha: "def456".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
+        };
+        let run2 = runs.create(&meta2).expect("create run2");
+        assert_eq!(run2.state(), RunState::Pending);
+
+        // First run should be superseded.
+        let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Superseded);
+        assert!(
+            reopened.read_finished_at().expect("read").is_some(),
+            "superseded run should have finished_at"
+        );
+    }
+
+    #[test]
+    fn create_does_not_supersede_different_ref() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+
+        // Create run for main.
+        let run1 = runs.create(&test_meta()).expect("create run1");
+        let run1_id = run1.id().to_string();
+
+        // Create run for a different ref.
+        let meta2 = RunMeta {
+            sha: "def456".to_string(),
+            r#ref: "refs/heads/feature".to_string(),
+            pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
+        };
+        let _run2 = runs.create(&meta2).expect("create run2");
+
+        // First run should still be pending.
+        let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Pending);
+    }
+
+    #[test]
+    fn create_does_not_supersede_complete_or_failed_runs() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+
+        // Create and complete first run.
+        let mut run1 = runs.create(&test_meta()).expect("create run1");
+        let run1_id = run1.id().to_string();
+        run1.transition(RunState::Active).expect("to active");
+        run1.transition(RunState::Complete).expect("to complete");
+
+        // Create second run for same (repo, ref).
+        let meta2 = RunMeta {
+            sha: "def456".to_string(),
+            r#ref: "refs/heads/main".to_string(),
+            pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
+        };
+        let _run2 = runs.create(&meta2).expect("create run2");
+
+        // First run should still be complete.
+        let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
+        assert_eq!(reopened.state(), RunState::Complete);
+    }
+
+    #[test]
+    fn transition_allows_pending_to_superseded() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        run.transition(RunState::Superseded).expect("to superseded");
+        assert_eq!(run.state(), RunState::Superseded);
+    }
+
+    #[test]
+    fn transition_allows_active_to_superseded() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        run.transition(RunState::Active).expect("to active");
+        run.transition(RunState::Superseded).expect("to superseded");
+        assert_eq!(run.state(), RunState::Superseded);
+    }
+
+    #[test]
+    fn supersede_sets_finished_at() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        run.transition(RunState::Active).expect("to active");
+
+        assert!(
+            run.read_finished_at().expect("read").is_none(),
+            "should not have finished_at before supersede"
+        );
+
+        run.transition(RunState::Superseded).expect("to superseded");
+        assert!(
+            run.read_finished_at().expect("read").is_some(),
+            "superseded run should have finished_at"
+        );
     }
 }
