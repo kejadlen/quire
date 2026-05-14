@@ -31,27 +31,6 @@ A pipeline can also build its image from a checked-in `.quire/Dockerfile` instea
 
 > **v0 status:** the docker executor only honors `.quire/Dockerfile` today; `(ci.image ...)` is parsed and validated but not yet wired into the executor. Pipelines targeting docker need a `.quire/Dockerfile` until the declared-image path lands.
 
-## Mirroring with `(ci.mirror ...)`
-
-```
-(ci.mirror "https://github.com/example/repo.git"
-  {:secret :github_auth_header
-   :tag    (fn [push] (.. "quire-" (string.sub push.sha 1 8)))
-   :refs   ["refs/heads/main"]   ; optional
-   :after  [:test]})             ; optional
-```
-
-Top-level form. Registers a singleton `quire/mirror` job that tags the pushed commit and `git push`es the configured refs (plus the tag) to the remote.
-
-Options:
-
-- `:secret` (required) — name of a secret in the global `:secrets` map. The secret's value is passed verbatim as an `http.extraHeader` value, so it should be the entire header (e.g. `"Authorization: Bearer ..."`).
-- `:tag` (required) — function `(fn [push] tag-name)`. Called at execute time with the `quire/push` table; the result names the tag created on `push.sha` and pushed alongside the configured refs.
-- `:refs` (optional, default empty) — list of refspecs to push. Doubles as a trigger filter: when set, the mirror runs only if the trigger ref is in the list. When empty, the mirror always runs and pushes the trigger ref.
-- `:after` (optional) — extra job ids the mirror should sequence after, listed as inputs alongside the implicit `:quire/push`.
-
-`(ci.mirror ...)` may be called once per pipeline; a second call collides on the reserved `quire/mirror` id and registers a `DuplicateJob` error.
-
 ## The `job` primitive
 
 ```
@@ -82,40 +61,26 @@ The dependency graph is *derived* from the inputs list. No separate `:needs` fie
 
 ### Accessing inputs
 
-Run-fns are zero-arg functions. The runtime is available as a global `runtime` table whose `__index` metatable dispatches `sh`, `secret`, and `jobs` to closures over the active runtime:
+Run-fns receive the runtime table as their argument. The runtime table dispatches `sh`, `secret`, and `jobs` via its `__index` metatable:
 
 ```
-(fn []
-  (let [push (runtime.jobs :quire/push)]
-    (runtime.sh ["git" "checkout" push.sha])))
+(fn [{: sh : jobs}]
+  (let [push (jobs :quire/push)]
+    (sh ["git" "checkout" push.sha])))
 ```
 
 `runtime.jobs` returns the outputs for `name` if `name` is a transitive ancestor of the calling job in the input graph; an unknown or non-ancestor name raises a Lua error. Self-lookup is rejected. Sources and jobs share one namespace — `(runtime.jobs :quire/push)` reads the source's outputs uniformly.
 
 The `runtime.` prefix is a visible explicit-context marker so reviewers can grep for effect sites. Accessing `runtime` outside a run-fn raises: `runtime accessed outside a job — primitives are only available while a run-fn is executing`.
 
-When a run-fn destructures several primitives the `runtime.` prefix gets repetitive; the `defrun` macro takes the destructure pattern as its arglist and expands to the `let`-from-runtime shape:
+When a run-fn destructures several primitives, use a `let` to pull them from the runtime argument:
 
 ```
-(import-macros {: defrun} :quire.ci)
-
 (job :test [:quire/push]
-  (defrun [{: sh : jobs}]
+  (fn [{: sh : jobs}]
     (let [push (jobs :quire/push)]
       (sh ["cargo" "test"]))))
 ```
-
-expands to
-
-```
-(job :test [:quire/push]
-  (fn []
-    (let [{: sh : jobs} runtime]
-      (let [push (jobs :quire/push)]
-        (sh ["cargo" "test"])))))
-```
-
-`defrun` itself is the effect-site marker — reviewers grep for `defrun` (and any remaining bare `runtime.`) to find places that touch the host. The bare `(fn [] (runtime.X …))` form stays available for one-off use; the explicit `(let [{: sh} runtime] …)` form is also fine when you want the destructure visible without the macro.
 
 > **v0 status:** `(jobs :quire/push)` is wired. Job-to-job outputs (where `(jobs :build)` returns a job's `run-fn` return value) are not — there's no writer API yet, and a reachable name with no recorded outputs returns `nil`.
 
@@ -138,16 +103,16 @@ Every push to any ref fires a run that includes every job whose transitive input
 
 ```
 (job :test-main [:quire/push]
-  (fn []
-    (let [push (runtime.jobs :quire/push)]
+  (fn [{: jobs : sh}]
+    (let [push (jobs :quire/push)]
       (when (= "main" push.branch)
-        (runtime.sh (.. "git checkout " push.sha " && cargo test"))))))
+        (sh (.. "git checkout " push.sha " && cargo test"))))))
 
 (job :release [:quire/push]
-  (fn []
-    (let [push (runtime.jobs :quire/push)]
+  (fn [{: jobs : sh}]
+    (let [push (jobs :quire/push)]
       (when (and push.tag (string.match push.tag "^v"))
-        (runtime.sh (.. "publish " push.tag))))))
+        (sh (.. "publish " push.tag))))))
 ```
 
 Fennel's `when` returns `nil` if the predicate is false, otherwise the body. That nil propagates out as the `run` return value, the runner records the job as skipped. The gate and the work are in the same expression.
@@ -160,12 +125,12 @@ Source types that need configuration — cron schedules, webhook paths — can't
 
 ```
 (job :nightly-audit [(cron :daily)]
-  (fn []
-    (let [tick (runtime.jobs :cron)] ...)))
+  (fn [{: jobs}]
+    (let [tick (jobs :cron)] ...)))
 
 (job :hourly-check [(cron :every "1h" :as :hourly)]
-  (fn []
-    (let [tick (runtime.jobs :hourly)] ...)))
+  (fn [{: jobs}]
+    (let [tick (jobs :hourly)] ...)))
 ```
 
 `cron`, `webhook`, etc. would be quire-provided functions in the eval scope. They return marker values; the runner inspects the inputs list for them, registers their event sources, instantiates runs when they fire. The `:as` keyword names the binding when the default name (the source type) would collide.
@@ -195,26 +160,26 @@ A bad `ci.fnl` push gets a CI run that fails immediately with the parse error, s
 
 That's the whole contract. No sugar layer, no introspection, no defaulting. The runner records what was returned.
 
-Inside `run`, the function uses **runtime primitives** exposed on the ambient `runtime` global. The most important is `(runtime.sh cmd opts?)`, which `docker exec`'s a command into the run's container and returns a result table:
+Inside `run`, the function receives the **runtime table** as its argument. The most important primitive is `(sh cmd opts?)`, which `docker exec`'s a command into the run's container and returns a result table:
 
 ```
 (job :test [:quire/push]
-  (fn []
-    (let [push (runtime.jobs :quire/push)]
-      (runtime.sh ["git" "checkout" push.sha])
-      (runtime.sh "cargo test"))))
+  (fn [{: jobs : sh}]
+    (let [push (jobs :quire/push)]
+      (sh ["git" "checkout" push.sha])
+      (sh "cargo test"))))
 ```
 
 `(sh ...)` returns `{:exit :stdout :stderr :cmd}`. The run-fn can branch on that — checking exit, parsing stdout, deciding whether to issue follow-up commands. That dynamism is the whole reason ci.fnl is Fennel and not YAML:
 
 ```
 (job :test-and-package [:quire/push]
-  (fn []
-    (let [push (runtime.jobs :quire/push)]
-      (runtime.sh ["git" "checkout" push.sha])
-      (let [test (runtime.sh "cargo test")]
+  (fn [{: jobs : sh}]
+    (let [push (jobs :quire/push)]
+      (sh ["git" "checkout" push.sha])
+      (let [test (sh "cargo test")]
         (when (= 0 test.exit)
-          (let [pkg (runtime.sh "tar czf out.tar.gz target/release")]
+          (let [pkg (sh "tar czf out.tar.gz target/release")]
             {:exit pkg.exit
              :artifacts ["out.tar.gz"]
              :test-stdout test.stdout}))))))
@@ -228,7 +193,7 @@ If the test fails, the outer `(when ...)` returns nil → job skipped. If it pas
 
 Earlier drafts of this design had three return shapes (string, list of strings, table) plus an `:outputs` field for declarative output extension plus a `:when` field for conditional firing plus an `:image` field for the default container image. All gone. They were paying for conveniences that aren't conveniences in a code-first config:
 
-* **String sugar.** `:run "cargo test"` saves about ten characters over `(fn [] (runtime.sh "cargo test"))`. Not worth a second mental model.
+* **String sugar.** `:run "cargo test"` saves about ten characters over `(fn [{: sh}] (sh "cargo test"))`. Not worth a second mental model.
 * **`:outputs` declarative extension.** "Read coverage.json after the command exits" is a Fennel one-liner inside `run`: `(let [r (sh "...")] {:exit r.exit :coverage (read-json "coverage.json")})`. Helpers compose to clean up repetition.
 * **`:when`.** Returning `nil` from `run` already means "skip." Filtering and work end up in the same expression, which makes the intent more visible, not less.
 * **`:image`.** Image is declared once at the pipeline level via `(ci.image ...)`. Per-job override can be added as a map-form opts arg if a pipeline ever needs heterogeneity.
@@ -237,7 +202,7 @@ The residual things that *aren't* "just functions" — the inputs list and the i
 
 ## Runtime primitives
 
-Exposed on the ambient `runtime` global inside each run-fn. Zero-arg functions — no destructuring needed. Accessing `runtime` outside a run-fn raises an error.
+Exposed on the runtime table passed as the run-fn's argument. Accessing the runtime outside a run-fn raises an error.
 
 * `(runtime.jobs name)` — return outputs for `name` (a transitive ancestor of the calling job, or a source ref). Errors if `name` is not in the calling job's transitive inputs.
 * `(runtime.sh cmd opts?)` — `docker exec` a command into the run's container, return `{:exit :stdout :stderr :cmd}`. `cmd` is either a string (run under `sh -c` inside the container) or a non-empty sequence of strings (argv, no shell). `opts` accepts `:env` (table of overrides) and `:cwd` (path inside `/work`).
@@ -266,9 +231,9 @@ The kernel (`sh`/`secret`/`jobs`) stays small. Higher-level operations like tag-
 (local {: mirror} (require :quire.stdlib))
 
 (ci.job :mirror [:quire/push :test]
-  (fn []
-    (let [push (runtime.jobs :quire/push)
-          auth (runtime.secret :github_auth_header)]
+  (fn [{: jobs : secret}]
+    (let [push (jobs :quire/push)
+          auth (secret :github_auth_header)]
       (mirror {:url         "https://github.com/example/repo.git"
                :auth-header auth
                :sha         push.sha
@@ -281,7 +246,7 @@ Available helpers:
 
 * `(mirror opts)` — tag a commit and push it (plus optional refs) to a remote. `opts.url`, `opts.auth-header`, `opts.sha`, `opts.tag`, and `opts.git-dir` are required; `opts.refs` defaults to `[]`. The caller resolves the credential (typically via `runtime.secret`) and passes the full HTTP header line as `:auth-header`; mirror passes it to git via `GIT_CONFIG_*` env vars rather than `-c http.extraHeader=…` in argv, so it doesn't appear in `ps` listings. Returns `{:tag :pushed_refs}`. Raises on missing required opts or non-zero git exits.
 
-`(ci.mirror …)` (the registration-time form) remains as a convenience wrapper that registers a singleton `quire/mirror` job. Use the stdlib form when you want to mirror conditionally or as part of a larger run-fn.
+Use the stdlib form to mirror conditionally or as part of a larger run-fn.
 
 ## A worked example
 
@@ -292,28 +257,28 @@ Available helpers:
 
 ;; Test on every push to main
 (ci.job :test [:quire/push]
-  (fn []
-    (let [push (runtime.jobs :quire/push)]
+  (fn [{: jobs : sh}]
+    (let [push (jobs :quire/push)]
       (when (= "main" push.branch)
-        (runtime.sh ["git" "checkout" push.sha])
-        (runtime.sh "cargo test --all-features")))))
+        (sh ["git" "checkout" push.sha])
+        (sh "cargo test --all-features")))))
 
 ;; Build only if test passed
 (ci.job :build [:test :quire/push]
-  (fn []
-    (let [push (runtime.jobs :quire/push)
-          test (runtime.jobs :test)]
+  (fn [{: jobs : sh}]
+    (let [push (jobs :quire/push)
+          test (jobs :test)]
       (when (and test (= 0 test.exit))
-        (runtime.sh ["git" "checkout" push.sha])
-        (let [r (runtime.sh "cargo build --release")]
+        (sh ["git" "checkout" push.sha])
+        (let [r (sh "cargo build --release")]
           {:exit r.exit
            :artifacts ["target/release/quire"]})))))
 
 ;; Deploy on push to main only
 (ci.job :deploy [:build]
-  (fn []
-    (when (runtime.jobs :build)
-      (runtime.sh "scp target/release/quire host:/usr/local/bin/"))))
+  (fn [{: jobs : sh}]
+    (when (jobs :build)
+      (sh "scp target/release/quire host:/usr/local/bin/"))))
 
 ;; Tagged release: publish to a registry
 (ci.job :publish [:quire/push]
@@ -364,11 +329,11 @@ The three-context model means **`ci.fnl` is re-evaluated more than you might exp
 * **Builtins live under `quire/`**; user job ids cannot contain `/`.
 * **For v1, the only source is `:quire/push`.** Cron, webhook, manual deferred.
 * **Filtering happens inside `run`** by returning `nil`. Every push starts a run; jobs that return nil from `run` are skipped.
-* **Ambient `runtime` global.** Run-fns are zero-arg `(fn [] …)`. The runtime is installed as a global Lua table whose `__index` metatable dispatches `runtime.sh`, `runtime.secret`, and `runtime.jobs` to closures over the active runtime. The `runtime.` prefix makes effect sites grep-able. One-arg run-fns are rejected at registration with a clear error message.
+* **Runtime table as argument.** Run-fns receive the runtime table as their single argument `(fn [{: sh : secret : jobs}] …)`. The table's `__index` metatable dispatches `sh`, `secret`, and `jobs` to closures over the active runtime. Zero-arg `(fn [] …)` still works (Lua discards extra args) but the one-arg form is preferred — it makes the dependency explicit and avoids relying on a global.
 * **`(runtime.jobs name)` is the only accessor for upstream outputs**, covering both source refs and job outputs. Transitive ancestors are visible; non-ancestors and unknown names raise a Lua error.
 * **Dependency graph derived from the inputs list**, not declared separately. No `:needs`.
 * **Four structural validations**: acyclic (registration eval), non-empty inputs (registration eval), reachability from a source (registration eval), no `/` in user job ids (parse time). All fail-closed with named-target error messages.
-* **`run` is a zero-arg function** `(fn [] …)`. Returns a table (the outputs) or `nil` (skipped). Runtime primitives accessed via the ambient `runtime` global. No sugar.
+* **`run` is a function** `(fn [runtime] …)` or `(fn [] …)`. Returns a table (the outputs) or `nil` (skipped). The runtime table is passed as the argument; zero-arg still works (Lua discards extra args). No sugar.
 * **`(runtime.sh cmd opts?)` is the only host-effect primitive.** `docker exec`s into the run's container; returns `{:exit :stdout :stderr :cmd}`. There is no `(container ...)` form. The execute VM is sandboxed (no `io`/`os`/`debug`) so `runtime.sh` is the documented chokepoint.
 * **`(ci.image <name>)` declares the image** at the pipeline level. One image per pipeline. Per-job override deferred until pipelines actually need heterogeneity; would arrive as a map-form `(ci.job ...)` opts arg.
 * **Three eval contexts** — registration, run start, per job — all in-process inside `quire serve`. Sandboxing model and threat model are described in CI.md.

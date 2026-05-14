@@ -150,7 +150,7 @@ Per-file history following renames (`git log --follow`), compare-between-refs, b
 
 ### 8. Fennel CI MVP
 
-Embed Lua via `mlua`, ship Fennel compiler as a Lua module. Compile-and-eval `.quire/ci.fnl` at run-trigger time. The pipeline DSL is `(ci.image ...)`, `(ci.job ...)`, and `(ci.mirror ...)` — see `docs/CI-FENNEL.md` for the spec and `docs/CI.md` for the runtime. Each `(sh ...)` call `docker exec`s into a per-run container; per-run network policy is whatever the image's network namespace allows.
+Embed Lua via `mlua`, ship Fennel compiler as a Lua module. Compile-and-eval `.quire/ci.fnl` at run-trigger time. The pipeline DSL is `(ci.image ...)` and `(ci.job ...)` — see `docs/CI-FENNEL.md` for the spec and `docs/CI.md` for the runtime. Each `(sh ...)` call `docker exec`s into a per-run container; per-run network policy is whatever the image's network namespace allows.
 
 Sandboxing of `ci.fnl` evaluation is deliberately not in the MVP. Since every pipeline is code I'm writing for my own projects, "the CI step can do anything a logged-in me can do in the container" is the right threat model. If that changes (running untrusted forks, for example, or sharing the instance), re-introduce bubblewrap wrapping behind a per-pipeline opt-in.
 

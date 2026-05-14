@@ -145,9 +145,7 @@ impl Job {
     ///
     /// The `quire/`-namespace check is the caller's responsibility —
     /// user-facing `(ci.job …)` calls must reject slashes (see
-    /// `register_job`), but internal helpers (e.g. `register_mirror`)
-    /// legitimately register jobs at `quire/<name>` and skip that
-    /// rule.
+    /// `register_job`).
     ///
     /// Visible to the sibling `registration` module which constructs
     /// jobs from the registration callbacks.

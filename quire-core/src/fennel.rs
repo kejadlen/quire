@@ -12,12 +12,6 @@ const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
 /// Fennel where they're easier to evolve.
 const STDLIB_FNL: &str = include_str!("ci/stdlib.fnl");
 
-/// Embedded Fennel macros — exposed as `(import-macros {…} :quire.ci)`
-/// alongside the runtime-side `quire.ci` module. Same module name,
-/// different cache (`fennel.macro-loaded` vs `package.loaded`); the
-/// two namespaces are independent.
-const MACROS_FNL: &str = include_str!("ci/macros.fnl");
-
 /// Error kinds from the Fennel loader.
 #[derive(Debug, Error, Diagnostic)]
 pub enum FennelError {
@@ -101,7 +95,6 @@ impl Fennel {
 
         let f = Self { lua };
         f.preload_stdlib()?;
-        f.preload_macros()?;
         Ok(f)
     }
 
@@ -113,26 +106,6 @@ impl Fennel {
         let package: mlua::Table = self.lua.globals().get("package")?;
         let loaded: mlua::Table = package.get("loaded")?;
         loaded.set("quire.stdlib", module)?;
-        Ok(())
-    }
-
-    /// Compile the embedded `quire.ci` macros and register them in
-    /// `fennel.macro-loaded` so `(import-macros {…} :quire.ci)`
-    /// resolves without hitting the filesystem. The macros file is
-    /// evaluated in the Fennel compiler environment (where
-    /// quasi-quote, `unpack`, `assert-compile`, etc. are bound).
-    fn preload_macros(&self) -> Result<(), FennelError> {
-        let fennel: mlua::Table = self.lua.globals().get("fennel")?;
-        let eval: mlua::Function = fennel.get("eval")?;
-        let opts = self.lua.create_table()?;
-        opts.set("filename", "quire.ci/macros.fnl")?;
-        opts.set("env", "_COMPILER")?;
-        opts.set("correlate", true)?;
-        let macros: mlua::Value = eval
-            .call((MACROS_FNL, opts))
-            .map_err(|e| FennelError::from_lua(MACROS_FNL, "quire.ci macros", e))?;
-        let macro_loaded: mlua::Table = fennel.get("macro-loaded")?;
-        macro_loaded.set("quire.ci", macros)?;
         Ok(())
     }
 
@@ -493,135 +466,6 @@ mod tests {
             .eval()
             .expect("require quire.stdlib");
         let _: mlua::Function = module.get("mirror").expect("mirror should be a function");
-    }
-
-    #[test]
-    fn defrun_macro_compiles_to_function() {
-        let f = fennel();
-        let source = "\
-(import-macros {: defrun} :quire.ci)
-(defrun [sh] nil)";
-        let value = f.eval_raw(source, "test.fnl", |_| Ok(())).expect("eval");
-        assert!(
-            matches!(value, mlua::Value::Function(_)),
-            "expected function, got {value:?}"
-        );
-    }
-
-    #[test]
-    fn defrun_destructures_from_quire_ci_runtime() {
-        let f = fennel();
-
-        // Populate the runtime stub with a `sh` that records calls.
-        // defrun expands to `(let [{: sh} (. (require :quire.ci) :runtime)] …)`,
-        // so the destructure pulls `sh` straight from this table.
-        let calls: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let cb_calls = calls.clone();
-        let package: mlua::Table = f.lua().globals().get("package").expect("package");
-        let loaded: mlua::Table = package.get("loaded").expect("package.loaded");
-        let ci: mlua::Table = loaded.get("quire.ci").expect("quire.ci placeholder");
-        let rt: mlua::Table = ci.get("runtime").expect("quire.ci.runtime stub");
-        rt.set(
-            "sh",
-            f.lua()
-                .create_function(move |_, cmd: String| {
-                    cb_calls.borrow_mut().push(cmd);
-                    Ok(())
-                })
-                .expect("create sh"),
-        )
-        .expect("set sh");
-
-        let source = r#"
-(import-macros {: defrun} :quire.ci)
-(defrun [sh] (sh :from-macro))
-"#;
-        let value = f.eval_raw(source, "test.fnl", |_| Ok(())).expect("eval");
-        let mlua::Value::Function(func) = value else {
-            panic!("expected function, got {value:?}");
-        };
-        func.call::<()>(()).expect("call");
-
-        assert_eq!(*calls.borrow(), vec!["from-macro".to_string()]);
-    }
-
-    #[test]
-    fn defrun_with_empty_arglist_skips_destructure() {
-        let f = fennel();
-        let source = r#"
-(import-macros {: defrun} :quire.ci)
-(defrun [] 42)
-"#;
-        let value = f.eval_raw(source, "test.fnl", |_| Ok(())).expect("eval");
-        let mlua::Value::Function(func) = value else {
-            panic!("expected function, got {value:?}");
-        };
-        let result: i64 = func.call(()).expect("call");
-        assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn defrun_binds_multiple_names_from_runtime() {
-        let f = fennel();
-
-        // Populate stub with two callables that record which name was
-        // invoked, so the test proves both `sh` and `secret` reached
-        // the body.
-        let calls: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let package: mlua::Table = f.lua().globals().get("package").expect("package");
-        let loaded: mlua::Table = package.get("loaded").expect("package.loaded");
-        let ci: mlua::Table = loaded.get("quire.ci").expect("quire.ci placeholder");
-        let rt: mlua::Table = ci.get("runtime").expect("quire.ci.runtime stub");
-        for name in ["sh", "secret"] {
-            let cb_calls = calls.clone();
-            let label = name.to_string();
-            rt.set(
-                name,
-                f.lua()
-                    .create_function(move |_, ()| {
-                        cb_calls.borrow_mut().push(label.clone());
-                        Ok(())
-                    })
-                    .expect("create"),
-            )
-            .expect("set");
-        }
-
-        let source = r#"
-(import-macros {: defrun} :quire.ci)
-(defrun [sh secret] (sh) (secret))
-"#;
-        let value = f.eval_raw(source, "test.fnl", |_| Ok(())).expect("eval");
-        let mlua::Value::Function(func) = value else {
-            panic!("expected function, got {value:?}");
-        };
-        func.call::<()>(()).expect("call");
-
-        assert_eq!(
-            *calls.borrow(),
-            vec!["sh".to_string(), "secret".to_string()]
-        );
-    }
-
-    #[test]
-    fn defrun_rejects_non_symbol_in_arglist() {
-        let f = fennel();
-        let source = r#"
-(import-macros {: defrun} :quire.ci)
-(defrun [sh "secret"] nil)
-"#;
-        let err = f
-            .eval_raw(source, "test.fnl", |_| Ok(()))
-            .expect_err("string in arglist should fail to compile");
-        let msg = err.to_string();
-        let chain = format!("{err:?}");
-        let combined = format!("{msg} {chain}");
-        assert!(
-            combined.contains("bare symbols"),
-            "expected symbol-shape error, got: {combined}"
-        );
     }
 
     #[test]

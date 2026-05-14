@@ -1,15 +1,10 @@
 # `(ci.mirror …)` helper
 
-**Goal:** Add a high-level Fennel helper that registers a single
-internal job to mirror push refs to a remote git URL. Compresses the
-twelve-line auth/env-var dance from `docs/plans/2026-04-29-ci-fnl-mirror-design.md`
-into a one-line declaration and insulates the user from the v0 → container
-migration.
-
-**Status:** Depends on the internal-jobs foundation (separate design,
-not yet written) — `:quire/`-prefixed jobs registered by quire itself,
-plus the `(output key value)` runtime primitive. This doc specifies
-the helper's surface only.
+**Status:** Superseded. The registration-time `ci.mirror` primitive was
+removed. Mirroring is done via the stdlib `mirror` function inside a
+`(ci.job …)` run-fn — see `docs/CI-FENNEL.md` for the current pattern.
+This doc is kept for historical context but no longer reflects the
+active design.
 
 ## Surface
 
