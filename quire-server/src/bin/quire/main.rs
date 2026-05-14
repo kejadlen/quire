@@ -163,8 +163,8 @@ fn init_tracing(miette_layer: quire_core::telemetry::MietteLayer) -> Result<()> 
     };
 
     tracing_subscriber::registry()
-        .with(sentry_tracing::layer())
         .with(miette_layer)
+        .with(sentry_tracing::layer())
         .with(fmt_layer)
         .with(filter)
         .init();

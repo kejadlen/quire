@@ -19,14 +19,16 @@ type RenderFn = Box<dyn (Fn(&(dyn Error + 'static)) -> Option<String>) + Send + 
 ///
 /// # Layer ordering
 ///
-/// Add this layer **after** `sentry_tracing::layer()` in the `.with()` chain
-/// so it fires first and sets the thread-local before sentry-tracing's
-/// `on_event` calls `capture_event` (which invokes `before_send` synchronously).
+/// Register this layer **before** `sentry_tracing::layer()` in the `.with()`
+/// chain. `tracing_subscriber::Layered::on_event` dispatches inner-first, so
+/// the layer added earlier fires first — and this layer must set the
+/// thread-local before sentry-tracing's `on_event` calls `capture_event`
+/// (which invokes `before_send` synchronously).
 ///
 /// ```ignore
 /// tracing_subscriber::registry()
-///     .with(sentry_tracing::layer())
-///     .with(miette_layer)   // fires first — sets thread-local
+///     .with(miette_layer)              // fires first — sets thread-local
+///     .with(sentry_tracing::layer())   // fires next — capture_event reads it
 ///     .with(fmt_layer)
 ///     .with(filter)
 ///     .init();
@@ -142,4 +144,71 @@ pub fn before_send(
             .insert("diagnostic".into(), serde_json::Value::String(rendered));
     }
     Some(event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Debug, thiserror::Error, miette::Diagnostic)]
+    #[error("outer message")]
+    struct TestDiag {
+        #[help]
+        help: String,
+    }
+
+    /// Reads the thread-local in its `on_event` to simulate what
+    /// sentry-tracing's layer does (capture_event → before_send reads the
+    /// thread-local). Lets us verify that MietteLayer fires *before* this
+    /// layer in the chain.
+    struct CaptureLayer {
+        seen: Arc<Mutex<Option<String>>>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(
+            &self,
+            _event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            MIETTE_RENDER.with(|cell| {
+                if let Some(v) = cell.borrow().as_ref() {
+                    *self.seen.lock().unwrap() = Some(v.clone());
+                }
+            });
+        }
+    }
+
+    /// Regression test: tracing_subscriber dispatches `on_event` inner-first,
+    /// so the layer registered *earlier* via `.with()` fires first. The
+    /// MietteLayer must be registered before `sentry_tracing::layer()` so its
+    /// thread-local is populated by the time sentry-tracing's `on_event`
+    /// calls `capture_event` (and thus `before_send`).
+    #[test]
+    fn miette_layer_fires_before_downstream_layers() {
+        let seen = Arc::new(Mutex::new(None));
+        let capture = CaptureLayer { seen: seen.clone() };
+        let miette = MietteLayer::new().with_type::<TestDiag>();
+
+        let subscriber = tracing_subscriber::registry().with(miette).with(capture);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let err = TestDiag {
+                help: "try again".into(),
+            };
+            tracing::error!(error = &err as &(dyn std::error::Error + 'static), "failed",);
+        });
+
+        let rendered = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("downstream layer should have observed the rendered diagnostic");
+        assert!(
+            rendered.contains("outer message"),
+            "rendering should include the diagnostic message: {rendered}"
+        );
+    }
 }

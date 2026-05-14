@@ -279,8 +279,8 @@ fn init_tracing(miette_layer: quire_core::telemetry::MietteLayer) -> miette::Res
         .into_diagnostic()?;
 
     tracing_subscriber::registry()
-        .with(sentry_tracing::layer())
         .with(miette_layer)
+        .with(sentry_tracing::layer())
         .with(fmt::layer().with_writer(std::io::stderr))
         .with(filter)
         .init();
