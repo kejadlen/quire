@@ -13,7 +13,7 @@ use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::fennel::FennelError;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
 /// via [`FennelError::from_lua`] so they carry the same source-code
@@ -211,10 +211,10 @@ fn main() -> miette::Result<()> {
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
             let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
-            let miette_layer = quire_core::telemetry::MietteLayer::new()
+            let miette_layer = MietteLayer::new()
                 .with_type::<JobError>()
                 .with_type::<quire_core::fennel::FennelError>();
-            init_tracing(miette_layer)?;
+            telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
             run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
         }
@@ -235,11 +235,7 @@ fn init_sentry(
     let handoff = handoff?;
     let guard = sentry::init((
         handoff.dsn.as_str(),
-        sentry::ClientOptions {
-            release: Some(VERSION.into()),
-            before_send: Some(std::sync::Arc::new(quire_core::telemetry::before_send)),
-            ..Default::default()
-        },
+        telemetry::sentry_client_options(VERSION),
     ));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");
@@ -267,25 +263,6 @@ fn init_sentry(
         }
     });
     Some(guard)
-}
-
-/// Initialize tracing with a stderr fmt layer plus the sentry-tracing
-/// bridge so `tracing::error!` (and warn, if configured) events show
-/// up in Sentry alongside panics.
-fn init_tracing(miette_layer: quire_core::telemetry::MietteLayer) -> miette::Result<()> {
-    let filter = EnvFilter::builder()
-        .with_env_var("QUIRE_LOG")
-        .from_env()
-        .into_diagnostic()?;
-
-    tracing_subscriber::registry()
-        .with(miette_layer)
-        .with(sentry_tracing::layer())
-        .with(fmt::layer().with_writer(std::io::stderr))
-        .with(filter)
-        .init();
-
-    Ok(())
 }
 
 fn validate(workspace: PathBuf) -> miette::Result<()> {

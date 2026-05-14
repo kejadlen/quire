@@ -37,11 +37,9 @@ clap_complete = "*"
 rusqlite = { version = "*", features = ["bundled"] }
 rusqlite_migration = "*"
 sentry = { workspace = true }
-sentry-tracing = { workspace = true }
 serde_yaml_ng = "*"
 shell-words = "*"
 tokio = { workspace = true, features = ["full"] }
-tracing-subscriber = { workspace = true, features = ["json"] }
 uuid = { version = "*", features = ["v7"] }
 walkdir = "*"
 

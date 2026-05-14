@@ -18,4 +18,4 @@ tempfile = "*"
 thiserror = "*"
 tokio = "*"
 tracing = "*"
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+tracing-subscriber = { version = "*", features = ["env-filter", "json"] }

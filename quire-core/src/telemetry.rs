@@ -1,6 +1,13 @@
 use std::cell::RefCell;
 use std::error::Error;
+use std::io::IsTerminal;
 use std::sync::Arc;
+
+use miette::IntoDiagnostic;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 thread_local! {
     static MIETTE_RENDER: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -146,11 +153,67 @@ pub fn before_send(
     Some(event)
 }
 
+/// How the stderr fmt layer formats events.
+pub enum FmtMode {
+    /// Human-readable text on stderr.
+    Plain,
+    /// Plain text when stderr is a TTY, JSON otherwise — so a console user
+    /// gets a readable stream while a log collector capturing the pipe gets
+    /// structured output.
+    AutoJson,
+}
+
+/// Common Sentry [`ClientOptions`] with the [`before_send`] hook pre-wired
+/// to attach miette renderings.
+///
+/// [`ClientOptions`]: sentry::ClientOptions
+pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
+    sentry::ClientOptions {
+        release: Some(release.into()),
+        before_send: Some(Arc::new(before_send)),
+        ..Default::default()
+    }
+}
+
+/// Initialize the global tracing subscriber with `QUIRE_LOG`-driven filtering,
+/// a stderr fmt layer per `fmt_mode`, the `sentry-tracing` bridge, and the
+/// supplied [`MietteLayer`].
+///
+/// Layer ordering is baked in: `miette_layer` registers before
+/// `sentry_tracing::layer()` so its thread-local is populated when
+/// sentry-tracing's `on_event` calls `capture_event`.
+pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Result<()> {
+    let filter = EnvFilter::builder()
+        .with_env_var("QUIRE_LOG")
+        .from_env()
+        .into_diagnostic()?;
+
+    let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let fmt_layer = match fmt_mode {
+        FmtMode::Plain => layer.boxed(),
+        FmtMode::AutoJson => {
+            if std::io::stderr().is_terminal() {
+                layer.boxed()
+            } else {
+                layer.json().boxed()
+            }
+        }
+    };
+
+    tracing_subscriber::registry()
+        .with(miette_layer)
+        .with(sentry_tracing::layer())
+        .with(fmt_layer)
+        .with(filter)
+        .init();
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::layer::SubscriberExt;
+    use std::sync::Mutex;
 
     #[derive(Debug, thiserror::Error, miette::Diagnostic)]
     #[error("outer message")]

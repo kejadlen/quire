@@ -2134,14 +2134,12 @@ dependencies = [
  "mlua",
  "quire-core",
  "sentry",
- "sentry-tracing",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2155,6 +2153,7 @@ dependencies = [
  "petgraph",
  "regex",
  "sentry",
+ "sentry-tracing",
  "serde",
  "serde_json",
  "tempfile",
@@ -2185,7 +2184,6 @@ dependencies = [
  "rusqlite",
  "rusqlite_migration",
  "sentry",
- "sentry-tracing",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -2195,7 +2193,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "tracing-subscriber",
  "uuid",
  "walkdir",
 ]

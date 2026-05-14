@@ -6,12 +6,8 @@ use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
 use quire::Quire;
+use quire_core::telemetry::{self, FmtMode, MietteLayer};
 use sentry::ClientInitGuard;
-use std::io::IsTerminal;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::Layer;
-use tracing_subscriber::fmt;
-use tracing_subscriber::prelude::*;
 
 const VERSION: &str = env!("QUIRE_VERSION");
 
@@ -133,43 +129,10 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
         }
     };
 
-    let guard = sentry::init((
+    Some(sentry::init((
         dsn,
-        sentry::ClientOptions {
-            release: Some(VERSION.into()),
-            before_send: Some(std::sync::Arc::new(quire_core::telemetry::before_send)),
-            ..Default::default()
-        },
-    ));
-
-    Some(guard)
-}
-
-/// Initialize tracing with a stderr fmt layer.
-///
-/// Emits structured JSON when stderr is not a terminal (e.g. piped to a log
-/// collector), and human-readable text when running interactively.
-fn init_tracing(miette_layer: quire_core::telemetry::MietteLayer) -> Result<()> {
-    let filter = EnvFilter::builder()
-        .with_env_var("QUIRE_LOG")
-        .from_env()
-        .into_diagnostic()?;
-
-    let layer = fmt::layer().with_writer(std::io::stderr);
-    let fmt_layer = if std::io::stderr().is_terminal() {
-        layer.boxed()
-    } else {
-        layer.json().boxed()
-    };
-
-    tracing_subscriber::registry()
-        .with(miette_layer)
-        .with(sentry_tracing::layer())
-        .with(fmt_layer)
-        .with(filter)
-        .init();
-
-    Ok(())
+        telemetry::sentry_client_options(VERSION),
+    )))
 }
 
 #[tokio::main]
@@ -181,11 +144,11 @@ async fn main() -> Result<()> {
         None => Quire::default(),
     };
     let _sentry = init_sentry(&quire);
-    let miette_layer = quire_core::telemetry::MietteLayer::new()
+    let miette_layer = MietteLayer::new()
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
         .with_type::<quire_core::fennel::FennelError>();
-    init_tracing(miette_layer)?;
+    telemetry::init_tracing(miette_layer, FmtMode::AutoJson)?;
 
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "quire", &mut std::io::stdout());
