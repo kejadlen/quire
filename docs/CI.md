@@ -1,6 +1,6 @@
 # quire — CI design
 
-How CI works in quire. Slots alongside PLAN.md; will likely fold in once the open questions settle.
+How CI works in quire. Slots alongside PLAN.md; will likely fold in once the open questions settle. For the run/job state machines and what each state means in the database, see [CI-STATE.md](./CI-STATE.md).
 
 ## Shape
 

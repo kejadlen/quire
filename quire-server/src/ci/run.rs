@@ -277,7 +277,7 @@ impl Run {
         secrets: &HashMap<String, SecretString>,
         sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
     ) -> Result<()> {
-        self.transition(RunState::Active)?;
+        self.transition(RunState::Active, None)?;
 
         let run_dir = self.path();
         let log_path = run_dir.join("quire-ci.log");
@@ -344,13 +344,13 @@ impl Run {
         }
 
         if !status.success() {
-            self.transition(RunState::Failed)?;
+            self.transition(RunState::Failed, Some("quire-ci-exit"))?;
             return Err(Error::QuireCiExit {
                 exit: status.code(),
             });
         }
 
-        self.transition(RunState::Complete)?;
+        self.transition(RunState::Complete, None)?;
         Ok(())
     }
 
@@ -431,11 +431,22 @@ impl Run {
 
     /// Transition the run from its current state to a new state.
     ///
-    /// Executes a single `UPDATE` in the database, stamping
-    /// `started_at` (entering Active) or `finished_at` (entering
-    /// Complete or Failed) and clearing `container_id` on terminal
-    /// states. Each timestamp is set at most once.
-    pub fn transition(&mut self, to: RunState) -> Result<()> {
+    /// Allowed edges (see `docs/CI-STATE.md`):
+    ///
+    /// * `Pending → Active`
+    /// * `Pending → Complete`
+    /// * `Pending → Superseded`
+    /// * `Active  → Complete`
+    /// * `Active  → Failed`
+    /// * `Active  → Superseded`
+    ///
+    /// `failure_kind` is recorded only when transitioning to
+    /// `Failed`; it is ignored for other targets. Pass a short tag
+    /// (`"quire-ci-exit"`) so the UI can distinguish job-pipeline
+    /// failures from `reconcile_orphans`'s `"orphaned"`. Each
+    /// timestamp and `failure_kind` is set at most once (via
+    /// `COALESCE`).
+    pub fn transition(&mut self, to: RunState, failure_kind: Option<&str>) -> Result<()> {
         use RunState::*;
         let allowed = matches!(
             (self.state, to),
@@ -456,7 +467,6 @@ impl Run {
         let now = Timestamp::now().as_millisecond();
         let db = crate::db::open(&self.db_path)?;
 
-        // Build the SET clause dynamically based on the target state.
         match to {
             Active => {
                 db.execute(
@@ -465,7 +475,7 @@ impl Run {
                     rusqlite::params![now, &self.id],
                 )?;
             }
-            Complete | Failed | Superseded => {
+            Complete | Superseded => {
                 db.execute(
                     "UPDATE runs SET state = ?1, \
                         started_at_ms = COALESCE(started_at_ms, ?2), \
@@ -473,6 +483,17 @@ impl Run {
                         container_id = NULL \
                      WHERE id = ?4",
                     rusqlite::params![to.as_str(), now, now, &self.id],
+                )?;
+            }
+            Failed => {
+                db.execute(
+                    "UPDATE runs SET state = 'failed', \
+                        started_at_ms = COALESCE(started_at_ms, ?1), \
+                        finished_at_ms = COALESCE(finished_at_ms, ?2), \
+                        container_id = NULL, \
+                        failure_kind = COALESCE(failure_kind, ?3) \
+                     WHERE id = ?4",
+                    rusqlite::params![now, now, failure_kind, &self.id],
                 )?;
             }
             Pending => unreachable!("transition to Pending is not valid"),
@@ -819,7 +840,7 @@ mod tests {
         let mut run = runs.create(&test_meta()).expect("create");
         let id = run.id().to_string();
 
-        run.transition(RunState::Active).expect("transition");
+        run.transition(RunState::Active, None).expect("transition");
         assert_eq!(run.state(), RunState::Active);
 
         // Verify started_at was stamped.
@@ -839,7 +860,7 @@ mod tests {
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
 
-        run.transition(RunState::Active).expect("to active");
+        run.transition(RunState::Active, None).expect("to active");
         let started = run.read_started_at().expect("read started_at");
         assert!(started.is_some(), "started_at should be stamped");
         assert!(run.read_finished_at().expect("read").is_none());
@@ -851,16 +872,65 @@ mod tests {
         let runs = test_runs(&quire);
 
         let mut completed = runs.create(&test_meta()).expect("create");
-        completed.transition(RunState::Active).expect("to active");
         completed
-            .transition(RunState::Complete)
+            .transition(RunState::Active, None)
+            .expect("to active");
+        completed
+            .transition(RunState::Complete, None)
             .expect("to complete");
         assert!(completed.read_finished_at().expect("read").is_some());
 
         let mut failed = runs.create(&test_meta()).expect("create");
-        failed.transition(RunState::Active).expect("to active");
-        failed.transition(RunState::Failed).expect("to failed");
+        failed
+            .transition(RunState::Active, None)
+            .expect("to active");
+        failed
+            .transition(RunState::Failed, Some("job-error"))
+            .expect("to failed");
         assert!(failed.read_finished_at().expect("read").is_some());
+    }
+
+    #[test]
+    fn transition_records_failure_kind_on_failed() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        let id = run.id().to_string();
+
+        run.transition(RunState::Active, None).expect("to active");
+        run.transition(RunState::Failed, Some("job-error"))
+            .expect("to failed");
+
+        let db = crate::db::open(&quire.db_path()).expect("open db");
+        let kind: Option<String> = db
+            .query_row(
+                "SELECT failure_kind FROM runs WHERE id = ?1",
+                rusqlite::params![&id],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_eq!(kind.as_deref(), Some("job-error"));
+    }
+
+    #[test]
+    fn transition_skips_failure_kind_when_none() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let mut run = runs.create(&test_meta()).expect("create");
+        let id = run.id().to_string();
+
+        run.transition(RunState::Active, None).expect("to active");
+        run.transition(RunState::Failed, None).expect("to failed");
+
+        let db = crate::db::open(&quire.db_path()).expect("open db");
+        let kind: Option<String> = db
+            .query_row(
+                "SELECT failure_kind FROM runs WHERE id = ?1",
+                rusqlite::params![&id],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert!(kind.is_none());
     }
 
     #[test]
@@ -870,16 +940,18 @@ mod tests {
 
         // Pending -> Failed is not allowed (must go via Active).
         let mut run = runs.create(&test_meta()).expect("create");
-        assert!(run.transition(RunState::Failed).is_err());
+        assert!(run.transition(RunState::Failed, None).is_err());
 
         // Terminal -> anything is not allowed.
         let mut completed = runs.create(&test_meta()).expect("create");
-        completed.transition(RunState::Active).expect("to active");
         completed
-            .transition(RunState::Complete)
+            .transition(RunState::Active, None)
+            .expect("to active");
+        completed
+            .transition(RunState::Complete, None)
             .expect("to complete");
-        assert!(completed.transition(RunState::Active).is_err());
-        assert!(completed.transition(RunState::Failed).is_err());
+        assert!(completed.transition(RunState::Active, None).is_err());
+        assert!(completed.transition(RunState::Failed, None).is_err());
     }
 
     #[test]
@@ -888,10 +960,11 @@ mod tests {
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
 
-        run.transition(RunState::Active).expect("to active");
+        run.transition(RunState::Active, None).expect("to active");
         let started = run.read_started_at().expect("read started_at");
 
-        run.transition(RunState::Complete).expect("to complete");
+        run.transition(RunState::Complete, None)
+            .expect("to complete");
         assert_eq!(
             run.read_started_at().expect("read"),
             started,
@@ -905,8 +978,9 @@ mod tests {
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
 
-        run.transition(RunState::Active).expect("to active");
-        run.transition(RunState::Complete).expect("to complete");
+        run.transition(RunState::Active, None).expect("to active");
+        run.transition(RunState::Complete, None)
+            .expect("to complete");
 
         assert_eq!(run.state(), RunState::Complete);
     }
@@ -929,7 +1003,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("to active");
+        run.transition(RunState::Active, None).expect("to active");
         let id = run.id().to_string();
 
         reconcile_orphans(&quire.db_path()).expect("reconcile");
@@ -943,8 +1017,9 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("to active");
-        run.transition(RunState::Complete).expect("to complete");
+        run.transition(RunState::Active, None).expect("to active");
+        run.transition(RunState::Complete, None)
+            .expect("to complete");
         let id = run.id().to_string();
 
         reconcile_orphans(&quire.db_path()).expect("reconcile");
@@ -1123,7 +1198,7 @@ mod tests {
         // Create and activate first run.
         let mut run1 = runs.create(&test_meta()).expect("create run1");
         let run1_id = run1.id().to_string();
-        run1.transition(RunState::Active).expect("to active");
+        run1.transition(RunState::Active, None).expect("to active");
 
         // Create second run for same (repo, ref).
         let meta2 = RunMeta {
@@ -1173,8 +1248,9 @@ mod tests {
         // Create and complete first run.
         let mut run1 = runs.create(&test_meta()).expect("create run1");
         let run1_id = run1.id().to_string();
-        run1.transition(RunState::Active).expect("to active");
-        run1.transition(RunState::Complete).expect("to complete");
+        run1.transition(RunState::Active, None).expect("to active");
+        run1.transition(RunState::Complete, None)
+            .expect("to complete");
 
         // Create second run for same (repo, ref).
         let meta2 = RunMeta {
@@ -1194,7 +1270,8 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Superseded).expect("to superseded");
+        run.transition(RunState::Superseded, None)
+            .expect("to superseded");
         assert_eq!(run.state(), RunState::Superseded);
     }
 
@@ -1203,8 +1280,9 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("to active");
-        run.transition(RunState::Superseded).expect("to superseded");
+        run.transition(RunState::Active, None).expect("to active");
+        run.transition(RunState::Superseded, None)
+            .expect("to superseded");
         assert_eq!(run.state(), RunState::Superseded);
     }
 
@@ -1213,14 +1291,15 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs.create(&test_meta()).expect("create");
-        run.transition(RunState::Active).expect("to active");
+        run.transition(RunState::Active, None).expect("to active");
 
         assert!(
             run.read_finished_at().expect("read").is_none(),
             "should not have finished_at before supersede"
         );
 
-        run.transition(RunState::Superseded).expect("to superseded");
+        run.transition(RunState::Superseded, None)
+            .expect("to superseded");
         assert!(
             run.read_finished_at().expect("read").is_some(),
             "superseded run should have finished_at"
