@@ -389,7 +389,44 @@ pub type CompileResult<T> = std::result::Result<T, CompileError>;
 /// [`validate_post_graph`] checks the dependency graph. Errors from a
 /// phase are wrapped in a [`PipelineError`] for miette to render with
 /// inline labels.
+///
+/// Failures are emitted via `tracing::error!` so any caller running
+/// under a tracing subscriber (and a configured Sentry layer) gets the
+/// diagnostic reported. A [`PipelineError`] holds a vector of inner
+/// diagnostics — those are emitted one event each so the exception
+/// value in Sentry carries the actual `Display` message of each
+/// definition/structure error, not just the outer "ci.fnl has errors"
+/// summary.
 pub fn compile(source: &str, name: &str) -> CompileResult<Pipeline> {
+    let result = compile_inner(source, name);
+    if let Err(e) = &result {
+        report_compile_error(name, e);
+    }
+    result
+}
+
+fn report_compile_error(name: &str, err: &CompileError) {
+    match err {
+        CompileError::Pipeline(pe) => {
+            for diag in &pe.diagnostics {
+                tracing::error!(
+                    ci_fnl = %name,
+                    error = diag as &(dyn std::error::Error + 'static),
+                    "ci.fnl diagnostic",
+                );
+            }
+        }
+        CompileError::Fennel(_) => {
+            tracing::error!(
+                ci_fnl = %name,
+                error = err as &(dyn std::error::Error + 'static),
+                "ci.fnl compilation failed",
+            );
+        }
+    }
+}
+
+fn compile_inner(source: &str, name: &str) -> CompileResult<Pipeline> {
     let fennel = Fennel::new()?;
     let Registrations { jobs, image } = registration::register(&fennel, source, name)?;
 
@@ -888,6 +925,110 @@ mod tests {
         assert!(
             msg.contains("ci.fnl has errors"),
             "expected pipeline error: {msg}"
+        );
+    }
+
+    /// Captures the `Display` text of each `error` field recorded on a
+    /// tracing event. Mirrors what sentry-tracing's `record_error` does
+    /// to build the exception value, so the test asserts on the same
+    /// thing Sentry would surface as the event title.
+    mod tracing_capture {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        pub struct ErrorCapture {
+            messages: Arc<Mutex<Vec<String>>>,
+        }
+
+        struct CaptureVisitor<'a>(&'a Arc<Mutex<Vec<String>>>);
+
+        impl tracing::field::Visit for CaptureVisitor<'_> {
+            fn record_error(
+                &mut self,
+                field: &tracing::field::Field,
+                value: &(dyn std::error::Error + 'static),
+            ) {
+                if field.name() == "error" {
+                    self.0.lock().unwrap().push(format!("{value}"));
+                }
+            }
+
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorCapture {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() != tracing::Level::ERROR {
+                    return;
+                }
+                let mut visitor = CaptureVisitor(&self.messages);
+                event.record(&mut visitor);
+            }
+        }
+
+        /// Run `f` under a subscriber that records the `Display` of every
+        /// `error` field on an ERROR-level event, and return the captured
+        /// strings.
+        pub fn capture(f: impl FnOnce()) -> Vec<String> {
+            let messages = Arc::new(Mutex::new(Vec::new()));
+            let layer = ErrorCapture {
+                messages: messages.clone(),
+            };
+            let subscriber = tracing_subscriber::registry().with(layer);
+            tracing::subscriber::with_default(subscriber, f);
+            let out = messages.lock().unwrap().clone();
+            out
+        }
+    }
+
+    #[test]
+    fn compile_emits_one_tracing_error_per_inner_diagnostic() {
+        let source = r#"(local ci (require :quire.ci))
+(ci.image "alpine")
+(ci.image "ubuntu")
+(ci.job :a [] (fn [] nil))"#;
+
+        let errors = tracing_capture::capture(|| {
+            let _ = compile(source, "ci.fnl");
+        });
+
+        // Two definition errors expected: duplicate image, empty inputs.
+        assert_eq!(
+            errors.len(),
+            2,
+            "one event per inner diagnostic, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("image declared more than once")),
+            "expected duplicate-image diagnostic in: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|m| m.contains("empty inputs")),
+            "expected empty-inputs diagnostic in: {errors:?}"
+        );
+        // Crucially, the bare outer "ci.fnl has errors" message must NOT be
+        // what reaches Sentry — that's the bug this fixes.
+        assert!(
+            !errors.iter().any(|m| m == "ci.fnl has errors"),
+            "outer wrapper message should not be emitted as an error event: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn compile_emits_one_tracing_error_for_fennel_failure() {
+        let errors = tracing_capture::capture(|| {
+            let _ = compile("{:bad {:}", "ci.fnl");
+        });
+        assert_eq!(
+            errors.len(),
+            1,
+            "fennel parse failure should produce a single event, got: {errors:?}"
         );
     }
 }
