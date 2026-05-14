@@ -24,6 +24,18 @@ type RenderFn = Box<dyn (Fn(&(dyn Error + 'static)) -> Option<String>) + Send + 
 /// errors don't need separate registration — registering the outermost type is
 /// sufficient when it carries `#[diagnostic(transparent)]`.
 ///
+/// # Sentry data scrubbing
+///
+/// The rendering currently arrives in Sentry as `extra["diagnostic"] =
+/// "[Filtered]"`, so this layer's output is effectively invisible there
+/// today. The miette `NarratableReportHandler` renders the source
+/// snippet inline, and any keyword Sentry's data-scrubber recognizes
+/// (e.g. `secret` from a `(secret …)` call in a ci.fnl) trips the
+/// whole-value replacement. Fixing this — by either moving the
+/// rendering into the exception value, sending as an attachment, or
+/// configuring the Sentry project's scrubbing rules — is a prerequisite
+/// for this layer to be useful again.
+///
 /// # Layer ordering
 ///
 /// Register this layer **before** `sentry_tracing::layer()` in the `.with()`
