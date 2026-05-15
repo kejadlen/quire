@@ -58,7 +58,7 @@ pub enum Error {
     },
 
     #[error("quire-ci exited with status {exit:?}")]
-    QuireCiExit { exit: Option<i32> },
+    ProcessFailed { exit: Option<i32> },
 
     #[error("failed to parse quire-ci event stream at {}: {source}", path.display())]
     EventStreamParse {

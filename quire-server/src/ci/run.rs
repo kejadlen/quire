@@ -19,7 +19,7 @@ pub use quire_core::ci::run::RunMeta;
 
 /// How a run dispatches its pipeline.
 ///
-/// `QuireCi` shells out to the `quire-ci` binary, which compiles and
+/// `Process` shells out to the `quire-ci` binary, which compiles and
 /// runs the pipeline in a separate process. The enum is kept open
 /// so a future `Docker` executor can be added without another config
 /// migration.
@@ -27,7 +27,7 @@ pub use quire_core::ci::run::RunMeta;
 #[serde(rename_all = "kebab-case")]
 pub enum Executor {
     #[default]
-    QuireCi,
+    Process,
 }
 
 /// Transport for CI ↔ server communication.
@@ -411,7 +411,7 @@ impl Run {
 
         if !status.success() {
             self.transition(RunState::Failed, Some("quire-ci-exit"))?;
-            return Err(Error::QuireCiExit {
+            return Err(Error::ProcessFailed {
                 exit: status.code(),
             });
         }

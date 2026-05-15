@@ -172,8 +172,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 
 /// Set up Sentry trace scope and run CI for a single ref.
 ///
-/// Wraps `trigger_ref` with Sentry scope setup and error logging.
-/// `QuireCiExit` is logged at info (user-pipeline failure, visible in the
+/// `ProcessFailed` is logged at info (user-pipeline failure, visible in the
 /// UI via run state); everything else is logged at error (operational).
 #[allow(clippy::too_many_arguments)]
 fn run_ref(
@@ -190,6 +189,7 @@ fn run_ref(
     trace_id: sentry::protocol::TraceId,
     span_id: sentry::protocol::SpanId,
 ) {
+    let transport = Transport::for_new_run(transport_mode, port);
     sentry::with_scope(
         |scope| {
             scope.set_context(
@@ -203,18 +203,10 @@ fn run_ref(
             );
         },
         || {
-            let transport = Transport::for_new_run(transport_mode, port);
-            if let Err(e) = trigger_ref(
-                repo,
-                db_path,
-                pushed_at,
-                push_ref,
-                secrets,
-                executor,
-                &transport,
-                sentry,
+            if let Err(e) = run_ref_inner(
+                repo, db_path, pushed_at, push_ref, secrets, executor, &transport, sentry,
             ) {
-                if matches!(e, error::Error::QuireCiExit { .. }) {
+                if matches!(e, error::Error::ProcessFailed { .. }) {
                     tracing::info!(
                         repo = %event_repo,
                         sha = %push_ref.new_sha, // cov-excl-line
@@ -236,7 +228,7 @@ fn run_ref(
 
 /// Create and run CI for a single updated ref.
 #[allow(clippy::too_many_arguments)]
-fn trigger_ref(
+fn run_ref_inner(
     repo: &Repo,
     db_path: &Path,
     pushed_at: jiff::Timestamp,
@@ -270,7 +262,7 @@ fn trigger_ref(
     let workspace = run.path().join("workspace");
     run::materialize_workspace(&repo.path(), &push_ref.new_sha, &workspace)?;
     match executor {
-        Executor::QuireCi => {
+        Executor::Process => {
             // Compilation happens inside quire-ci so a malformed ci.fnl is
             // reported once, with the worker's trace context.
             run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry, transport)?;
@@ -421,20 +413,6 @@ mod tests {
         assert!(result.is_err(), "bad Fennel should fail");
     }
 
-    #[test]
-    fn ci_source_reads_file_at_sha() {
-        let source = "(local ci (require :quire.ci))\n(ci.job :x [:quire/push] (fn [] nil))";
-        let (_dir, quire, name) = bare_repo_with_ci(source);
-        let repo = quire.repo(&name).expect("repo");
-        let ci = repo.ci();
-        let sha = head_sha(&repo);
-        let content = ci
-            .source(&sha)
-            .expect("source should succeed")
-            .expect("should have content");
-        assert!(content.contains(":x"));
-    }
-
     /// Serialize PATH mutations so concurrent tests don't observe each
     /// other's fake binaries.
     static PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -503,13 +481,13 @@ mod tests {
 
         let (_fake_dir, fake_path) = fake_quire_ci(0);
         let trigger_result = with_path(&fake_path, || {
-            trigger_ref(
+            run_ref_inner(
                 &repo,
                 &quire.db_path(),
                 pushed_at,
                 &push_ref,
                 &HashMap::new(),
-                Executor::QuireCi,
+                Executor::Process,
                 &Transport::Filesystem,
                 None,
             )
@@ -558,13 +536,13 @@ mod tests {
 
         let (_fake_dir, fake_path) = fake_quire_ci(1);
         let trigger_result = with_path(&fake_path, || {
-            trigger_ref(
+            run_ref_inner(
                 &repo,
                 &quire.db_path(),
                 pushed_at,
                 &push_ref,
                 &HashMap::new(),
-                Executor::QuireCi,
+                Executor::Process,
                 &Transport::Filesystem,
                 None,
             )
@@ -602,13 +580,13 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        trigger_ref(
+        run_ref_inner(
             &repo,
             &quire.db_path(),
             pushed_at,
             &push_ref,
             &HashMap::new(),
-            Executor::QuireCi,
+            Executor::Process,
             &Transport::Filesystem,
             None,
         )

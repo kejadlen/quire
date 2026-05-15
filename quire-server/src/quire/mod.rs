@@ -40,7 +40,7 @@ fn default_port() -> u16 {
 #[derive(serde::Deserialize, Debug, Default)]
 pub struct CiConfig {
     /// How the orchestrator dispatches CI runs. Defaults to shelling
-    /// out to the `quire-ci` binary via `Executor::QuireCi`.
+    /// out to the `quire-ci` binary via `Executor::Process`.
     #[serde(default)]
     pub executor: Executor,
     /// Transport for CI ↔ server communication.
@@ -420,7 +420,7 @@ mod tests {
         let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         assert_eq!(config.ci.transport, TransportMode::Filesystem);
-        assert_eq!(config.ci.executor, Executor::QuireCi);
+        assert_eq!(config.ci.executor, Executor::Process);
         assert_eq!(config.port, 3000);
     }
 
