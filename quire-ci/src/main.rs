@@ -12,6 +12,7 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
+use quire_core::ci::transport::ApiSession;
 use quire_core::fennel::FennelError;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
@@ -111,19 +112,25 @@ struct TransportFlags {
 impl TransportFlags {
     /// Promote into the resolved [`TransportArgs`], folding in the
     /// `QUIRE_CI_TOKEN` env var. clap's `required_if_eq` guarantees
-    /// the unwraps are safe for `Transport::Api`.
-    fn resolve(self, auth_token: Option<String>) -> TransportArgs {
+    /// `--run-id` and `--server-url` are present for `Transport::Api`;
+    /// the token must arrive via env and is non-optional on the wire.
+    fn resolve(self, auth_token: Option<String>) -> miette::Result<TransportArgs> {
         match self.transport {
-            Transport::Filesystem => TransportArgs::Filesystem,
-            Transport::Api => TransportArgs::Api {
-                run_id: self
-                    .run_id
-                    .expect("clap requires --run-id when --transport api"),
-                server_url: self
-                    .server_url
-                    .expect("clap requires --server-url when --transport api"),
-                auth_token,
-            },
+            Transport::Filesystem => Ok(TransportArgs::Filesystem),
+            Transport::Api => {
+                let auth_token = auth_token.ok_or_else(|| {
+                    miette::miette!("--transport api requires the QUIRE_CI_TOKEN env var")
+                })?;
+                Ok(TransportArgs::Api(ApiSession {
+                    run_id: self
+                        .run_id
+                        .expect("clap requires --run-id when --transport api"),
+                    server_url: self
+                        .server_url
+                        .expect("clap requires --server-url when --transport api"),
+                    auth_token,
+                }))
+            }
         }
     }
 }
@@ -202,27 +209,22 @@ fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
 
 /// Transport for CI ↔ server communication.
 ///
-/// CLI-shape only; the resolved variant (with run_id/server_url
-/// promoted out of their Options) is `TransportArgs`.
+/// CLI-shape only; the resolved variant (carrying the shared
+/// [`ApiSession`]) is `TransportArgs`.
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Transport {
     Filesystem,
     Api,
 }
 
-/// Resolved transport produced by [`TransportFlags::resolve`].
-///
-/// The `Api` variant's fields are wired up ahead of the HTTP client
-/// that will consume them.
+/// Resolved transport produced by [`TransportFlags::resolve`]. The
+/// `Api` variant carries the shared [`ApiSession`] — same shape the
+/// server constructed when it created the run.
 #[derive(Debug)]
-#[allow(dead_code)] // fields read by the upcoming API client
+#[allow(dead_code)] // session read by the upcoming API client
 enum TransportArgs {
     Filesystem,
-    Api {
-        run_id: String,
-        server_url: String,
-        auth_token: Option<String>,
-    },
+    Api(ApiSession),
 }
 
 fn main() -> miette::Result<()> {
@@ -256,7 +258,7 @@ fn main() -> miette::Result<()> {
                 }
             };
             let auth_token = std::env::var("QUIRE_CI_TOKEN").ok();
-            let transport = transport.resolve(auth_token);
+            let transport = transport.resolve(auth_token)?;
             let (git_dir, meta, secrets, sentry_handoff) = match dispatch {
                 Some(path) => load_dispatch(&path)?,
                 None => (

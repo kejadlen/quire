@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
+use quire_core::ci::transport::ApiSession;
 use quire_core::secret::SecretString;
 use rand::{Rng, distr::Alphanumeric};
 
@@ -41,17 +42,20 @@ pub enum TransportMode {
 /// Runtime transport for a single CI run. Built once per run from
 /// the config-shape [`TransportMode`] + the top-level `server_url`,
 /// then passed to `Runs::create` and `Run::execute_via_quire_ci`.
+/// The `Api` variant carries the shared [`ApiSession`] — quire-ci
+/// receives a structurally identical value via its CLI flags.
 #[derive(Clone, Debug, Default)]
 pub enum Transport {
     #[default]
     Filesystem,
-    Api(ApiTransport),
+    Api(ApiSession),
 }
 
 impl Transport {
     /// Build a runtime transport for a new run. For `Api`, mints a
-    /// fresh CSPRNG bearer token and pairs it with `server_url`.
-    /// Errors if `mode == Api` and `server_url` is missing.
+    /// fresh run ID and CSPRNG bearer token, pairs them with
+    /// `server_url`, and bundles them into an [`ApiSession`]. Errors
+    /// if `mode == Api` and `server_url` is missing.
     pub fn for_new_run(mode: TransportMode, server_url: Option<&str>) -> Result<Self> {
         match mode {
             TransportMode::Filesystem => Ok(Transport::Filesystem),
@@ -59,22 +63,14 @@ impl Transport {
                 let server_url = server_url
                     .ok_or(Error::ApiTransportMissingServerUrl)?
                     .to_string();
-                Ok(Transport::Api(ApiTransport {
+                Ok(Transport::Api(ApiSession {
+                    run_id: uuid::Uuid::now_v7().to_string(),
                     server_url,
                     auth_token: mint_auth_token(),
                 }))
             }
         }
     }
-}
-
-/// Runtime config for the API transport, produced at run creation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApiTransport {
-    /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
-    pub server_url: String,
-    /// Bearer token for this run, minted at creation time.
-    pub auth_token: String,
 }
 
 /// The state of a CI run.
@@ -147,15 +143,16 @@ impl Runs {
     /// workspace materialization and log storage.
     ///
     /// `transport` is built by the caller via [`Transport::for_new_run`];
-    /// its `Api` auth_token (if any) is persisted in the `auth_token`
-    /// column so server-side request handlers can look it up.
+    /// for `Api`, the run's id comes from the `ApiSession` (so quire-ci
+    /// and the DB agree on which run a bearer token belongs to) and
+    /// the token is persisted in `runs.auth_token`. For `Filesystem`,
+    /// a fresh UUID is minted here.
     pub fn create(&self, meta: &RunMeta, transport: &Transport) -> Result<Run> {
-        let id = uuid::Uuid::now_v7().to_string();
-        let workspace_path = self.base_dir.join(&id).join("workspace");
-        let auth_token_str = match transport {
-            Transport::Filesystem => None,
-            Transport::Api(api) => Some(api.auth_token.as_str()),
+        let (id, auth_token_str) = match transport {
+            Transport::Filesystem => (uuid::Uuid::now_v7().to_string(), None),
+            Transport::Api(api) => (api.run_id.clone(), Some(api.auth_token.as_str())),
         };
+        let workspace_path = self.base_dir.join(&id).join("workspace");
 
         let db = crate::db::open(&self.db_path)?;
 
@@ -934,6 +931,10 @@ mod tests {
             panic!("expected Api transport");
         };
 
+        // Run id and ApiSession.run_id are the same value — quire-ci
+        // and the orchestrator agree on which run a token belongs to.
+        assert_eq!(run.id(), api.run_id);
+
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
             .query_row(
@@ -958,6 +959,11 @@ mod tests {
             api.auth_token.chars().all(|c| c.is_ascii_alphanumeric()),
             "token should be alphanumeric, got {:?}",
             api.auth_token
+        );
+        assert!(
+            uuid::Uuid::parse_str(&api.run_id).is_ok(),
+            "run_id should be a UUID, got {:?}",
+            api.run_id
         );
     }
 
