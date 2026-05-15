@@ -92,6 +92,6 @@ manual-release rev="@-":
     short=${sha:0:8}
     date=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y-%m-%d "$sha")
     tag="v${date}-${short}"
-    git tag "$tag" "$sha"
+    jj tag set "$tag" -r {{rev}}
     git push github "$tag"
     echo "Tagged and pushed $sha as $tag"
