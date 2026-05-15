@@ -153,55 +153,85 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
                     trace_id: trace_id.to_string(),
                 });
 
-        sentry::with_scope(
-            |scope| {
-                scope.set_context(
-                    "trace",
-                    sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
-                        trace_id,
-                        span_id,
-                        op: Some("quire.ci.run".into()),
-                        ..Default::default()
-                    })),
-                );
-            },
-            || {
-                let transport = Transport::for_new_run(config.ci.transport, config.port);
-                if let Err(e) = trigger_ref(
-                    &repo,
-                    &db_path,
-                    event.pushed_at,
-                    push_ref,
-                    &config.secrets,
-                    config.ci.executor,
-                    &transport,
-                    sentry_handoff.as_ref(),
-                ) {
-                    // QuireCiExit means quire-ci itself ran and reported a
-                    // user-pipeline failure (bad ci.fnl, failing job). That
-                    // shows up in the UI via the run state and CRI log —
-                    // log it at info so it doesn't trigger a Sentry event.
-                    // Everything else (db, git, spawn, materialize) is
-                    // operational and stays at error.
-                    if matches!(e, error::Error::QuireCiExit { .. }) {
-                        tracing::info!(
-                            repo = %event.repo,
-                            sha = %push_ref.new_sha, // cov-excl-line
-                            error = %e,
-                            "ci run finished with non-zero exit",
-                        );
-                    } else {
-                        tracing::error!(
-                            repo = %event.repo,
-                            sha = %push_ref.new_sha, // cov-excl-line
-                            error = &e as &(dyn std::error::Error + 'static),
-                            "CI trigger failed",
-                        );
-                    }
-                }
-            },
+        run_ref(
+            &repo,
+            &db_path,
+            &event.repo,
+            event.pushed_at,
+            push_ref,
+            &config.secrets,
+            config.ci.executor,
+            config.ci.transport,
+            config.port,
+            sentry_handoff.as_ref(),
+            trace_id,
+            span_id,
         );
     }
+}
+
+/// Set up Sentry trace scope and run CI for a single ref.
+///
+/// Wraps `trigger_ref` with Sentry scope setup and error logging.
+/// `QuireCiExit` is logged at info (user-pipeline failure, visible in the
+/// UI via run state); everything else is logged at error (operational).
+#[allow(clippy::too_many_arguments)]
+fn run_ref(
+    repo: &Repo,
+    db_path: &Path,
+    event_repo: &str,
+    pushed_at: jiff::Timestamp,
+    push_ref: &PushRef,
+    secrets: &HashMap<String, quire_core::secret::SecretString>,
+    executor: Executor,
+    transport_mode: TransportMode,
+    port: u16,
+    sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
+    trace_id: sentry::protocol::TraceId,
+    span_id: sentry::protocol::SpanId,
+) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_context(
+                "trace",
+                sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
+                    trace_id,
+                    span_id,
+                    op: Some("quire.ci.run".into()),
+                    ..Default::default()
+                })),
+            );
+        },
+        || {
+            let transport = Transport::for_new_run(transport_mode, port);
+            if let Err(e) = trigger_ref(
+                repo,
+                db_path,
+                pushed_at,
+                push_ref,
+                secrets,
+                executor,
+                &transport,
+                sentry,
+            ) {
+                if matches!(e, error::Error::QuireCiExit { .. }) {
+                    tracing::info!(
+                        repo = %event_repo,
+                        sha = %push_ref.new_sha, // cov-excl-line
+                        error = %e,
+                        "ci run finished with non-zero exit",
+                    );
+                } else {
+                    tracing::error!(
+                        repo = %event_repo,
+                        sha = %push_ref.new_sha, // cov-excl-line
+                        error = &e as &(dyn std::error::Error + 'static),
+                        "CI trigger failed",
+                    );
+                }
+            }
+        },
+    );
 }
 
 /// Create and run CI for a single updated ref.
