@@ -60,9 +60,6 @@ pub enum Error {
     #[error("quire-ci exited with status {exit:?}")]
     QuireCiExit { exit: Option<i32> },
 
-    #[error("ci.transport=api requires ci.server-url to be set in config.fnl")]
-    ApiTransportMissingServerUrl,
-
     #[error("failed to parse quire-ci event stream at {}: {source}", path.display())]
     EventStreamParse {
         path: std::path::PathBuf,

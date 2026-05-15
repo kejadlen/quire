@@ -166,19 +166,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
                 );
             },
             || {
-                let transport =
-                    match Transport::for_new_run(config.ci.transport, config.server_url.as_deref())
-                    {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::error!(
-                                repo = %event.repo,
-                                error = &e as &(dyn std::error::Error + 'static),
-                                "CI transport misconfigured",
-                            );
-                            return;
-                        }
-                    };
+                let transport = Transport::for_new_run(config.ci.transport, config.port);
                 if let Err(e) = trigger_ref(
                     &repo,
                     &db_path,

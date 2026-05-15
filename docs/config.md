@@ -11,6 +11,7 @@ Operator-created. Re-read on every call (no caching today).
 
 | Key            | Type           | Required | Purpose                                                  |
 |----------------|----------------|----------|----------------------------------------------------------|
+| `:port`        | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
 | `:sentry :dsn` | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
 | `:secrets`     | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)`. |
 

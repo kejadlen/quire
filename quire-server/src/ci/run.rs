@@ -40,7 +40,7 @@ pub enum TransportMode {
 }
 
 /// Runtime transport for a single CI run. Built once per run from
-/// the config-shape [`TransportMode`] + the top-level `server_url`,
+/// the config-shape [`TransportMode`] + the server's listen port,
 /// then passed to `Runs::create` and `Run::execute_via_quire_ci`.
 /// The `Api` variant carries the shared [`ApiSession`] — quire-ci
 /// receives a structurally identical value via its CLI flags.
@@ -53,22 +53,16 @@ pub enum Transport {
 
 impl Transport {
     /// Build a runtime transport for a new run. For `Api`, mints a
-    /// fresh run ID and CSPRNG bearer token, pairs them with
-    /// `server_url`, and bundles them into an [`ApiSession`]. Errors
-    /// if `mode == Api` and `server_url` is missing.
-    pub fn for_new_run(mode: TransportMode, server_url: Option<&str>) -> Result<Self> {
+    /// fresh run ID and CSPRNG bearer token, derives the loopback
+    /// server URL from `port`, and bundles them into an [`ApiSession`].
+    pub fn for_new_run(mode: TransportMode, port: u16) -> Self {
         match mode {
-            TransportMode::Filesystem => Ok(Transport::Filesystem),
-            TransportMode::Api => {
-                let server_url = server_url
-                    .ok_or(Error::ApiTransportMissingServerUrl)?
-                    .to_string();
-                Ok(Transport::Api(ApiSession {
-                    run_id: uuid::Uuid::now_v7().to_string(),
-                    server_url,
-                    auth_token: mint_auth_token(),
-                }))
-            }
+            TransportMode::Filesystem => Transport::Filesystem,
+            TransportMode::Api => Transport::Api(ApiSession {
+                run_id: uuid::Uuid::now_v7().to_string(),
+                server_url: format!("http://127.0.0.1:{port}"),
+                auth_token: mint_auth_token(),
+            }),
         }
     }
 }
@@ -923,8 +917,7 @@ mod tests {
     fn create_with_api_persists_minted_auth_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let transport = Transport::for_new_run(TransportMode::Api, Some("http://127.0.0.1:3000"))
-            .expect("for_new_run");
+        let transport = Transport::for_new_run(TransportMode::Api, 3000);
         let run = runs.create(&test_meta(), &transport).expect("create");
 
         let Transport::Api(api) = &transport else {
@@ -948,12 +941,11 @@ mod tests {
 
     #[test]
     fn for_new_run_mints_alphanumeric_token() {
-        let transport = Transport::for_new_run(TransportMode::Api, Some("http://127.0.0.1:3000"))
-            .expect("for_new_run");
+        let transport = Transport::for_new_run(TransportMode::Api, 4000);
         let Transport::Api(api) = transport else {
             panic!("expected Api transport");
         };
-        assert_eq!(api.server_url, "http://127.0.0.1:3000");
+        assert_eq!(api.server_url, "http://127.0.0.1:4000");
         assert_eq!(api.auth_token.len(), 32);
         assert!(
             api.auth_token.chars().all(|c| c.is_ascii_alphanumeric()),
@@ -965,15 +957,6 @@ mod tests {
             "run_id should be a UUID, got {:?}",
             api.run_id
         );
-    }
-
-    #[test]
-    fn for_new_run_rejects_api_without_server_url() {
-        match Transport::for_new_run(TransportMode::Api, None) {
-            Ok(_) => panic!("for_new_run should fail without server_url"),
-            Err(Error::ApiTransportMissingServerUrl) => {}
-            Err(other) => panic!("unexpected error: {other}"),
-        }
     }
 
     #[test]

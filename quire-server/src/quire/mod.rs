@@ -23,15 +23,18 @@ pub struct GlobalConfig {
     /// Each value is a `SecretString` (plain literal or `{:file "..."}`).
     #[serde(default)]
     pub secrets: HashMap<String, SecretString>,
-    /// Base URL the orchestrator advertises to quire-ci over the API
-    /// transport (e.g. `http://127.0.0.1:3000`). Top-level because it
-    /// describes the server itself, not CI; once the filesystem
-    /// transport is retired it stays put.
-    #[serde(default)]
-    pub server_url: Option<String>,
+    /// TCP port the HTTP server binds to on all interfaces (`0.0.0.0`).
+    /// The API transport derives `http://127.0.0.1:{port}` from this for
+    /// quire-ci's bootstrap URL.
+    #[serde(default = "default_port")]
+    pub port: u16,
     /// CI configuration.
     #[serde(default)]
     pub ci: CiConfig,
+}
+
+fn default_port() -> u16 {
+    3000
 }
 
 #[derive(serde::Deserialize, Debug, Default)]
@@ -418,23 +421,29 @@ mod tests {
         let config = q.global_config().expect("global_config should load");
         assert_eq!(config.ci.transport, TransportMode::Filesystem);
         assert_eq!(config.ci.executor, Executor::QuireCi);
-        assert!(config.server_url.is_none());
+        assert_eq!(config.port, 3000);
     }
 
     #[test]
-    fn global_config_parses_api_transport_and_server_url() {
+    fn global_config_parses_api_transport() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.fnl");
-        fs_err::write(
-            &config_path,
-            r#"{:server-url "http://127.0.0.1:3000" :ci {:transport :api}}"#,
-        )
-        .expect("write");
+        fs_err::write(&config_path, r#"{:ci {:transport :api}}"#).expect("write");
 
         let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
         assert_eq!(config.ci.transport, TransportMode::Api);
-        assert_eq!(config.server_url.as_deref(), Some("http://127.0.0.1:3000"));
+    }
+
+    #[test]
+    fn global_config_parses_custom_port() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(&config_path, r#"{:port 4000}"#).expect("write");
+
+        let q = Quire::new(dir.path().to_path_buf());
+        let config = q.global_config().expect("global_config should load");
+        assert_eq!(config.port, 4000);
     }
 
     #[test]

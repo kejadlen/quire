@@ -17,7 +17,8 @@ async fn index() -> String {
 }
 
 pub async fn run(quire: &Quire, ci_routes: axum::Router) -> Result<()> {
-    let addr: SocketAddr = ([0, 0, 0, 0], 3000).into();
+    let config = quire.global_config()?;
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
     // Set up event socket.
     let socket_path = quire.socket_path();
