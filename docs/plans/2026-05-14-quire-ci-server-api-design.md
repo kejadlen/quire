@@ -27,7 +27,7 @@ Out of scope (deliberately deferred to v2):
 
 | Artifact | Path | Writer | Reader | Purpose |
 |---|---|---|---|---|
-| Dispatch | `<run-dir>/dispatch.json` | server | CI | Secrets, git_dir, push meta, Sentry handoff |
+| Bootstrap | `<run-dir>/bootstrap.json` | server | CI | Secrets, git_dir, push meta, Sentry handoff |
 | Events | `<run-dir>/events.jsonl` | CI | server | Job/sh state transitions |
 | Subprocess log | `<run-dir>/quire-ci.log` | CI (stdio) | server UI | Debug subprocess output |
 | Per-sh log | `<run-dir>/jobs/<job>/sh-<n>.log` | CI | server UI | Rendered on job detail page |
@@ -61,7 +61,7 @@ Endpoints (CI calls server):
 
 | Method | Path | Body | Purpose |
 |---|---|---|---|
-| GET    | `/api/runs/:id/dispatch` | — | Fetch dispatch payload. One-shot: server invalidates after first successful read. |
+| GET    | `/api/runs/:id/bootstrap` | — | Fetch bootstrap payload. One-shot: server invalidates after first successful read. |
 | POST   | `/api/runs/:id/jobs/:job_id/start` | `{}` | Job entered execution. Server timestamps. |
 | POST   | `/api/runs/:id/jobs/:job_id/finish` | `{ outcome: "complete" \| "failed" }` | Job done. |
 | POST   | `/api/runs/:id/jobs/:job_id/sh/start` | `{ cmd: string }` | Start the next sh in this job. Server assigns the sh index. |
@@ -78,7 +78,7 @@ Ordering rules enforced server-side, returning 409 on violation:
 - `jobs/:id/finish` requires no sh currently open.
 - `complete` requires every started job to have finished.
 
-Other error codes: 401 for missing/invalid token, 403 for token/run mismatch, 404 for unknown run, 410 if `dispatch` was already fetched, 422 if a path segment doesn't match a known job, 5xx for server errors (CI retries with backoff).
+Other error codes: 401 for missing/invalid token, 403 for token/run mismatch, 404 for unknown run, 410 if `bootstrap` was already fetched, 422 if a path segment doesn't match a known job, 5xx for server errors (CI retries with backoff).
 
 ## Lifecycle
 
@@ -93,9 +93,9 @@ Other error codes: 401 for missing/invalid token, 403 for token/run mismatch, 40
      --workspace <path>
    ```
 
-   No `--dispatch`, no `--events`, no log path. The workspace path remains because that's the checkout CI runs *in*, not a comms channel.
+   No `--bootstrap`, no `--events`, no log path. The workspace path remains because that's the checkout CI runs *in*, not a comms channel.
 
-3. **quire-ci bootstraps.** First call is `GET /api/runs/:id/dispatch`. Server flips the run to `active`, returns the dispatch payload (secrets, git_dir, push meta, Sentry handoff), and invalidates the dispatch resource. Watchdog timer starts.
+3. **quire-ci bootstraps.** First call is `GET /api/runs/:id/bootstrap`. Server flips the run to `active`, returns the bootstrap payload (secrets, git_dir, push meta, Sentry handoff), and invalidates the bootstrap resource. Watchdog timer starts.
 
 4. **quire-ci executes the DAG.** For each job:
    - `POST /jobs/:job_id/start`
@@ -123,7 +123,7 @@ Server-side validation runs before any DB work:
 quire-ci retry policy:
 
 - **Events (start/finish endpoints):** retry on 5xx with exponential backoff, up to ~5 attempts. On final failure, log to stderr and continue. Losing a state-transition POST is bad but should not kill the run.
-- **Dispatch:** retry on 5xx, fail fast on 4xx. If dispatch cannot be fetched, the run is unrunnable; CI exits nonzero and the watchdog catches it.
+- **Bootstrap:** retry on 5xx, fail fast on 4xx. If bootstrap cannot be fetched, the run is unrunnable; CI exits nonzero and the watchdog catches it.
 - **Complete:** the most important POST in the run. Retry with backoff and more attempts than the others.
 - **Log streams:** v1 does not retry. A broken stream logs a stderr warning and execution continues.
 
@@ -131,7 +131,7 @@ Server-side robustness:
 
 - All state-transition endpoints are idempotent by virtue of state checks: a retried `/start` after a successful first call gets 409, and CI treats that as "already recorded, move on."
 - Watchdog: per-run last-contact timestamp, reset on every authenticated request. Configurable timeout (default tuned long enough for slow `npm install`-style steps, short enough that crashes don't strand runs).
-- Sentry handoff is still passed via the dispatch payload, so CI traces continue to link to server traces.
+- Sentry handoff is still passed via the bootstrap payload, so CI traces continue to link to server traces.
 
 ## Rollout
 
@@ -143,7 +143,7 @@ A server-side config flag keeps the filesystem path working while the API is bui
  ...}
 ```
 
-Default is `:filesystem` during build-out. The server reads this at startup and, when spawning quire-ci, passes the choice through (CLI flag or env var — implementation detail). quire-ci implements both paths and dispatches at startup. Each slice (dispatch, jobs/sh state, logs, complete) checks the flag and takes either path.
+Default is `:filesystem` during build-out. The server reads this at startup and, when spawning quire-ci, passes the choice through (CLI flag or env var — implementation detail). quire-ci implements both paths and dispatches at startup. Each slice (bootstrap, jobs/sh state, logs, complete) checks the flag and takes either path.
 
 The flag lives in server config rather than per-repo `ci.fnl` because:
 
@@ -160,7 +160,7 @@ After every slice ships and the API path proves out, delete the filesystem path 
 These will be filed as separate ranger tasks:
 
 1. **Auth + transport foundation.** Bearer-token middleware on server. HTTP client in quire-ci. CLI args (`--run-id`, `--server-url`) and `QUIRE_CI_TOKEN` env var threaded through. Config flag wired up. No behavior change yet — both halves still take the filesystem path.
-2. **Dispatch over the API.** `GET /api/runs/:id/dispatch` and corresponding client call, gated by the transport flag.
+2. **Bootstrap over the API.** `GET /api/runs/:id/bootstrap` and corresponding client call, gated by the transport flag.
 3. **Job and sh state transitions over the API.** The four `/start` and `/finish` endpoints, plus their clients.
 4. **Log streaming over the API.** Chunked `POST /sh/logs` with CRI-line bodies.
 5. **`/complete` and watchdog.** Authoritative completion, server-side timeout backstop.

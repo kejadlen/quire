@@ -1,8 +1,8 @@
 //! Wire format for handing off a run from the orchestrator to
 //! `quire-ci`.
 //!
-//! The orchestrator writes a [`Dispatch`] as JSON to a file inside
-//! the run directory and passes the path via `--dispatch`. `quire-ci`
+//! The orchestrator writes a [`Bootstrap`] as JSON to a file inside
+//! the run directory and passes the path via `--bootstrap`. `quire-ci`
 //! deserializes it on startup to recover push metadata and the
 //! secrets the run-fns may resolve. Standalone `quire-ci run`
 //! invocations skip the file entirely and fall back to placeholder
@@ -36,7 +36,7 @@ use crate::ci::run::RunMeta;
 /// `git archive` extract with no `.git` inside, so quire-ci has no
 /// way to recover this path on its own.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Dispatch {
+pub struct Bootstrap {
     pub meta: RunMeta,
     pub git_dir: PathBuf,
     pub secrets: HashMap<String, String>,
@@ -50,7 +50,7 @@ pub struct Dispatch {
 /// What quire-ci needs to mirror the orchestrator's Sentry context.
 ///
 /// The DSN is plaintext like the secrets — the 0600 mode on the
-/// dispatch file is the line of defense. `trace_id` is the hex form
+/// bootstrap file is the line of defense. `trace_id` is the hex form
 /// of [`sentry::protocol::TraceId`]; kept as a string here so
 /// `quire-core` doesn't grow a `sentry` dep.
 #[derive(Debug, Serialize, Deserialize)]
