@@ -34,6 +34,7 @@ askama = "*"
 axum = "*"
 clap = { workspace = true }
 clap_complete = "*"
+rand = "*"
 rusqlite = { version = "*", features = ["bundled"] }
 rusqlite_migration = "*"
 sentry = { workspace = true }

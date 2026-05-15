@@ -82,7 +82,50 @@ enum Commands {
         /// secrets).
         #[arg(long)]
         dispatch: Option<PathBuf>,
+
+        #[command(flatten)]
+        transport: TransportFlags,
     },
+}
+
+/// CLI flags for the CI ↔ server transport. Grouped so the related
+/// args travel together and `Transport == Api` can pull its required
+/// peers in via `required_if_eq`.
+#[derive(clap::Args, Debug)]
+struct TransportFlags {
+    /// Transport for CI ↔ server communication.
+    #[arg(long, default_value = "filesystem", value_enum)]
+    transport: Transport,
+
+    /// Run ID assigned by the orchestrator.
+    /// Required when `--transport api`.
+    #[arg(long, required_if_eq("transport", "api"))]
+    run_id: Option<String>,
+
+    /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
+    /// Required when `--transport api`.
+    #[arg(long, required_if_eq("transport", "api"))]
+    server_url: Option<String>,
+}
+
+impl TransportFlags {
+    /// Promote into the resolved [`TransportArgs`], folding in the
+    /// `QUIRE_CI_TOKEN` env var. clap's `required_if_eq` guarantees
+    /// the unwraps are safe for `Transport::Api`.
+    fn resolve(self, auth_token: Option<String>) -> TransportArgs {
+        match self.transport {
+            Transport::Filesystem => TransportArgs::Filesystem,
+            Transport::Api => TransportArgs::Api {
+                run_id: self
+                    .run_id
+                    .expect("clap requires --run-id when --transport api"),
+                server_url: self
+                    .server_url
+                    .expect("clap requires --server-url when --transport api"),
+                auth_token,
+            },
+        }
+    }
 }
 
 /// RAII wrapper around the tempdir that holds a `quire-ci run`'s
@@ -157,6 +200,31 @@ fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
     }
 }
 
+/// Transport for CI ↔ server communication.
+///
+/// CLI-shape only; the resolved variant (with run_id/server_url
+/// promoted out of their Options) is `TransportArgs`.
+#[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Transport {
+    Filesystem,
+    Api,
+}
+
+/// Resolved transport produced by [`TransportFlags::resolve`].
+///
+/// The `Api` variant's fields are wired up ahead of the HTTP client
+/// that will consume them.
+#[derive(Debug)]
+#[allow(dead_code)] // fields read by the upcoming API client
+enum TransportArgs {
+    Filesystem,
+    Api {
+        run_id: String,
+        server_url: String,
+        auth_token: Option<String>,
+    },
+}
+
 fn main() -> miette::Result<()> {
     miette::set_panic_hook();
     let cli = Cli::parse();
@@ -166,6 +234,7 @@ fn main() -> miette::Result<()> {
             events,
             out_dir,
             dispatch,
+            transport,
         } => {
             let sink: Box<dyn EventSink> = match events {
                 EventsTarget::Null => Box::new(NullSink),
@@ -186,6 +255,8 @@ fn main() -> miette::Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
+            let auth_token = std::env::var("QUIRE_CI_TOKEN").ok();
+            let transport = transport.resolve(auth_token);
             let (git_dir, meta, secrets, sentry_handoff) = match dispatch {
                 Some(path) => load_dispatch(&path)?,
                 None => (
@@ -219,7 +290,15 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secrets)
+            run_pipeline(
+                cli.workspace,
+                sink,
+                log_dir,
+                git_dir,
+                meta,
+                secrets,
+                transport,
+            )
         }
     }
 }
@@ -349,6 +428,7 @@ fn run_pipeline(
     git_dir: PathBuf,
     meta: RunMeta,
     secrets: HashMap<String, quire_core::secret::SecretString>,
+    _transport: TransportArgs,
 ) -> miette::Result<()> {
     let pipeline = compile_at(&workspace)?;
 

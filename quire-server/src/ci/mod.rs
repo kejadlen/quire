@@ -12,7 +12,10 @@ pub use quire_core::ci::pipeline::{
 };
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{pipeline, registration, runtime};
-pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
+pub use run::{
+    ApiTransport, Executor, Run, RunState, Runs, Transport, TransportMode, materialize_workspace,
+    reconcile_orphans,
+};
 
 /// A resolved commit reference.
 ///
@@ -162,13 +165,27 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
                 );
             },
             || {
+                let transport =
+                    match Transport::for_new_run(config.ci.transport, config.server_url.as_deref())
+                    {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::error!(
+                                repo = %event.repo,
+                                error = &e as &(dyn std::error::Error + 'static),
+                                "CI transport misconfigured",
+                            );
+                            return;
+                        }
+                    };
                 if let Err(e) = trigger_ref(
                     &repo,
                     &db_path,
                     event.pushed_at,
                     push_ref,
                     &config.secrets,
-                    config.executor,
+                    config.ci.executor,
+                    &transport,
                     sentry_handoff.as_ref(),
                 ) {
                     // QuireCiExit means quire-ci itself ran and reported a
@@ -199,6 +216,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 }
 
 /// Create and run CI for a single updated ref.
+#[allow(clippy::too_many_arguments)]
 fn trigger_ref(
     repo: &Repo,
     db_path: &Path,
@@ -206,6 +224,7 @@ fn trigger_ref(
     push_ref: &PushRef,
     secrets: &HashMap<String, quire_core::secret::SecretString>,
     executor: Executor,
+    transport: &Transport,
     sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
 ) -> error::Result<()> {
     let ci = repo.ci();
@@ -220,7 +239,7 @@ fn trigger_ref(
         pushed_at,
     };
 
-    let run = repo.runs(db_path).create(&meta)?;
+    let run = repo.runs(db_path).create(&meta, transport)?;
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
@@ -235,7 +254,7 @@ fn trigger_ref(
         Executor::QuireCi => {
             // Compilation happens inside quire-ci so a malformed ci.fnl is
             // reported once, with the worker's trace context.
-            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry)?;
+            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry, transport)?;
         }
     }
     Ok(())
@@ -472,6 +491,7 @@ mod tests {
                 &push_ref,
                 &HashMap::new(),
                 Executor::QuireCi,
+                &Transport::Filesystem,
                 None,
             )
         });
@@ -526,6 +546,7 @@ mod tests {
                 &push_ref,
                 &HashMap::new(),
                 Executor::QuireCi,
+                &Transport::Filesystem,
                 None,
             )
         });
@@ -569,6 +590,7 @@ mod tests {
             &push_ref,
             &HashMap::new(),
             Executor::QuireCi,
+            &Transport::Filesystem,
             None,
         )
         .expect("should succeed without ci.fnl");

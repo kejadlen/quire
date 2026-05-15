@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use quire_core::secret::SecretString;
+use rand::{Rng, distr::Alphanumeric};
 
 use super::error::{Error, Result};
 
@@ -26,6 +27,54 @@ pub use quire_core::ci::run::RunMeta;
 pub enum Executor {
     #[default]
     QuireCi,
+}
+
+/// Transport for CI ↔ server communication.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransportMode {
+    #[default]
+    Filesystem,
+    Api,
+}
+
+/// Runtime transport for a single CI run. Built once per run from
+/// the config-shape [`TransportMode`] + the top-level `server_url`,
+/// then passed to `Runs::create` and `Run::execute_via_quire_ci`.
+#[derive(Clone, Debug, Default)]
+pub enum Transport {
+    #[default]
+    Filesystem,
+    Api(ApiTransport),
+}
+
+impl Transport {
+    /// Build a runtime transport for a new run. For `Api`, mints a
+    /// fresh CSPRNG bearer token and pairs it with `server_url`.
+    /// Errors if `mode == Api` and `server_url` is missing.
+    pub fn for_new_run(mode: TransportMode, server_url: Option<&str>) -> Result<Self> {
+        match mode {
+            TransportMode::Filesystem => Ok(Transport::Filesystem),
+            TransportMode::Api => {
+                let server_url = server_url
+                    .ok_or(Error::ApiTransportMissingServerUrl)?
+                    .to_string();
+                Ok(Transport::Api(ApiTransport {
+                    server_url,
+                    auth_token: mint_auth_token(),
+                }))
+            }
+        }
+    }
+}
+
+/// Runtime config for the API transport, produced at run creation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiTransport {
+    /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
+    pub server_url: String,
+    /// Bearer token for this run, minted at creation time.
+    pub auth_token: String,
 }
 
 /// The state of a CI run.
@@ -96,9 +145,17 @@ impl Runs {
     ///
     /// Inserts a row into `runs` and creates the run directory for
     /// workspace materialization and log storage.
-    pub fn create(&self, meta: &RunMeta) -> Result<Run> {
+    ///
+    /// `transport` is built by the caller via [`Transport::for_new_run`];
+    /// its `Api` auth_token (if any) is persisted in the `auth_token`
+    /// column so server-side request handlers can look it up.
+    pub fn create(&self, meta: &RunMeta, transport: &Transport) -> Result<Run> {
         let id = uuid::Uuid::now_v7().to_string();
         let workspace_path = self.base_dir.join(&id).join("workspace");
+        let auth_token_str = match transport {
+            Transport::Filesystem => None,
+            Transport::Api(api) => Some(api.auth_token.as_str()),
+        };
 
         let db = crate::db::open(&self.db_path)?;
 
@@ -108,8 +165,8 @@ impl Runs {
         self.supersede_existing(&db, &meta.r#ref)?;
 
         db.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path, auth_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
             rusqlite::params![
                 &id,
                 &self.repo,
@@ -121,6 +178,7 @@ impl Runs {
                     std::io::ErrorKind::InvalidData,
                     "workspace path is not valid UTF-8",
                 ))?,
+                auth_token_str,
             ],
         )?;
 
@@ -266,6 +324,10 @@ impl Run {
     /// * `jobs/<job>/sh-<n>.log` — per-sh CRI logs, written by quire-ci
     ///   via `--out-dir`.
     ///
+    /// When `transport` is `Api`, passes `--run-id`, `--server-url`,
+    /// and `QUIRE_CI_TOKEN` to the subprocess instead of the
+    /// filesystem-based flags.
+    ///
     /// Run finishes `Complete` on exit 0, `Failed` otherwise. The DB
     /// rows are written even on failure so the web UI can render
     /// partial progress.
@@ -276,6 +338,7 @@ impl Run {
         meta: &RunMeta,
         secrets: &HashMap<String, SecretString>,
         sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
+        transport: &Transport,
     ) -> Result<()> {
         self.transition(RunState::Active, None)?;
 
@@ -297,16 +360,28 @@ impl Run {
             "dispatching run to quire-ci",
         );
 
-        let status = std::process::Command::new("quire-ci")
-            .arg("run")
-            .arg("--workspace")
-            .arg(workspace)
-            .arg("--out-dir")
-            .arg(&run_dir)
-            .arg("--events")
-            .arg(&events_path)
-            .arg("--dispatch")
-            .arg(&dispatch_path)
+        let mut cmd = std::process::Command::new("quire-ci");
+        cmd.arg("run").arg("--workspace").arg(workspace);
+
+        match transport {
+            Transport::Filesystem => {
+                cmd.arg("--out-dir")
+                    .arg(&run_dir)
+                    .arg("--events")
+                    .arg(&events_path)
+                    .arg("--dispatch")
+                    .arg(&dispatch_path);
+            }
+            Transport::Api(api) => {
+                cmd.arg("--run-id")
+                    .arg(&self.id)
+                    .arg("--server-url")
+                    .arg(&api.server_url);
+                cmd.env("QUIRE_CI_TOKEN", &api.auth_token);
+            }
+        }
+
+        let status = cmd
             .stdout(std::process::Stdio::from(log))
             .stderr(std::process::Stdio::from(log_clone))
             .status()
@@ -630,6 +705,19 @@ pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Res
     Ok(())
 }
 
+/// Mint a 32-character alphanumeric bearer token from the OS CSPRNG.
+///
+/// ~190 bits of entropy, opaque to the holder. Used as the per-run
+/// auth secret for the API transport; stored in the `runs.auth_token`
+/// column and passed to quire-ci via `QUIRE_CI_TOKEN`.
+fn mint_auth_token() -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,16 +893,97 @@ mod tests {
     fn create_generates_uuidv7_id() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
+        let run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         let parsed = uuid::Uuid::parse_str(run.id()).expect("should be valid UUID");
         assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
+    fn create_with_filesystem_leaves_auth_token_null() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
+
+        let conn = crate::db::open(&quire.db_path()).expect("db");
+        let token: Option<String> = conn
+            .query_row(
+                "SELECT auth_token FROM runs WHERE id = ?1",
+                rusqlite::params![run.id()],
+                |row| row.get(0),
+            )
+            .expect("row");
+        assert!(
+            token.is_none(),
+            "filesystem transport should not mint a token"
+        );
+    }
+
+    #[test]
+    fn create_with_api_persists_minted_auth_token() {
+        let (_dir, quire) = tmp_quire();
+        let runs = test_runs(&quire);
+        let transport = Transport::for_new_run(TransportMode::Api, Some("http://127.0.0.1:3000"))
+            .expect("for_new_run");
+        let run = runs.create(&test_meta(), &transport).expect("create");
+
+        let Transport::Api(api) = &transport else {
+            panic!("expected Api transport");
+        };
+
+        let conn = crate::db::open(&quire.db_path()).expect("db");
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT auth_token FROM runs WHERE id = ?1",
+                rusqlite::params![run.id()],
+                |row| row.get(0),
+            )
+            .expect("row");
+        assert_eq!(stored.as_deref(), Some(api.auth_token.as_str()));
+    }
+
+    #[test]
+    fn for_new_run_mints_alphanumeric_token() {
+        let transport = Transport::for_new_run(TransportMode::Api, Some("http://127.0.0.1:3000"))
+            .expect("for_new_run");
+        let Transport::Api(api) = transport else {
+            panic!("expected Api transport");
+        };
+        assert_eq!(api.server_url, "http://127.0.0.1:3000");
+        assert_eq!(api.auth_token.len(), 32);
+        assert!(
+            api.auth_token.chars().all(|c| c.is_ascii_alphanumeric()),
+            "token should be alphanumeric, got {:?}",
+            api.auth_token
+        );
+    }
+
+    #[test]
+    fn for_new_run_rejects_api_without_server_url() {
+        match Transport::for_new_run(TransportMode::Api, None) {
+            Ok(_) => panic!("for_new_run should fail without server_url"),
+            Err(Error::ApiTransportMissingServerUrl) => {}
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn mint_auth_token_returns_unique_values() {
+        let a = mint_auth_token();
+        let b = mint_auth_token();
+        assert_ne!(a, b, "two mints should not collide");
     }
 
     #[test]
     fn create_writes_row_in_pending_state() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
+        let run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
 
         assert_eq!(run.state(), RunState::Pending);
 
@@ -837,7 +1006,9 @@ mod tests {
     fn transition_updates_state_in_db() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         let id = run.id().to_string();
 
         run.transition(RunState::Active, None).expect("transition");
@@ -858,7 +1029,9 @@ mod tests {
     fn transition_stamps_started_at_on_active() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
         let started = run.read_started_at().expect("read started_at");
@@ -871,7 +1044,9 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
-        let mut completed = runs.create(&test_meta()).expect("create");
+        let mut completed = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         completed
             .transition(RunState::Active, None)
             .expect("to active");
@@ -880,7 +1055,9 @@ mod tests {
             .expect("to complete");
         assert!(completed.read_finished_at().expect("read").is_some());
 
-        let mut failed = runs.create(&test_meta()).expect("create");
+        let mut failed = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         failed
             .transition(RunState::Active, None)
             .expect("to active");
@@ -894,7 +1071,9 @@ mod tests {
     fn transition_records_failure_kind_on_failed() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         let id = run.id().to_string();
 
         run.transition(RunState::Active, None).expect("to active");
@@ -916,7 +1095,9 @@ mod tests {
     fn transition_skips_failure_kind_when_none() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         let id = run.id().to_string();
 
         run.transition(RunState::Active, None).expect("to active");
@@ -939,11 +1120,15 @@ mod tests {
         let runs = test_runs(&quire);
 
         // Pending -> Failed is not allowed (must go via Active).
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         assert!(run.transition(RunState::Failed, None).is_err());
 
         // Terminal -> anything is not allowed.
-        let mut completed = runs.create(&test_meta()).expect("create");
+        let mut completed = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         completed
             .transition(RunState::Active, None)
             .expect("to active");
@@ -958,7 +1143,9 @@ mod tests {
     fn transition_preserves_started_at_through_completion() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
         let started = run.read_started_at().expect("read started_at");
@@ -976,7 +1163,9 @@ mod tests {
     fn transition_full_lifecycle() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
         run.transition(RunState::Complete, None)
@@ -989,7 +1178,9 @@ mod tests {
     fn reconcile_fails_pending_orphans() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
+        let run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         let id = run.id().to_string();
 
         reconcile_orphans(&quire.db_path()).expect("reconcile");
@@ -1002,7 +1193,9 @@ mod tests {
     fn reconcile_fails_active_orphans() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         run.transition(RunState::Active, None).expect("to active");
         let id = run.id().to_string();
 
@@ -1016,7 +1209,9 @@ mod tests {
     fn reconcile_leaves_complete_runs_alone() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         run.transition(RunState::Active, None).expect("to active");
         run.transition(RunState::Complete, None)
             .expect("to complete");
@@ -1040,7 +1235,9 @@ mod tests {
 
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
+        let run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         let run_id = run.id().to_string();
 
         let events = vec![
@@ -1145,7 +1342,9 @@ mod tests {
     fn ingest_events_treats_missing_file_as_empty() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let run = runs.create(&test_meta()).expect("create");
+        let run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
 
         let missing = run.path().join("events.jsonl");
         run.ingest_events(&missing)
@@ -1168,7 +1367,9 @@ mod tests {
         let runs = test_runs(&quire);
 
         // Create first run.
-        let run1 = runs.create(&test_meta()).expect("create run1");
+        let run1 = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create run1");
         let run1_id = run1.id().to_string();
         assert_eq!(run1.state(), RunState::Pending);
 
@@ -1178,7 +1379,9 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let run2 = runs.create(&meta2).expect("create run2");
+        let run2 = runs
+            .create(&meta2, &Transport::Filesystem)
+            .expect("create run2");
         assert_eq!(run2.state(), RunState::Pending);
 
         // First run should now be superseded.
@@ -1196,7 +1399,9 @@ mod tests {
         let runs = test_runs(&quire);
 
         // Create and activate first run.
-        let mut run1 = runs.create(&test_meta()).expect("create run1");
+        let mut run1 = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create run1");
         let run1_id = run1.id().to_string();
         run1.transition(RunState::Active, None).expect("to active");
 
@@ -1206,7 +1411,9 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let run2 = runs.create(&meta2).expect("create run2");
+        let run2 = runs
+            .create(&meta2, &Transport::Filesystem)
+            .expect("create run2");
         assert_eq!(run2.state(), RunState::Pending);
 
         // First run should be superseded.
@@ -1224,7 +1431,9 @@ mod tests {
         let runs = test_runs(&quire);
 
         // Create run for main.
-        let run1 = runs.create(&test_meta()).expect("create run1");
+        let run1 = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create run1");
         let run1_id = run1.id().to_string();
 
         // Create run for a different ref.
@@ -1233,7 +1442,9 @@ mod tests {
             r#ref: "refs/heads/feature".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let _run2 = runs.create(&meta2).expect("create run2");
+        let _run2 = runs
+            .create(&meta2, &Transport::Filesystem)
+            .expect("create run2");
 
         // First run should still be pending.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
@@ -1246,7 +1457,9 @@ mod tests {
         let runs = test_runs(&quire);
 
         // Create and complete first run.
-        let mut run1 = runs.create(&test_meta()).expect("create run1");
+        let mut run1 = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create run1");
         let run1_id = run1.id().to_string();
         run1.transition(RunState::Active, None).expect("to active");
         run1.transition(RunState::Complete, None)
@@ -1258,7 +1471,9 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let _run2 = runs.create(&meta2).expect("create run2");
+        let _run2 = runs
+            .create(&meta2, &Transport::Filesystem)
+            .expect("create run2");
 
         // First run should still be complete.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
@@ -1269,7 +1484,9 @@ mod tests {
     fn transition_allows_pending_to_superseded() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         run.transition(RunState::Superseded, None)
             .expect("to superseded");
         assert_eq!(run.state(), RunState::Superseded);
@@ -1279,7 +1496,9 @@ mod tests {
     fn transition_allows_active_to_superseded() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         run.transition(RunState::Active, None).expect("to active");
         run.transition(RunState::Superseded, None)
             .expect("to superseded");
@@ -1290,7 +1509,9 @@ mod tests {
     fn supersede_sets_finished_at() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let mut run = runs.create(&test_meta()).expect("create");
+        let mut run = runs
+            .create(&test_meta(), &Transport::Filesystem)
+            .expect("create");
         run.transition(RunState::Active, None).expect("to active");
 
         assert!(

@@ -6,7 +6,7 @@ use miette::{Context, IntoDiagnostic, Result, ensure};
 
 pub mod web;
 
-use crate::ci::{Ci, Executor, Runs};
+use crate::ci::{Ci, Executor, Runs, TransportMode};
 use crate::{Error, Result as AppResult};
 use quire_core::fennel::Fennel;
 use quire_core::secret::SecretString;
@@ -15,6 +15,7 @@ use quire_core::secret::SecretString;
 ///
 /// Top-level stays open for future keys (notifications defaults, SMTP, etc.).
 #[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
 pub struct GlobalConfig {
     #[serde(default)]
     pub sentry: Option<SentryConfig>,
@@ -22,10 +23,30 @@ pub struct GlobalConfig {
     /// Each value is a `SecretString` (plain literal or `{:file "..."}`).
     #[serde(default)]
     pub secrets: HashMap<String, SecretString>,
+    /// Base URL the orchestrator advertises to quire-ci over the API
+    /// transport (e.g. `http://127.0.0.1:3000`). Top-level because it
+    /// describes the server itself, not CI; once the filesystem
+    /// transport is retired it stays put.
+    #[serde(default)]
+    pub server_url: Option<String>,
+    /// CI configuration.
+    #[serde(default)]
+    pub ci: CiConfig,
+}
+
+#[derive(serde::Deserialize, Debug, Default)]
+pub struct CiConfig {
     /// How the orchestrator dispatches CI runs. Defaults to shelling
     /// out to the `quire-ci` binary via `Executor::QuireCi`.
     #[serde(default)]
     pub executor: Executor,
+    /// Transport for CI ↔ server communication.
+    ///
+    /// `"filesystem"` (default) writes dispatch/events/logs to disk;
+    /// `"api"` uses the HTTP API with bearer-token auth (requires
+    /// the top-level `server-url`).
+    #[serde(default)]
+    pub transport: TransportMode,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -385,6 +406,35 @@ mod tests {
         let q = Quire::new(dir.path().to_path_buf());
         let path = dir.path().join("repos").join("foo"); // missing .git
         assert!(q.repo_from_path(&path).is_err());
+    }
+
+    #[test]
+    fn global_config_ci_defaults_to_filesystem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(&config_path, "{}").expect("write");
+
+        let q = Quire::new(dir.path().to_path_buf());
+        let config = q.global_config().expect("global_config should load");
+        assert_eq!(config.ci.transport, TransportMode::Filesystem);
+        assert_eq!(config.ci.executor, Executor::QuireCi);
+        assert!(config.server_url.is_none());
+    }
+
+    #[test]
+    fn global_config_parses_api_transport_and_server_url() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
+        fs_err::write(
+            &config_path,
+            r#"{:server-url "http://127.0.0.1:3000" :ci {:transport :api}}"#,
+        )
+        .expect("write");
+
+        let q = Quire::new(dir.path().to_path_buf());
+        let config = q.global_config().expect("global_config should load");
+        assert_eq!(config.ci.transport, TransportMode::Api);
+        assert_eq!(config.server_url.as_deref(), Some("http://127.0.0.1:3000"));
     }
 
     #[test]

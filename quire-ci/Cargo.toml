@@ -10,6 +10,7 @@ jiff = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 mlua = { workspace = true }
 quire-core = { path = "../quire-core" }
+reqwest = { version = "*", features = ["rustls"], default-features = false }
 sentry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 use quire::Quire;
-use quire::ci::{Ci, CommitRef, RunMeta, Runs};
+use quire::ci::{Ci, CommitRef, RunMeta, Runs, Transport};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -74,7 +74,10 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         pushed_at: jiff::Timestamp::now(),
     };
 
-    let run = runs.create(&meta)?;
+    // Local `quire ci run` always uses filesystem transport; it never
+    // talks to the server, so no server_url is needed.
+    let transport = Transport::Filesystem;
+    let run = runs.create(&meta, &transport)?;
     let run_id = run.id().to_string();
     println!(
         "Run {}: executing at {} ({})",
@@ -86,8 +89,14 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
         .into_diagnostic()?;
-    let exec_result =
-        run.execute_via_quire_ci(&repo_path.join(".git"), &workspace, &meta, &secrets, None);
+    let exec_result = run.execute_via_quire_ci(
+        &repo_path.join(".git"),
+        &workspace,
+        &meta,
+        &secrets,
+        None,
+        &transport,
+    );
 
     // Print the combined quire-ci log regardless of outcome.
     let log_path = tmp.path().join(&run_id).join("quire-ci.log");
