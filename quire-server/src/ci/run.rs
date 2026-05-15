@@ -412,9 +412,16 @@ impl Run {
             }
         };
 
-        // RunFinished is the sole signal for outcome: present means quire-ci
-        // reached the end cleanly; absent means it crashed or was killed.
-        // The exit code is kept in the error for diagnostics only.
+        if !status.success() {
+            self.transition(RunState::Failed, Some("process-crashed"))?;
+            return Err(Error::ProcessFailed {
+                exit: status.code(),
+            });
+        }
+
+        // Exit 0: RunFinished determines the pipeline outcome. Absent means
+        // quire-ci exited cleanly but never reached the terminal event —
+        // treat that as a crash too.
         match run_outcome {
             Some(quire_core::ci::event::RunOutcome::Success) => {
                 self.transition(RunState::Complete, None)?;
