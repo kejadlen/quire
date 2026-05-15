@@ -181,9 +181,6 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 }
 
 /// Set up Sentry trace scope and run CI for a single ref.
-///
-/// `ProcessFailed` is logged at info (user-pipeline failure, visible in the
-/// UI via run state); everything else is logged at error (operational).
 fn run_ref(
     ctx: &TriggerContext<'_>,
     pushed_at: jiff::Timestamp,
@@ -219,21 +216,12 @@ fn run_ref(
                 &transport,
                 sentry_handoff.as_ref(),
             ) {
-                if matches!(e, error::Error::ProcessFailed { .. }) {
-                    tracing::info!(
-                        repo = %ctx.event_repo,
-                        sha = %push_ref.new_sha, // cov-excl-line
-                        error = %e,
-                        "ci run finished with non-zero exit",
-                    );
-                } else {
-                    tracing::error!(
-                        repo = %ctx.event_repo,
-                        sha = %push_ref.new_sha, // cov-excl-line
-                        error = &e as &(dyn std::error::Error + 'static),
-                        "CI trigger failed",
-                    );
-                }
+                tracing::error!(
+                    repo = %ctx.event_repo,
+                    sha = %push_ref.new_sha, // cov-excl-line
+                    error = &e as &(dyn std::error::Error + 'static),
+                    "CI trigger failed",
+                );
             }
         },
     );
@@ -495,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn trigger_ref_drives_run_to_complete_with_fake_quire_ci() {
+    fn run_ref_inner_drives_run_to_complete_with_fake_quire_ci() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
@@ -544,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn trigger_ref_transitions_to_failed_when_quire_ci_exits_nonzero() {
+    fn run_ref_inner_transitions_to_failed_when_process_crashes() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
@@ -568,7 +556,7 @@ mod tests {
         let err = trigger_result.expect_err("should fail when quire-ci exits nonzero");
         assert!(
             err.to_string().contains("quire-ci exited"),
-            "expected QuireCiExit error, got: {err}"
+            "expected ProcessFailed error, got: {err}"
         );
 
         let conn = crate::db::open(&quire.db_path()).expect("db");

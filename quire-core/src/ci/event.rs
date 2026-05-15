@@ -19,6 +19,14 @@ pub enum JobOutcome {
     Failed,
 }
 
+/// Outcome of the complete pipeline run, carried by [`EventKind::RunFinished`].
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    Success,
+    PipelineFailure,
+}
+
 /// A single event in the run's structured output stream.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Event {
@@ -41,6 +49,10 @@ pub enum EventKind {
     ShStarted { job_id: String, cmd: String },
     /// An sh process exited.
     ShFinished { job_id: String, exit_code: i32 },
+    /// The pipeline run has finished cleanly. Always the last event in
+    /// the stream — its presence signals that quire-ci ran to completion
+    /// rather than crashing mid-run.
+    RunFinished { outcome: RunOutcome },
 }
 
 #[cfg(test)]

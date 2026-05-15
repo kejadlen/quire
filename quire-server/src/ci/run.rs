@@ -397,26 +397,36 @@ impl Run {
             );
         }
 
-        // Ingest events whether or not the run succeeded — partial
-        // results are still useful in the UI. A failure to read or
-        // parse the file goes to the log but doesn't mask the run's
-        // own pass/fail outcome.
-        if let Err(e) = self.ingest_events(&events_path) {
-            tracing::warn!(
-                run_id = %self.id,
-                error = %e,
-                "failed to ingest quire-ci events; jobs/sh_events rows may be incomplete"
-            );
-        }
+        // Ingest events regardless of exit — partial results are still
+        // useful in the UI. A failure to read or parse goes to the log
+        // but doesn't mask the run's own pass/fail outcome.
+        let run_outcome = match self.ingest_events(&events_path) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                tracing::warn!(
+                    run_id = %self.id,
+                    error = %e,
+                    "failed to ingest quire-ci events; jobs/sh_events rows may be incomplete"
+                );
+                None
+            }
+        };
 
         if !status.success() {
-            self.transition(RunState::Failed, Some("quire-ci-exit"))?;
+            self.transition(RunState::Failed, Some("process-crashed"))?;
             return Err(Error::ProcessFailed {
                 exit: status.code(),
             });
         }
 
-        self.transition(RunState::Complete, None)?;
+        match run_outcome {
+            Some(quire_core::ci::event::RunOutcome::PipelineFailure) => {
+                self.transition(RunState::Failed, Some("pipeline-failure"))?;
+            }
+            _ => {
+                self.transition(RunState::Complete, None)?;
+            }
+        }
         Ok(())
     }
 
@@ -426,12 +436,12 @@ impl Run {
     /// `(run_id, job_id)` in `jobs`, and the wire format interleaves
     /// sh events with their owning job. Pass 1 inserts every job row
     /// (paired by `job_id`); pass 2 inserts sh events.
-    fn ingest_events(&self, path: &Path) -> Result<()> {
-        use quire_core::ci::event::{Event, EventKind, JobOutcome};
+    fn ingest_events(&self, path: &Path) -> Result<Option<quire_core::ci::event::RunOutcome>> {
+        use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 
         let bytes = match fs_err::read(path) {
             Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
         let events: Vec<Event> = bytes
@@ -448,6 +458,7 @@ impl Run {
 
         // Pass 1: jobs rows. Pair JobStarted with JobFinished by job_id.
         let mut pending_jobs: HashMap<&str, i64> = HashMap::new();
+        let mut run_outcome: Option<RunOutcome> = None;
         for event in &events {
             match &event.kind {
                 EventKind::JobStarted { job_id } => {
@@ -464,6 +475,9 @@ impl Run {
                          VALUES (?1, ?2, ?3, ?4, ?5)",
                         rusqlite::params![&self.id, job_id, state, started_at, event.at_ms],
                     )?;
+                }
+                EventKind::RunFinished { outcome } => {
+                    run_outcome = Some(*outcome);
                 }
                 EventKind::ShStarted { .. } | EventKind::ShFinished { .. } => {}
             }
@@ -488,11 +502,13 @@ impl Run {
                         rusqlite::params![&self.id, job_id, started_at, event.at_ms, exit_code, cmd],
                     )?;
                 }
-                EventKind::JobStarted { .. } | EventKind::JobFinished { .. } => {}
+                EventKind::JobStarted { .. }
+                | EventKind::JobFinished { .. }
+                | EventKind::RunFinished { .. } => {}
             }
         }
 
-        Ok(())
+        Ok(run_outcome)
     }
 
     /// Transition the run from its current state to a new state.
@@ -1220,7 +1236,7 @@ mod tests {
 
     #[test]
     fn ingest_events_writes_jobs_and_sh_events_rows() {
-        use quire_core::ci::event::{Event, EventKind, JobOutcome};
+        use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
@@ -1270,6 +1286,12 @@ mod tests {
                     outcome: JobOutcome::Failed,
                 },
             },
+            Event {
+                at_ms: 230,
+                kind: EventKind::RunFinished {
+                    outcome: RunOutcome::PipelineFailure,
+                },
+            },
         ];
 
         let events_path = run.path().join("events.jsonl");
@@ -1280,7 +1302,8 @@ mod tests {
         }
         fs_err::write(&events_path, bytes).expect("write events.jsonl");
 
-        run.ingest_events(&events_path).expect("ingest");
+        let outcome = run.ingest_events(&events_path).expect("ingest");
+        assert_eq!(outcome, Some(RunOutcome::PipelineFailure));
 
         let db = crate::db::open(&quire.db_path()).expect("open db");
         let jobs: Vec<(String, String, i64, i64)> = db
@@ -1336,8 +1359,10 @@ mod tests {
             .expect("create");
 
         let missing = run.path().join("events.jsonl");
-        run.ingest_events(&missing)
+        let outcome = run
+            .ingest_events(&missing)
             .expect("missing file should not error");
+        assert!(outcome.is_none(), "missing file yields no outcome");
 
         let db = crate::db::open(&quire.db_path()).expect("open db");
         let count: i64 = db

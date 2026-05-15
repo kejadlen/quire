@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use clap::Parser;
 use miette::IntoDiagnostic;
-use quire_core::ci::event::{Event, EventKind, JobOutcome};
+use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
@@ -547,15 +547,24 @@ fn run_pipeline(
         }
     }
 
-    if let Some((job_id, err)) = failed_job {
-        // Log at warn so it appears in stderr (and the run's CRI log
-        // viewed in the UI) without tripping sentry-tracing's ERROR →
-        // Event mapping. Job failures are user-pipeline issues, not
-        // ops, and miette prints the full diagnostic to stderr on the
-        // returned Err anyway.
-        tracing::warn!(job = %job_id, error = &err as &(dyn std::error::Error + 'static), "job run-fn failed");
-        return Err(err.into());
-    }
+    let run_outcome = if let Some((job_id, err)) = &failed_job {
+        // Log at warn so it appears in stderr (and the run's log viewed
+        // in the UI) without tripping sentry-tracing's ERROR → Event
+        // mapping. Job failures are user-pipeline issues, not ops.
+        tracing::warn!(job = %job_id, error = err as &(dyn std::error::Error + 'static), "job run-fn failed");
+        RunOutcome::PipelineFailure
+    } else {
+        RunOutcome::Success
+    };
+
+    sink.borrow_mut()
+        .emit(Event {
+            at_ms: jiff::Timestamp::now().as_millisecond(),
+            kind: EventKind::RunFinished {
+                outcome: run_outcome,
+            },
+        })
+        .expect("emit run_finished");
 
     Ok(())
 }
