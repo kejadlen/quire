@@ -192,7 +192,7 @@ fn run_ref(
     let sentry_handoff =
         ctx.sentry_dsn
             .as_ref()
-            .map(|dsn| quire_core::ci::dispatch::SentryHandoff {
+            .map(|dsn| quire_core::ci::bootstrap::SentryHandoff {
                 dsn: dsn.clone(),
                 trace_id: trace_id.to_string(),
             });
@@ -233,7 +233,7 @@ fn run_ref_inner(
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     transport: &Transport,
-    sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
+    sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
 ) -> error::Result<()> {
     let ci = ctx.repo.ci();
 

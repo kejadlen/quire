@@ -54,8 +54,8 @@ enum Commands {
 
     /// Run the whole pipeline against the workspace, in topo order.
     ///
-    /// `--dispatch <path>` points at a JSON file (see
-    /// [`quire_core::ci::dispatch::Dispatch`]) that supplies push
+    /// `--bootstrap <path>` points at a JSON file (see
+    /// [`quire_core::ci::bootstrap::Bootstrap`]) that supplies push
     /// metadata and secrets when the orchestrator dispatches via
     /// `:executor :quire-ci`. Standalone invocations omit the flag
     /// and fall back to placeholder meta with no secrets — `(secret
@@ -77,12 +77,12 @@ enum Commands {
         #[arg(long)]
         out_dir: Option<PathBuf>,
 
-        /// Path to a JSON dispatch file produced by the orchestrator.
+        /// Path to a JSON bootstrap file produced by the orchestrator.
         /// Carries push metadata and the secrets the run-fns may
         /// resolve. Omit for standalone runs (placeholder meta, no
         /// secrets).
         #[arg(long)]
-        dispatch: Option<PathBuf>,
+        bootstrap: Option<PathBuf>,
 
         #[command(flatten)]
         transport: TransportFlags,
@@ -235,7 +235,7 @@ fn main() -> miette::Result<()> {
         Commands::Run {
             events,
             out_dir,
-            dispatch,
+            bootstrap,
             transport,
         } => {
             let sink: Box<dyn EventSink> = match events {
@@ -259,8 +259,8 @@ fn main() -> miette::Result<()> {
             };
             let auth_token = std::env::var("QUIRE_CI_TOKEN").ok();
             let transport = transport.resolve(auth_token)?;
-            let (git_dir, meta, secrets, sentry_handoff) = match dispatch {
-                Some(path) => load_dispatch(&path)?,
+            let (git_dir, meta, secrets, sentry_handoff) = match bootstrap {
+                Some(path) => load_bootstrap(&path)?,
                 None => (
                     cli.workspace.join(".git"),
                     placeholder_meta(),
@@ -313,7 +313,7 @@ fn main() -> miette::Result<()> {
 /// trace_id (shouldn't happen — the orchestrator emits the canonical
 /// hex form) is logged and skipped rather than aborting Sentry init.
 fn init_sentry(
-    handoff: Option<&quire_core::ci::dispatch::SentryHandoff>,
+    handoff: Option<&quire_core::ci::bootstrap::SentryHandoff>,
     meta: &RunMeta,
 ) -> Option<sentry::ClientInitGuard> {
     let handoff = handoff?;
@@ -341,7 +341,7 @@ fn init_sentry(
                 tracing::warn!(
                     trace_id = %handoff.trace_id,
                     error = %e,
-                    "malformed trace_id in dispatch; quire-ci events won't link to orchestrator",
+                    "malformed trace_id in bootstrap; quire-ci events won't link to orchestrator",
                 );
             }
         }
@@ -372,7 +372,7 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
 }
 
 /// Standalone runs synthesize a placeholder `quire/push`. Real meta
-/// arrives via `--dispatch` from the orchestrator.
+/// arrives via `--bootstrap` from the orchestrator.
 fn placeholder_meta() -> RunMeta {
     RunMeta {
         sha: "0".repeat(40),
@@ -381,27 +381,27 @@ fn placeholder_meta() -> RunMeta {
     }
 }
 
-/// Read and parse the dispatch file the orchestrator wrote before
+/// Read and parse the bootstrap file the orchestrator wrote before
 /// spawning. Wraps revealed secret values back into `SecretString`.
 ///
 /// Unlinks the file as soon as the bytes are in memory — secrets only
-/// need to live on disk for the moment between `write_dispatch` and
+/// need to live on disk for the moment between `write_bootstrap` and
 /// this read, and getting them off disk early limits the blast radius
 /// of a later panic or crash leaving a 0600 file behind.
 ///
 /// The Sentry handoff, when present, carries the DSN and the
-/// orchestrator's trace id — the 0600 dispatch file is the line of
+/// orchestrator's trace id — the 0600 bootstrap file is the line of
 /// defense for both.
 #[allow(clippy::type_complexity)]
-fn load_dispatch(
+fn load_bootstrap(
     path: &std::path::Path,
 ) -> miette::Result<(
     PathBuf,
     RunMeta,
     HashMap<String, quire_core::secret::SecretString>,
-    Option<quire_core::ci::dispatch::SentryHandoff>,
+    Option<quire_core::ci::bootstrap::SentryHandoff>,
 )> {
-    use quire_core::ci::dispatch::Dispatch;
+    use quire_core::ci::bootstrap::Bootstrap;
     use quire_core::secret::SecretString;
 
     let bytes = fs_err::read(path).into_diagnostic()?;
@@ -410,17 +410,17 @@ fn load_dispatch(
         // will best-effort unlink after we exit. But this is a
         // security-relevant cleanup, so it's worth surfacing.
         eprintln!(
-            "warning: failed to remove dispatch file {}: {e}",
+            "warning: failed to remove bootstrap file {}: {e}",
             path.display()
         );
     }
-    let dispatch: Dispatch = serde_json::from_slice(&bytes).into_diagnostic()?;
-    let secrets = dispatch
+    let bootstrap: Bootstrap = serde_json::from_slice(&bytes).into_diagnostic()?;
+    let secrets = bootstrap
         .secrets
         .into_iter()
         .map(|(name, value)| (name, SecretString::from(value)))
         .collect();
-    Ok((dispatch.git_dir, dispatch.meta, secrets, dispatch.sentry))
+    Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
 }
 
 fn run_pipeline(
@@ -620,12 +620,12 @@ mod tests {
     }
 
     #[test]
-    fn load_dispatch_unlinks_after_read() {
-        use quire_core::ci::dispatch::Dispatch;
+    fn load_bootstrap_unlinks_after_read() {
+        use quire_core::ci::bootstrap::Bootstrap;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("dispatch.json");
-        let dispatch = Dispatch {
+        let path = dir.path().join("bootstrap.json");
+        let bootstrap = Bootstrap {
             meta: RunMeta {
                 sha: "0".repeat(40),
                 r#ref: "HEAD".to_string(),
@@ -635,10 +635,13 @@ mod tests {
             secrets: HashMap::from([("token".to_string(), "shh".to_string())]),
             sentry: None,
         };
-        fs_err::write(&path, serde_json::to_vec(&dispatch).unwrap()).expect("write");
+        fs_err::write(&path, serde_json::to_vec(&bootstrap).unwrap()).expect("write");
 
-        let (git_dir, meta, secrets, sentry) = load_dispatch(&path).expect("load");
-        assert!(!path.exists(), "dispatch file should be removed after read");
+        let (git_dir, meta, secrets, sentry) = load_bootstrap(&path).expect("load");
+        assert!(
+            !path.exists(),
+            "bootstrap file should be removed after read"
+        );
         assert_eq!(git_dir, PathBuf::from("/tmp/repo.git"));
         assert_eq!(meta.r#ref, "HEAD");
         assert_eq!(secrets.len(), 1);

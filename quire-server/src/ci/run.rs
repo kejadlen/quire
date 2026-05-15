@@ -328,7 +328,7 @@ impl Run {
         workspace: &Path,
         meta: &RunMeta,
         secrets: &HashMap<String, SecretString>,
-        sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
+        sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
         transport: &Transport,
     ) -> Result<()> {
         self.transition(RunState::Active, None)?;
@@ -336,13 +336,13 @@ impl Run {
         let run_dir = self.path();
         let log_path = run_dir.join("quire-ci.log");
         let events_path = run_dir.join("events.jsonl");
-        let dispatch_path = run_dir.join("dispatch.json");
+        let bootstrap_path = run_dir.join("bootstrap.json");
         // fs_err for the path-bearing IO error; unwrap to std::fs::File so
         // it's convertible into Stdio.
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_dispatch(&dispatch_path, git_dir, meta, secrets, sentry)?;
+        write_bootstrap(&bootstrap_path, git_dir, meta, secrets, sentry)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -360,8 +360,8 @@ impl Run {
                     .arg(&run_dir)
                     .arg("--events")
                     .arg(&events_path)
-                    .arg("--dispatch")
-                    .arg(&dispatch_path);
+                    .arg("--bootstrap")
+                    .arg(&bootstrap_path);
             }
             Transport::Api(api) => {
                 cmd.arg("--run-id")
@@ -382,18 +382,18 @@ impl Run {
                 source,
             })?;
 
-        // quire-ci unlinks the dispatch file after `load_dispatch`;
+        // quire-ci unlinks the bootstrap file after `load_bootstrap`;
         // this is a best-effort safety net for paths where it didn't
         // get that far (spawn failed mid-exec, arg parsing rejected
         // input, panic before read). `NotFound` is the expected case.
-        if let Err(e) = fs_err::remove_file(&dispatch_path)
+        if let Err(e) = fs_err::remove_file(&bootstrap_path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(
                 run_id = %self.id,
-                path = %dispatch_path.display(),
+                path = %bootstrap_path.display(),
                 error = %e,
-                "failed to remove dispatch file after run"
+                "failed to remove bootstrap file after run"
             );
         }
 
@@ -638,18 +638,18 @@ impl Run {
     }
 }
 
-/// Serialize the dispatch payload as JSON and write it to `path` with
+/// Serialize the bootstrap payload as JSON and write it to `path` with
 /// owner-only permissions on Unix. Secrets cross as plaintext so the
 /// 0600 mode is the line of defense against other local users; failure
-/// to set the mode aborts the dispatch (better than leaking).
-fn write_dispatch(
+/// to set the mode aborts the write (better than leaking).
+fn write_bootstrap(
     path: &Path,
     git_dir: &Path,
     meta: &RunMeta,
     secrets: &HashMap<String, SecretString>,
-    sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
+    sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
 ) -> Result<()> {
-    use quire_core::ci::dispatch::{Dispatch, SentryHandoff};
+    use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 
     let mut revealed: HashMap<String, String> = HashMap::with_capacity(secrets.len());
     for (name, value) in secrets {
@@ -658,7 +658,7 @@ fn write_dispatch(
             value.reveal().map_err(Error::Secret)?.to_string(),
         );
     }
-    let dispatch = Dispatch {
+    let bootstrap = Bootstrap {
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
         secrets: revealed,
@@ -667,7 +667,7 @@ fn write_dispatch(
             trace_id: s.trace_id.clone(),
         }),
     };
-    let json = serde_json::to_vec_pretty(&dispatch).map_err(std::io::Error::other)?;
+    let json = serde_json::to_vec_pretty(&bootstrap).map_err(std::io::Error::other)?;
 
     // Open with mode 0600 from the start so there's no window where
     // the file is world-readable.
@@ -867,26 +867,26 @@ mod tests {
     }
 
     #[test]
-    fn write_dispatch_records_git_dir_for_quire_ci() {
-        use quire_core::ci::dispatch::Dispatch;
+    fn write_bootstrap_records_git_dir_for_quire_ci() {
+        use quire_core::ci::bootstrap::Bootstrap;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let dispatch_path = dir.path().join("dispatch.json");
+        let bootstrap_path = dir.path().join("bootstrap.json");
         let git_dir = dir.path().join("repos").join("test.git");
 
-        write_dispatch(
-            &dispatch_path,
+        write_bootstrap(
+            &bootstrap_path,
             &git_dir,
             &test_meta(),
             &HashMap::new(),
             None,
         )
-        .expect("write_dispatch");
+        .expect("write_bootstrap");
 
-        let bytes = fs_err::read(&dispatch_path).expect("read dispatch");
-        let dispatch: Dispatch = serde_json::from_slice(&bytes).expect("parse dispatch");
+        let bytes = fs_err::read(&bootstrap_path).expect("read bootstrap");
+        let bootstrap: Bootstrap = serde_json::from_slice(&bytes).expect("parse bootstrap");
         assert_eq!(
-            dispatch.git_dir, git_dir,
+            bootstrap.git_dir, git_dir,
             "quire-ci needs the bare repo path to set GIT_DIR for the mirror job"
         );
     }

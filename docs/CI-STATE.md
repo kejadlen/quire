@@ -164,7 +164,7 @@ sequenceDiagram
 
     Trigger->>Run: execute_via_quire_ci()
     Run->>DB: UPDATE runs SET state='active'
-    Run->>CI: spawn (--dispatch, --events, --out-dir)
+    Run->>CI: spawn (--bootstrap, --events, --out-dir)
     CI->>CI: compile .quire/ci.fnl
     loop per job in topo order
       CI->>CI: enter_job / run-fn / leave_job
