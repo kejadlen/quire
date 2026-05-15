@@ -425,17 +425,40 @@ fn load_dispatch(
 
 fn run_pipeline(
     workspace: PathBuf,
-    sink: Box<dyn EventSink>,
+    mut sink: Box<dyn EventSink>,
     log_dir: PathBuf,
     git_dir: PathBuf,
     meta: RunMeta,
     secrets: HashMap<String, quire_core::secret::SecretString>,
     _transport: TransportArgs,
 ) -> miette::Result<()> {
-    let pipeline = compile_at(&workspace)?;
+    let pipeline = match compile_at(&workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                error = &*e as &(dyn std::error::Error + 'static),
+                "ci.fnl failed to compile"
+            );
+            sink.emit(Event {
+                at_ms: jiff::Timestamp::now().as_millisecond(),
+                kind: EventKind::RunFinished {
+                    outcome: RunOutcome::PipelineFailure,
+                },
+            })
+            .expect("emit run_finished");
+            return Ok(());
+        }
+    };
 
     let job_ids: Vec<String> = pipeline.jobs().iter().map(|j| j.id.clone()).collect();
     if job_ids.is_empty() {
+        sink.emit(Event {
+            at_ms: jiff::Timestamp::now().as_millisecond(),
+            kind: EventKind::RunFinished {
+                outcome: RunOutcome::Success,
+            },
+        })
+        .expect("emit run_finished");
         return Ok(());
     }
 
