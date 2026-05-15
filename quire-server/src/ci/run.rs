@@ -397,9 +397,9 @@ impl Run {
             );
         }
 
-        // Ingest events regardless of exit — partial results are still
-        // useful in the UI. A failure to read or parse goes to the log
-        // but doesn't mask the run's own pass/fail outcome.
+        // Ingest events before checking outcome — partial results from a
+        // crashed run are still useful in the UI. A parse failure is
+        // logged but doesn't mask the run outcome.
         let run_outcome = match self.ingest_events(&events_path) {
             Ok(outcome) => outcome,
             Err(e) => {
@@ -412,19 +412,21 @@ impl Run {
             }
         };
 
-        if !status.success() {
-            self.transition(RunState::Failed, Some("process-crashed"))?;
-            return Err(Error::ProcessFailed {
-                exit: status.code(),
-            });
-        }
-
+        // RunFinished is the sole signal for outcome: present means quire-ci
+        // reached the end cleanly; absent means it crashed or was killed.
+        // The exit code is kept in the error for diagnostics only.
         match run_outcome {
+            Some(quire_core::ci::event::RunOutcome::Success) => {
+                self.transition(RunState::Complete, None)?;
+            }
             Some(quire_core::ci::event::RunOutcome::PipelineFailure) => {
                 self.transition(RunState::Failed, Some("pipeline-failure"))?;
             }
-            _ => {
-                self.transition(RunState::Complete, None)?;
+            None => {
+                self.transition(RunState::Failed, Some("process-crashed"))?;
+                return Err(Error::ProcessFailed {
+                    exit: status.code(),
+                });
             }
         }
         Ok(())

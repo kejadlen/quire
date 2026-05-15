@@ -441,8 +441,27 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir for fake quire-ci");
         if cfg!(unix) {
             let path = dir.path().join("quire-ci");
-            fs_err::write(&path, format!("#!/bin/sh\nexit {exit_code}\n"))
-                .expect("write fake quire-ci");
+            // For a clean exit, write RunFinished(success) to the --events
+            // file so the server can determine the outcome from events alone.
+            let script = if exit_code == 0 {
+                r#"#!/bin/sh
+events=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --events) events="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$events" ] && [ "$events" != "null" ]; then
+  printf '{"at_ms":0,"type":"run_finished","outcome":"success"}\n' > "$events"
+fi
+exit 0
+"#
+                .to_string()
+            } else {
+                format!("#!/bin/sh\nexit {exit_code}\n")
+            };
+            fs_err::write(&path, script).expect("write fake quire-ci");
             use std::os::unix::fs::PermissionsExt;
             fs_err::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod fake quire-ci");
