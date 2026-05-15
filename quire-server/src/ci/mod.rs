@@ -100,6 +100,24 @@ impl Ci {
     }
 }
 
+/// Everything needed to run CI for refs in a single push event, constant
+/// across all refs.
+struct TriggerContext<'a> {
+    run: RunContext<'a>,
+    event_repo: &'a str,
+    transport_mode: TransportMode,
+    port: u16,
+    sentry_dsn: Option<String>,
+}
+
+/// Repo-level context passed into the inner execution function.
+struct RunContext<'a> {
+    repo: &'a Repo,
+    db_path: &'a Path,
+    secrets: &'a HashMap<String, quire_core::secret::SecretString>,
+    executor: Executor,
+}
+
 /// Trigger CI for a push event: scan each updated ref for `.quire/ci.fnl`,
 /// create a run, and evaluate + validate it.
 pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
@@ -135,6 +153,19 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
     });
 
     let db_path = quire.db_path();
+    let ctx = TriggerContext {
+        run: RunContext {
+            repo: &repo,
+            db_path: &db_path,
+            secrets: &config.secrets,
+            executor: config.ci.executor,
+        },
+        event_repo: &event.repo,
+        transport_mode: config.ci.transport,
+        port: config.port,
+        sentry_dsn,
+    };
+
     for push_ref in event.updated_refs() {
         // One trace per push_ref. The trace context is set on the
         // orchestrator's scope for the duration of this iteration and
@@ -145,28 +176,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         // tagging is observable.
         let trace_id = sentry::protocol::TraceId::default();
         let span_id = sentry::protocol::SpanId::default();
-        let sentry_handoff =
-            sentry_dsn
-                .as_ref()
-                .map(|dsn| quire_core::ci::dispatch::SentryHandoff {
-                    dsn: dsn.clone(),
-                    trace_id: trace_id.to_string(),
-                });
-
-        run_ref(
-            &repo,
-            &db_path,
-            &event.repo,
-            event.pushed_at,
-            push_ref,
-            &config.secrets,
-            config.ci.executor,
-            config.ci.transport,
-            config.port,
-            sentry_handoff.as_ref(),
-            trace_id,
-            span_id,
-        );
+        run_ref(&ctx, event.pushed_at, push_ref, trace_id, span_id);
     }
 }
 
@@ -174,22 +184,21 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 ///
 /// `ProcessFailed` is logged at info (user-pipeline failure, visible in the
 /// UI via run state); everything else is logged at error (operational).
-#[allow(clippy::too_many_arguments)]
 fn run_ref(
-    repo: &Repo,
-    db_path: &Path,
-    event_repo: &str,
+    ctx: &TriggerContext<'_>,
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
-    secrets: &HashMap<String, quire_core::secret::SecretString>,
-    executor: Executor,
-    transport_mode: TransportMode,
-    port: u16,
-    sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
     trace_id: sentry::protocol::TraceId,
     span_id: sentry::protocol::SpanId,
 ) {
-    let transport = Transport::for_new_run(transport_mode, port);
+    let transport = Transport::for_new_run(ctx.transport_mode, ctx.port);
+    let sentry_handoff =
+        ctx.sentry_dsn
+            .as_ref()
+            .map(|dsn| quire_core::ci::dispatch::SentryHandoff {
+                dsn: dsn.clone(),
+                trace_id: trace_id.to_string(),
+            });
     sentry::with_scope(
         |scope| {
             scope.set_context(
@@ -204,18 +213,22 @@ fn run_ref(
         },
         || {
             if let Err(e) = run_ref_inner(
-                repo, db_path, pushed_at, push_ref, secrets, executor, &transport, sentry,
+                &ctx.run,
+                pushed_at,
+                push_ref,
+                &transport,
+                sentry_handoff.as_ref(),
             ) {
                 if matches!(e, error::Error::ProcessFailed { .. }) {
                     tracing::info!(
-                        repo = %event_repo,
+                        repo = %ctx.event_repo,
                         sha = %push_ref.new_sha, // cov-excl-line
                         error = %e,
                         "ci run finished with non-zero exit",
                     );
                 } else {
                     tracing::error!(
-                        repo = %event_repo,
+                        repo = %ctx.event_repo,
                         sha = %push_ref.new_sha, // cov-excl-line
                         error = &e as &(dyn std::error::Error + 'static),
                         "CI trigger failed",
@@ -227,18 +240,14 @@ fn run_ref(
 }
 
 /// Create and run CI for a single updated ref.
-#[allow(clippy::too_many_arguments)]
 fn run_ref_inner(
-    repo: &Repo,
-    db_path: &Path,
+    ctx: &RunContext<'_>,
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
-    secrets: &HashMap<String, quire_core::secret::SecretString>,
-    executor: Executor,
     transport: &Transport,
     sentry: Option<&quire_core::ci::dispatch::SentryHandoff>,
 ) -> error::Result<()> {
-    let ci = repo.ci();
+    let ci = ctx.repo.ci();
 
     if ci.source(&push_ref.new_sha)?.is_none() {
         return Ok(());
@@ -250,7 +259,7 @@ fn run_ref_inner(
         pushed_at,
     };
 
-    let run = repo.runs(db_path).create(&meta, transport)?;
+    let run = ctx.repo.runs(ctx.db_path).create(&meta, transport)?;
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
@@ -260,12 +269,19 @@ fn run_ref_inner(
     );
 
     let workspace = run.path().join("workspace");
-    run::materialize_workspace(&repo.path(), &push_ref.new_sha, &workspace)?;
-    match executor {
+    run::materialize_workspace(&ctx.repo.path(), &push_ref.new_sha, &workspace)?;
+    match ctx.executor {
         Executor::Process => {
             // Compilation happens inside quire-ci so a malformed ci.fnl is
             // reported once, with the worker's trace context.
-            run.execute_via_quire_ci(&repo.path(), &workspace, &meta, secrets, sentry, transport)?;
+            run.execute_via_quire_ci(
+                &ctx.repo.path(),
+                &workspace,
+                &meta,
+                ctx.secrets,
+                sentry,
+                transport,
+            )?;
         }
     }
     Ok(())
@@ -413,6 +429,19 @@ mod tests {
         assert!(result.is_err(), "bad Fennel should fail");
     }
 
+    fn run_ctx<'a>(
+        repo: &'a crate::quire::Repo,
+        db_path: &'a std::path::Path,
+        secrets: &'a HashMap<String, quire_core::secret::SecretString>,
+    ) -> RunContext<'a> {
+        RunContext {
+            repo,
+            db_path,
+            secrets,
+            executor: Executor::Process,
+        }
+    }
+
     /// Serialize PATH mutations so concurrent tests don't observe each
     /// other's fake binaries.
     static PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -480,17 +509,11 @@ mod tests {
         };
 
         let (_fake_dir, fake_path) = fake_quire_ci(0);
+        let db_path = quire.db_path();
+        let secrets = HashMap::new();
+        let ctx = run_ctx(&repo, &db_path, &secrets);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(
-                &repo,
-                &quire.db_path(),
-                pushed_at,
-                &push_ref,
-                &HashMap::new(),
-                Executor::Process,
-                &Transport::Filesystem,
-                None,
-            )
+            run_ref_inner(&ctx, pushed_at, &push_ref, &Transport::Filesystem, None)
         });
 
         trigger_result.expect("trigger_ref should succeed with fake quire-ci");
@@ -535,17 +558,11 @@ mod tests {
         };
 
         let (_fake_dir, fake_path) = fake_quire_ci(1);
+        let db_path = quire.db_path();
+        let secrets = HashMap::new();
+        let ctx = run_ctx(&repo, &db_path, &secrets);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(
-                &repo,
-                &quire.db_path(),
-                pushed_at,
-                &push_ref,
-                &HashMap::new(),
-                Executor::Process,
-                &Transport::Filesystem,
-                None,
-            )
+            run_ref_inner(&ctx, pushed_at, &push_ref, &Transport::Filesystem, None)
         });
 
         let err = trigger_result.expect_err("should fail when quire-ci exits nonzero");
@@ -580,17 +597,11 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
         };
 
-        run_ref_inner(
-            &repo,
-            &quire.db_path(),
-            pushed_at,
-            &push_ref,
-            &HashMap::new(),
-            Executor::Process,
-            &Transport::Filesystem,
-            None,
-        )
-        .expect("should succeed without ci.fnl");
+        let db_path = quire.db_path();
+        let secrets = HashMap::new();
+        let ctx = run_ctx(&repo, &db_path, &secrets);
+        run_ref_inner(&ctx, pushed_at, &push_ref, &Transport::Filesystem, None)
+            .expect("should succeed without ci.fnl");
     }
 
     fn push_event(repo: &str, sha: &str) -> PushEvent {
