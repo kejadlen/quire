@@ -41,7 +41,7 @@ pub enum TransportMode {
 
 /// Runtime transport for a single CI run. Built once per run from
 /// the config-shape [`TransportMode`] + the server's listen port,
-/// then passed to `Runs::create` and `Run::execute_via_quire_ci`.
+/// then passed to `Runs::create` and `Run::execute`.
 /// Both variants carry an [`ApiSession`] so quire-ci always receives
 /// session info. Use `None` for local runs where no server is involved.
 #[derive(Clone, Debug)]
@@ -324,7 +324,7 @@ impl Run {
     /// Run finishes `Complete` on exit 0, `Failed` otherwise. The DB
     /// rows are written even on failure so the web UI can render
     /// partial progress.
-    pub fn execute_via_quire_ci(
+    pub fn execute(
         mut self,
         git_dir: &Path,
         workspace: &Path,

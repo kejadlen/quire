@@ -38,7 +38,7 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 ///
 /// Loads the pipeline at the resolved commit (working-copy `@` by
 /// default), creates a transient Run rooted at a tempdir, dispatches
-/// to `quire-ci` via `execute_via_quire_ci`, and prints the combined
+/// to `quire-ci` via `execute`, and prints the combined
 /// log to stdout. The tempdir is removed when the command exits.
 pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
@@ -86,7 +86,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
         .into_diagnostic()?;
-    let exec_result = run.execute_via_quire_ci(
+    let exec_result = run.execute(
         &repo_path.join(".git"),
         &workspace,
         &meta,
