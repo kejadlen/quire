@@ -16,7 +16,7 @@ async fn index() -> String {
     format!("quire {}\n", crate::VERSION)
 }
 
-pub async fn run(quire: &Quire, ci_routes: axum::Router, api_routes: axum::Router) -> Result<()> {
+pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Router) -> Result<()> {
     let config = quire.global_config()?;
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
@@ -55,7 +55,7 @@ pub async fn run(quire: &Quire, ci_routes: axum::Router, api_routes: axum::Route
     let app = Router::new()
         .route("/health", get(health))
         .route("/", get(index))
-        .merge(ci_routes)
+        .merge(web_routes)
         .merge(api_routes);
 
     tracing::info!(%addr, "starting HTTP server");
