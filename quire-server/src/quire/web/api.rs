@@ -6,7 +6,7 @@
 
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Response, Result};
 use axum_extra::TypedHeader;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
@@ -86,13 +86,13 @@ async fn get_secret(
     State(quire): State<Quire>,
     AxumPath((run_id, name)): AxumPath<(String, String)>,
     bearer: Option<TypedHeader<Authorization<Bearer>>>,
-) -> Response {
+) -> Result<(StatusCode, String), ApiError> {
     let Some(TypedHeader(Authorization(bearer))) = bearer else {
-        return ApiError::Unauthorized.into_response();
+        return Err(ApiError::Unauthorized);
     };
     let token = bearer.token().to_string();
 
-    let result = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
+    let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         let db = crate::db::open(&quire.db_path())?;
         verify_token(&db, &run_id, &token)?;
         let config = quire.global_config()?;
@@ -101,13 +101,10 @@ async fn get_secret(
             None => Err(ApiError::NotFound),
         }
     })
-    .await;
+    .await
+    .expect("blocking task panicked")?;
 
-    match result {
-        Ok(Ok(value)) => (StatusCode::OK, value).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    Ok((StatusCode::OK, value))
 }
 
 #[cfg(test)]
