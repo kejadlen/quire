@@ -55,7 +55,7 @@ impl Ci {
     /// pipeline.
     ///
     /// Pure compilation and structural validation. Secrets are not needed
-    /// here — they are passed to `run.execute_via_quire_ci` since they only matter
+    /// here — they are passed to `run.execute` since they only matter
     /// when the run-fns actually fire.
     ///
     /// Returns `Ok(None)` if the repo has no ci.fnl at that commit.
@@ -262,7 +262,7 @@ fn run_ref_inner(
         Executor::Process => {
             // Compilation happens inside quire-ci so a malformed ci.fnl is
             // reported once, with the worker's trace context.
-            run.execute_via_quire_ci(
+            run.execute(
                 &ctx.repo.path(),
                 &workspace,
                 &meta,
