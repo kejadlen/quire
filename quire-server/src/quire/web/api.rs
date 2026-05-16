@@ -21,6 +21,52 @@ pub fn router(quire: Quire) -> axum::Router {
         .with_state(quire)
 }
 
+#[derive(Debug)]
+enum ApiError {
+    NotFound,
+    Unauthorized,
+    Internal(String),
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match self {
+            ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
+            ApiError::Internal(msg) => {
+                tracing::error!(error = %msg, "api error");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
+    }
+}
+
+impl From<rusqlite::Error> for ApiError {
+    fn from(e: rusqlite::Error) -> Self {
+        match e {
+            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
+            _ => ApiError::Internal(e.to_string()),
+        }
+    }
+}
+
+/// Verify the bearer token against the stored `auth_token` for `run_id`.
+/// Returns `Err(NotFound)` if the run doesn't exist, `Err(Unauthorized)` if
+/// the token doesn't match (including a null token for filesystem-mode runs).
+fn verify_token(db: &rusqlite::Connection, run_id: &str, token: &str) -> Result<(), ApiError> {
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT auth_token FROM runs WHERE id = ?1",
+            rusqlite::params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(ApiError::from)?;
+    match stored {
+        Some(ref t) if t == token => Ok(()),
+        _ => Err(ApiError::Unauthorized),
+    }
+}
+
 /// `GET /api/runs/:run_id/secrets/:name`
 ///
 /// Returns the plain-text value of a named secret from the global config.
@@ -32,41 +78,29 @@ async fn get_secret(
     headers: HeaderMap,
 ) -> Response {
     let Some(token) = extract_bearer_token(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return ApiError::Unauthorized.into_response();
     };
 
     let result = tokio::task::spawn_blocking(move || {
-        let db = crate::db::open(&quire.db_path()).map_err(|e| format!("db: {e}"))?;
-        let stored: Option<String> = db
-            .query_row(
-                "SELECT auth_token FROM runs WHERE id = ?1",
-                rusqlite::params![run_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => "not_found".to_string(),
-                _ => e.to_string(),
-            })?;
-        match stored {
-            Some(ref t) if t == &token => {}
-            _ => return Err("unauthorized".to_string()),
-        }
-        let config = quire.global_config().map_err(|e| e.to_string())?;
+        let db = crate::db::open(&quire.db_path())
+            .map_err(|e| ApiError::Internal(format!("db: {e}")))?;
+        verify_token(&db, &run_id, &token)?;
+        let config = quire
+            .global_config()
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
         match config.secrets.get(&name) {
-            Some(s) => s.reveal().map(|v| v.to_string()).map_err(|e| e.to_string()),
-            None => Err("not_found".to_string()),
+            Some(s) => s
+                .reveal()
+                .map(|v| v.to_string())
+                .map_err(|e| ApiError::Internal(e.to_string())),
+            None => Err(ApiError::NotFound),
         }
     })
     .await;
 
     match result {
         Ok(Ok(value)) => (StatusCode::OK, value).into_response(),
-        Ok(Err(ref e)) if e == "not_found" => StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(ref e)) if e == "unauthorized" => StatusCode::UNAUTHORIZED.into_response(),
-        Ok(Err(msg)) => {
-            tracing::error!(error = %msg, "secret fetch failed");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+        Ok(Err(e)) => e.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
