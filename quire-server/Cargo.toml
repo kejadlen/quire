@@ -32,6 +32,7 @@ tracing = { workspace = true }
 
 askama = "*"
 axum = "*"
+axum-extra = { version = "*", features = ["typed-header"] }
 clap = { workspace = true }
 clap_complete = "*"
 rand = "*"

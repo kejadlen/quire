@@ -5,8 +5,11 @@
 //! is created and scoped to that run's ID.
 
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum_extra::TypedHeader;
+use axum_extra::headers::Authorization;
+use axum_extra::headers::authorization::Bearer;
 
 use crate::Quire;
 
@@ -21,11 +24,27 @@ pub fn router(quire: Quire) -> axum::Router {
         .with_state(quire)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum ApiError {
+    #[error("not found")]
     NotFound,
+    #[error("unauthorized")]
     Unauthorized,
-    Internal(Box<dyn std::error::Error + Send + Sync + 'static>),
+    #[error(transparent)]
+    Db(rusqlite::Error),
+    #[error(transparent)]
+    App(#[from] crate::Error),
+    #[error(transparent)]
+    Secret(#[from] quire_core::secret::Error),
+}
+
+impl From<rusqlite::Error> for ApiError {
+    fn from(e: rusqlite::Error) -> Self {
+        match e {
+            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
+            _ => ApiError::Db(e),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -33,19 +52,10 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
-            ApiError::Internal(e) => {
+            e => {
                 tracing::error!(error = %e, "api error");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-        }
-    }
-}
-
-impl From<rusqlite::Error> for ApiError {
-    fn from(e: rusqlite::Error) -> Self {
-        match e {
-            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
-            _ => ApiError::Internal(Box::new(e)),
         }
     }
 }
@@ -75,24 +85,19 @@ fn verify_token(db: &rusqlite::Connection, run_id: &str, token: &str) -> Result<
 async fn get_secret(
     State(quire): State<Quire>,
     AxumPath((run_id, name)): AxumPath<(String, String)>,
-    headers: HeaderMap,
+    bearer: Option<TypedHeader<Authorization<Bearer>>>,
 ) -> Response {
-    let Some(token) = extract_bearer_token(&headers) else {
+    let Some(TypedHeader(Authorization(bearer))) = bearer else {
         return ApiError::Unauthorized.into_response();
     };
+    let token = bearer.token().to_string();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let db = crate::db::open(&quire.db_path())
-            .map_err(|e| ApiError::Internal(Box::new(e)))?;
+    let result = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
+        let db = crate::db::open(&quire.db_path())?;
         verify_token(&db, &run_id, &token)?;
-        let config = quire
-            .global_config()
-            .map_err(|e| ApiError::Internal(Box::new(e)))?;
+        let config = quire.global_config()?;
         match config.secrets.get(&name) {
-            Some(s) => s
-                .reveal()
-                .map(|v| v.to_string())
-                .map_err(|e| ApiError::Internal(Box::new(e))),
+            Some(s) => Ok(s.reveal()?.to_string()),
             None => Err(ApiError::NotFound),
         }
     })
@@ -102,20 +107,6 @@ async fn get_secret(
         Ok(Ok(value)) => (StatusCode::OK, value).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-/// Extract `Bearer <token>` from an `Authorization` header.
-fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
-    let value = headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?;
-    let token = value.strip_prefix("Bearer ")?;
-    if token.is_empty() {
-        None
-    } else {
-        Some(token.to_string())
     }
 }
 
