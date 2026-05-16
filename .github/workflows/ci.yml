@@ -4,11 +4,14 @@ on:
   push:
     branches: [main]
     tags: [v*]
+  pull_request:
+    branches: [main]
 
 permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -22,7 +25,6 @@ jobs:
           persist-credentials: false
       - run: rustup component add clippy rustfmt
       - run: cargo install just
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       - run: cargo fmt --check
       - run: just clippy test
       # Coverage and mutation testing disabled during early exploratory work.
