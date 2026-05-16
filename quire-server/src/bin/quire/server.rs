@@ -16,7 +16,7 @@ async fn index() -> String {
     format!("quire {}\n", crate::VERSION)
 }
 
-pub async fn run(quire: &Quire, ci_routes: axum::Router) -> Result<()> {
+pub async fn run(quire: &Quire, ci_routes: axum::Router, api_routes: axum::Router) -> Result<()> {
     let config = quire.global_config()?;
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
@@ -52,7 +52,6 @@ pub async fn run(quire: &Quire, ci_routes: axum::Router) -> Result<()> {
     let quire_handle = quire.clone();
     let event_handle = tokio::spawn(event_listener(listener, quire_handle));
 
-    let api_routes = quire::quire::web::api::router(quire.clone());
     let app = Router::new()
         .route("/health", get(health))
         .route("/", get(index))
