@@ -179,7 +179,8 @@ async fn main() -> Result<()> {
                     quire::quire::web::auth::require_auth,
                 ))
             };
-            commands::serve::run(&quire, ci_routes).await?
+            let api_routes = quire::quire::web::api::router(quire.clone());
+            commands::serve::run(&quire, ci_routes, api_routes).await?
         }
         Commands::Exec { command } => commands::exec::run(&quire, command).await?,
         Commands::Hook { hook_name } => commands::hook::run(&quire, hook_name).await?,
