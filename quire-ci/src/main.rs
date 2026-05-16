@@ -52,17 +52,6 @@ enum Commands {
     /// Compile and validate a ci.fnl pipeline.
     Validate,
 
-    /// Run the pipeline locally against the workspace.
-    ///
-    /// Uses placeholder push metadata (SHA = 40 zeros, ref = "HEAD")
-    /// and no secrets — `(secret :name)` calls error, and `(jobs
-    /// upstream)` reads return Nil for everything except `quire/push`.
-    /// Sh logs are written to a tempdir and dumped to stdout when the
-    /// run finishes.
-    ///
-    /// For orchestrator-dispatched runs see the `run` command.
-    Local,
-
     /// Execute a pipeline dispatched by the orchestrator.
     ///
     /// `--bootstrap <path>` points at a JSON file (see
@@ -120,7 +109,7 @@ impl TransportFlags {
             auth_token,
         };
         Ok(match self.transport {
-            Transport::Filesystem => TransportArgs::Filesystem(Some(session)),
+            Transport::Filesystem => TransportArgs::Filesystem(session),
             Transport::Api => TransportArgs::Api(session),
         })
     }
@@ -209,14 +198,12 @@ pub enum Transport {
 
 /// Resolved transport.
 ///
-/// - `Filesystem(None)`: `local` subcommand; no server session.
-/// - `Filesystem(Some(_))`: `run` subcommand with filesystem executor;
-///   session info held for upcoming API route use.
-/// - `Api(_)`: `run` subcommand with HTTP API executor.
+/// - `Filesystem(_)`: filesystem executor; session info held for upcoming API route use.
+/// - `Api(_)`: HTTP API executor.
 #[derive(Debug)]
 #[allow(dead_code)] // session fields read by upcoming API client
 enum TransportArgs {
-    Filesystem(Option<ApiSession>),
+    Filesystem(ApiSession),
     Api(ApiSession),
 }
 
@@ -225,22 +212,6 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Validate => validate(cli.workspace),
-        Commands::Local => {
-            let miette_layer = MietteLayer::new();
-            telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
-            let dir = tempfile::tempdir().into_diagnostic()?;
-            let log_dir = dir.path().to_path_buf();
-            let _dump = DumpLogsOnDrop { dir };
-            run_pipeline(
-                cli.workspace.clone(),
-                Box::new(NullSink),
-                log_dir,
-                cli.workspace.join(".git"),
-                placeholder_meta(),
-                HashMap::new(),
-                TransportArgs::Filesystem(None),
-            )
-        }
         Commands::Run {
             events,
             out_dir,
@@ -370,16 +341,6 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
 
     println!("\nAll validations passed.");
     Ok(())
-}
-
-/// Standalone runs synthesize a placeholder `quire/push`. Real meta
-/// arrives via `--bootstrap` from the orchestrator.
-fn placeholder_meta() -> RunMeta {
-    RunMeta {
-        sha: "0".repeat(40),
-        r#ref: "HEAD".to_string(),
-        pushed_at: jiff::Timestamp::now(),
-    }
 }
 
 /// Read and parse the bootstrap file the orchestrator wrote before
