@@ -56,7 +56,7 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
         .route("/health", get(health))
         .route("/", get(index))
         .merge(web_routes)
-        .merge(api_routes);
+        .nest("/api", api_routes);
 
     tracing::info!(%addr, "starting HTTP server");
 

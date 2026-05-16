@@ -15,10 +15,12 @@ use crate::Quire;
 
 /// Build the API router. Routes are not wrapped in web-UI auth
 /// middleware; each handler verifies its own bearer token.
+///
+/// Intended to be mounted at `/api` via `Router::nest`.
 pub fn router(quire: Quire) -> axum::Router {
     axum::Router::new()
         .route(
-            "/api/runs/{run_id}/secrets/{name}",
+            "/runs/{run_id}/secrets/{name}",
             axum::routing::get(get_secret),
         )
         .with_state(quire)
@@ -93,7 +95,10 @@ async fn get_secret(
     let token = bearer.token().to_string();
 
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
-        let db = crate::db::open(&quire.db_path())?;
+        let db = quire
+            .db_pool()
+            .lock()
+            .map_err(|_| crate::Error::Io(std::io::Error::other("db mutex poisoned")))?;
         verify_token(&db, &run_id, &token)?;
         let config = quire.global_config()?;
         match config.secrets.get(&name) {
@@ -169,7 +174,7 @@ mod tests {
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
         };
-        let url = format!("/api/runs/{}/secrets/my_secret", session.run_id);
+        let url = format!("/runs/{}/secrets/my_secret", session.run_id);
 
         let resp = get(env.app(), &url, None).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -185,7 +190,7 @@ mod tests {
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
         };
-        let url = format!("/api/runs/{}/secrets/my_secret", session.run_id);
+        let url = format!("/runs/{}/secrets/my_secret", session.run_id);
 
         let resp = get(env.app(), &url, Some("wrongtoken")).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -196,7 +201,7 @@ mod tests {
         let env = TestEnv::new();
         let resp = get(
             env.app(),
-            "/api/runs/00000000-0000-0000-0000-000000000001/secrets/my_secret",
+            "/runs/00000000-0000-0000-0000-000000000001/secrets/my_secret",
             Some("token"),
         )
         .await;
@@ -213,7 +218,7 @@ mod tests {
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
         };
-        let url = format!("/api/runs/{}/secrets/no_such_secret", session.run_id);
+        let url = format!("/runs/{}/secrets/no_such_secret", session.run_id);
 
         let resp = get(env.app(), &url, Some(&session.auth_token)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -235,7 +240,7 @@ mod tests {
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
         };
-        let url = format!("/api/runs/{}/secrets/my_token", session.run_id);
+        let url = format!("/runs/{}/secrets/my_token", session.run_id);
 
         let resp = get(env.app(), &url, Some(&session.auth_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
