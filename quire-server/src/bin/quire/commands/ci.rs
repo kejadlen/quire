@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 use quire::Quire;
-use quire::ci::{Ci, CommitRef, RunMeta, Runs, Transport};
+use quire::ci::{Ci, CommitRef, RunMeta, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -74,8 +74,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         pushed_at: jiff::Timestamp::now(),
     };
 
-    let transport = Transport::local();
-    let run = runs.create(&meta, &transport)?;
+    let run = runs.create(&meta, None)?;
     let run_id = run.id().to_string();
     println!(
         "Run {}: executing at {} ({})",
@@ -93,7 +92,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         &meta,
         &secrets,
         None,
-        &transport,
+        None,
     );
 
     // Print the combined quire-ci log regardless of outcome.

@@ -42,23 +42,15 @@ pub enum TransportMode {
 /// Runtime transport for a single CI run. Built once per run from
 /// the config-shape [`TransportMode`] + the server's listen port,
 /// then passed to `Runs::create` and `Run::execute_via_quire_ci`.
-/// `Filesystem` and `Api` carry an [`ApiSession`] so quire-ci receives
-/// session info for API route use. `Local` carries no session and is
-/// used for `quire ci run` where no server is involved.
+/// Both variants carry an [`ApiSession`] so quire-ci always receives
+/// session info. Use `None` for local runs where no server is involved.
 #[derive(Clone, Debug)]
 pub enum Transport {
-    Local,
     Filesystem(ApiSession),
     Api(ApiSession),
 }
 
 impl Transport {
-    /// Build a transport for a local `quire ci run` invocation.
-    /// No session info is minted — quire-ci runs without transport flags.
-    pub fn local() -> Self {
-        Transport::Local
-    }
-
     /// Build a runtime transport for a new run. Always mints a fresh
     /// run ID and CSPRNG bearer token, deriving the loopback server
     /// URL from `port`. The variant controls whether quire-ci uses
@@ -145,14 +137,14 @@ impl Runs {
     /// Inserts a row into `runs` and creates the run directory for
     /// workspace materialization and log storage.
     ///
-    /// `transport` is built by the caller via [`Transport::for_new_run`].
-    /// The run's id and bearer token come from the transport's [`ApiSession`]
-    /// in both variants — both are persisted so quire-ci and the DB always
-    /// agree on which run a token belongs to.
-    pub fn create(&self, meta: &RunMeta, transport: &Transport) -> Result<Run> {
+    /// `transport` is `Some` for orchestrator-dispatched runs — the run's id
+    /// and bearer token come from the session and are persisted so quire-ci
+    /// and the DB agree. Pass `None` for local runs; a fresh UUID is minted
+    /// and no auth token is stored.
+    pub fn create(&self, meta: &RunMeta, transport: Option<&Transport>) -> Result<Run> {
         let (id, auth_token_str) = match transport {
-            Transport::Local => (uuid::Uuid::now_v7().to_string(), None),
-            Transport::Filesystem(api) | Transport::Api(api) => {
+            None => (uuid::Uuid::now_v7().to_string(), None),
+            Some(Transport::Filesystem(api) | Transport::Api(api)) => {
                 (api.run_id.clone(), Some(api.auth_token.as_str()))
             }
         };
@@ -339,7 +331,7 @@ impl Run {
         meta: &RunMeta,
         secrets: &HashMap<String, SecretString>,
         sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
-        transport: &Transport,
+        transport: Option<&Transport>,
     ) -> Result<()> {
         self.transition(RunState::Active, None)?;
 
@@ -365,7 +357,7 @@ impl Run {
         cmd.arg("run").arg("--workspace").arg(workspace);
 
         match transport {
-            Transport::Local => {
+            None => {
                 cmd.arg("--out-dir")
                     .arg(&run_dir)
                     .arg("--events")
@@ -373,7 +365,7 @@ impl Run {
                     .arg("--bootstrap")
                     .arg(&bootstrap_path);
             }
-            Transport::Filesystem(api) => {
+            Some(Transport::Filesystem(api)) => {
                 cmd.arg("--run-id")
                     .arg(&api.run_id)
                     .arg("--server-url")
@@ -386,7 +378,7 @@ impl Run {
                     .arg("--bootstrap")
                     .arg(&bootstrap_path);
             }
-            Transport::Api(api) => {
+            Some(Transport::Api(api)) => {
                 cmd.arg("--run-id")
                     .arg(&api.run_id)
                     .arg("--server-url")
@@ -939,7 +931,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         let parsed = uuid::Uuid::parse_str(run.id()).expect("should be valid UUID");
         assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
@@ -950,7 +942,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let transport = Transport::for_new_run(TransportMode::Filesystem, 3000);
-        let run = runs.create(&test_meta(), &transport).expect("create");
+        let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
         let Transport::Filesystem(api) = &transport else {
             panic!("expected Filesystem transport");
@@ -979,7 +971,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let transport = Transport::for_new_run(TransportMode::Api, 3000);
-        let run = runs.create(&test_meta(), &transport).expect("create");
+        let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
         let Transport::Api(api) = &transport else {
             panic!("expected Api transport");
@@ -1013,7 +1005,6 @@ mod tests {
             ),
         ] {
             let api = match &transport {
-                Transport::Local => unreachable!("test transports carry sessions"),
                 Transport::Filesystem(api) | Transport::Api(api) => api,
             };
             assert_eq!(api.server_url, expected_url);
@@ -1043,7 +1034,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
 
         assert_eq!(run.state(), RunState::Pending);
@@ -1068,7 +1059,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         let id = run.id().to_string();
 
@@ -1091,7 +1082,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
@@ -1106,7 +1097,7 @@ mod tests {
         let runs = test_runs(&quire);
 
         let mut completed = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         completed
             .transition(RunState::Active, None)
@@ -1117,7 +1108,7 @@ mod tests {
         assert!(completed.read_finished_at().expect("read").is_some());
 
         let mut failed = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         failed
             .transition(RunState::Active, None)
@@ -1133,7 +1124,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         let id = run.id().to_string();
 
@@ -1157,7 +1148,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         let id = run.id().to_string();
 
@@ -1182,13 +1173,13 @@ mod tests {
 
         // Pending -> Failed is not allowed (must go via Active).
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         assert!(run.transition(RunState::Failed, None).is_err());
 
         // Terminal -> anything is not allowed.
         let mut completed = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         completed
             .transition(RunState::Active, None)
@@ -1205,7 +1196,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
@@ -1225,7 +1216,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
@@ -1240,7 +1231,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         let id = run.id().to_string();
 
@@ -1255,7 +1246,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         run.transition(RunState::Active, None).expect("to active");
         let id = run.id().to_string();
@@ -1271,7 +1262,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         run.transition(RunState::Active, None).expect("to active");
         run.transition(RunState::Complete, None)
@@ -1297,7 +1288,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         let run_id = run.id().to_string();
 
@@ -1411,7 +1402,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
 
         let missing = run.path().join("events.jsonl");
@@ -1438,7 +1429,7 @@ mod tests {
 
         // Create first run.
         let run1 = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create run1");
         let run1_id = run1.id().to_string();
         assert_eq!(run1.state(), RunState::Pending);
@@ -1449,7 +1440,7 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let run2 = runs.create(&meta2, &test_transport()).expect("create run2");
+        let run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
         assert_eq!(run2.state(), RunState::Pending);
 
         // First run should now be superseded.
@@ -1468,7 +1459,7 @@ mod tests {
 
         // Create and activate first run.
         let mut run1 = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create run1");
         let run1_id = run1.id().to_string();
         run1.transition(RunState::Active, None).expect("to active");
@@ -1479,7 +1470,7 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let run2 = runs.create(&meta2, &test_transport()).expect("create run2");
+        let run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
         assert_eq!(run2.state(), RunState::Pending);
 
         // First run should be superseded.
@@ -1498,7 +1489,7 @@ mod tests {
 
         // Create run for main.
         let run1 = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create run1");
         let run1_id = run1.id().to_string();
 
@@ -1508,7 +1499,7 @@ mod tests {
             r#ref: "refs/heads/feature".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let _run2 = runs.create(&meta2, &test_transport()).expect("create run2");
+        let _run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
 
         // First run should still be pending.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
@@ -1522,7 +1513,7 @@ mod tests {
 
         // Create and complete first run.
         let mut run1 = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create run1");
         let run1_id = run1.id().to_string();
         run1.transition(RunState::Active, None).expect("to active");
@@ -1535,7 +1526,7 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let _run2 = runs.create(&meta2, &test_transport()).expect("create run2");
+        let _run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
 
         // First run should still be complete.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
@@ -1547,7 +1538,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         run.transition(RunState::Superseded, None)
             .expect("to superseded");
@@ -1559,7 +1550,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         run.transition(RunState::Active, None).expect("to active");
         run.transition(RunState::Superseded, None)
@@ -1572,7 +1563,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
-            .create(&test_meta(), &test_transport())
+            .create(&test_meta(), Some(&test_transport()))
             .expect("create");
         run.transition(RunState::Active, None).expect("to active");
 
