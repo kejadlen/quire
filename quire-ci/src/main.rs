@@ -94,68 +94,35 @@ enum Commands {
     },
 }
 
-/// CLI flags for the CI ↔ server transport. Grouped so the related
-/// args travel together.
-///
-/// `--run-id` and `--server-url` are co-required: either both are
-/// provided (remote/orchestrated invocation) or neither is (local
-/// standalone invocation). `--transport api` additionally requires
-/// both.
+/// Session and transport flags for orchestrator-dispatched runs.
 #[derive(clap::Args, Debug)]
 struct TransportFlags {
+    /// Run ID assigned by the orchestrator.
+    #[arg(long)]
+    run_id: String,
+
+    /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
+    #[arg(long)]
+    server_url: String,
+
     /// Transport for CI ↔ server communication.
     #[arg(long, default_value = "filesystem", value_enum)]
     transport: Transport,
-
-    /// Run ID assigned by the orchestrator.
-    /// Must be paired with `--server-url`; required when `--transport api`.
-    #[arg(long, requires = "server_url", required_if_eq("transport", "api"))]
-    run_id: Option<String>,
-
-    /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
-    /// Must be paired with `--run-id`; required when `--transport api`.
-    #[arg(long, requires = "run_id", required_if_eq("transport", "api"))]
-    server_url: Option<String>,
 }
 
 impl TransportFlags {
-    /// Promote into the resolved [`TransportArgs`], folding in the
-    /// `QUIRE_CI_TOKEN` env var.
-    ///
-    /// - No session flags → local standalone mode (`Filesystem(None)`).
-    /// - `--run-id`/`--server-url` present → remote mode; token required
-    ///   via env var. Filesystem executor unless `--transport api`.
     fn resolve(self, auth_token: Option<String>) -> miette::Result<TransportArgs> {
-        match self.transport {
-            Transport::Filesystem => match (self.run_id, self.server_url) {
-                (None, None) => Ok(TransportArgs::Filesystem(None)),
-                (Some(run_id), Some(server_url)) => {
-                    let auth_token = auth_token.ok_or_else(|| {
-                        miette::miette!("--run-id/--server-url require the QUIRE_CI_TOKEN env var")
-                    })?;
-                    Ok(TransportArgs::Filesystem(Some(ApiSession {
-                        run_id,
-                        server_url,
-                        auth_token,
-                    })))
-                }
-                _ => unreachable!("clap enforces --run-id and --server-url together"),
-            },
-            Transport::Api => {
-                let auth_token = auth_token.ok_or_else(|| {
-                    miette::miette!("--transport api requires the QUIRE_CI_TOKEN env var")
-                })?;
-                Ok(TransportArgs::Api(ApiSession {
-                    run_id: self
-                        .run_id
-                        .expect("clap requires --run-id when --transport api"),
-                    server_url: self
-                        .server_url
-                        .expect("clap requires --server-url when --transport api"),
-                    auth_token,
-                }))
-            }
-        }
+        let auth_token =
+            auth_token.ok_or_else(|| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
+        let session = ApiSession {
+            run_id: self.run_id,
+            server_url: self.server_url,
+            auth_token,
+        };
+        Ok(match self.transport {
+            Transport::Filesystem => TransportArgs::Filesystem(Some(session)),
+            Transport::Api => TransportArgs::Api(session),
+        })
     }
 }
 
@@ -240,12 +207,12 @@ pub enum Transport {
     Api,
 }
 
-/// Resolved transport produced by [`TransportFlags::resolve`].
+/// Resolved transport.
 ///
-/// - `Filesystem(None)`: local/standalone invocation; no server session.
-/// - `Filesystem(Some(_))`: remote invocation with filesystem executor;
+/// - `Filesystem(None)`: `local` subcommand; no server session.
+/// - `Filesystem(Some(_))`: `run` subcommand with filesystem executor;
 ///   session info held for upcoming API route use.
-/// - `Api(_)`: remote invocation with HTTP API executor.
+/// - `Api(_)`: `run` subcommand with HTTP API executor.
 #[derive(Debug)]
 #[allow(dead_code)] // session fields read by upcoming API client
 enum TransportArgs {
