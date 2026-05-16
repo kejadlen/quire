@@ -271,7 +271,7 @@ fn main() -> miette::Result<()> {
                 cli.workspace.join(".git"),
                 placeholder_meta(),
                 HashMap::new(),
-                TransportArgs::Filesystem,
+                TransportArgs::Filesystem(None),
             )
         }
         Commands::Run {
