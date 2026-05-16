@@ -42,15 +42,23 @@ pub enum TransportMode {
 /// Runtime transport for a single CI run. Built once per run from
 /// the config-shape [`TransportMode`] + the server's listen port,
 /// then passed to `Runs::create` and `Run::execute_via_quire_ci`.
-/// Both variants carry an [`ApiSession`] so quire-ci always receives
-/// session info — enabling forward-compatible adoption of API routes.
+/// `Filesystem` and `Api` carry an [`ApiSession`] so quire-ci receives
+/// session info for API route use. `Local` carries no session and is
+/// used for `quire ci run` where no server is involved.
 #[derive(Clone, Debug)]
 pub enum Transport {
+    Local,
     Filesystem(ApiSession),
     Api(ApiSession),
 }
 
 impl Transport {
+    /// Build a transport for a local `quire ci run` invocation.
+    /// No session info is minted — quire-ci runs without transport flags.
+    pub fn local() -> Self {
+        Transport::Local
+    }
+
     /// Build a runtime transport for a new run. Always mints a fresh
     /// run ID and CSPRNG bearer token, deriving the loopback server
     /// URL from `port`. The variant controls whether quire-ci uses
@@ -143,6 +151,7 @@ impl Runs {
     /// agree on which run a token belongs to.
     pub fn create(&self, meta: &RunMeta, transport: &Transport) -> Result<Run> {
         let (id, auth_token_str) = match transport {
+            Transport::Local => (uuid::Uuid::now_v7().to_string(), None),
             Transport::Filesystem(api) | Transport::Api(api) => {
                 (api.run_id.clone(), Some(api.auth_token.as_str()))
             }
@@ -356,6 +365,14 @@ impl Run {
         cmd.arg("run").arg("--workspace").arg(workspace);
 
         match transport {
+            Transport::Local => {
+                cmd.arg("--out-dir")
+                    .arg(&run_dir)
+                    .arg("--events")
+                    .arg(&events_path)
+                    .arg("--bootstrap")
+                    .arg(&bootstrap_path);
+            }
             Transport::Filesystem(api) => {
                 cmd.arg("--run-id")
                     .arg(&api.run_id)
@@ -996,6 +1013,7 @@ mod tests {
             ),
         ] {
             let api = match &transport {
+                Transport::Local => unreachable!("test transports carry sessions"),
                 Transport::Filesystem(api) | Transport::Api(api) => api,
             };
             assert_eq!(api.server_url, expected_url);

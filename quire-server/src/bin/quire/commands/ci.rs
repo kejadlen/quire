@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 use quire::Quire;
-use quire::ci::{Ci, CommitRef, RunMeta, Runs, Transport, TransportMode};
+use quire::ci::{Ci, CommitRef, RunMeta, Runs, Transport};
 
 /// Validate a repo's ci.fnl without executing any jobs.
 ///
@@ -74,11 +74,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         pushed_at: jiff::Timestamp::now(),
     };
 
-    // Local `quire ci run` uses filesystem transport. Session info is
-    // minted so quire-ci receives the standard remote-mode flags; the
-    // server_url is a loopback placeholder (never contacted in filesystem
-    // mode).
-    let transport = Transport::for_new_run(TransportMode::Filesystem, 0);
+    let transport = Transport::local();
     let run = runs.create(&meta, &transport)?;
     let run_id = run.id().to_string();
     println!(
