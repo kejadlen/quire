@@ -25,7 +25,7 @@ pub fn router(quire: Quire) -> axum::Router {
 enum ApiError {
     NotFound,
     Unauthorized,
-    Internal(String),
+    Internal(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 impl IntoResponse for ApiError {
@@ -33,8 +33,8 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
-            ApiError::Internal(msg) => {
-                tracing::error!(error = %msg, "api error");
+            ApiError::Internal(e) => {
+                tracing::error!(error = %e, "api error");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
@@ -45,7 +45,7 @@ impl From<rusqlite::Error> for ApiError {
     fn from(e: rusqlite::Error) -> Self {
         match e {
             rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
-            _ => ApiError::Internal(e.to_string()),
+            _ => ApiError::Internal(Box::new(e)),
         }
     }
 }
@@ -83,16 +83,16 @@ async fn get_secret(
 
     let result = tokio::task::spawn_blocking(move || {
         let db = crate::db::open(&quire.db_path())
-            .map_err(|e| ApiError::Internal(format!("db: {e}")))?;
+            .map_err(|e| ApiError::Internal(Box::new(e)))?;
         verify_token(&db, &run_id, &token)?;
         let config = quire
             .global_config()
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+            .map_err(|e| ApiError::Internal(Box::new(e)))?;
         match config.secrets.get(&name) {
             Some(s) => s
                 .reveal()
                 .map(|v| v.to_string())
-                .map_err(|e| ApiError::Internal(e.to_string())),
+                .map_err(|e| ApiError::Internal(Box::new(e))),
             None => Err(ApiError::NotFound),
         }
     })
