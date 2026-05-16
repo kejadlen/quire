@@ -169,7 +169,7 @@ mod tests {
         let env = TestEnv::new();
         let transport = Transport::for_new_run(TransportMode::Api, 3000);
         env.runs()
-            .create(&TestEnv::meta(), &transport)
+            .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
@@ -185,7 +185,7 @@ mod tests {
         let env = TestEnv::new();
         let transport = Transport::for_new_run(TransportMode::Api, 3000);
         env.runs()
-            .create(&TestEnv::meta(), &transport)
+            .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
@@ -213,7 +213,7 @@ mod tests {
         let env = TestEnv::new();
         let transport = Transport::for_new_run(TransportMode::Api, 3000);
         env.runs()
-            .create(&TestEnv::meta(), &transport)
+            .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");
@@ -235,7 +235,7 @@ mod tests {
         .expect("write config");
         let transport = Transport::for_new_run(TransportMode::Api, 3000);
         env.runs()
-            .create(&TestEnv::meta(), &transport)
+            .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
         let Transport::Api(ref session) = transport else {
             panic!("expected Api transport");

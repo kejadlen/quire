@@ -247,7 +247,7 @@ fn run_ref_inner(
         pushed_at,
     };
 
-    let run = ctx.repo.runs(ctx.db_path).create(&meta, transport)?;
+    let run = ctx.repo.runs(ctx.db_path).create(&meta, Some(transport))?;
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
@@ -268,7 +268,7 @@ fn run_ref_inner(
                 &meta,
                 ctx.secrets,
                 sentry,
-                transport,
+                Some(transport),
             )?;
         }
     }
