@@ -95,15 +95,18 @@ enum Commands {
 }
 
 /// Session and transport flags for orchestrator-dispatched runs.
+/// All flags are optional — when `--run-id` and `--server-url` are
+/// absent and `--transport` is `filesystem` (the default), the run
+/// executes without a server session (local mode).
 #[derive(clap::Args, Debug)]
 struct TransportFlags {
     /// Run ID assigned by the orchestrator.
     #[arg(long)]
-    run_id: String,
+    run_id: Option<String>,
 
     /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
     #[arg(long)]
-    server_url: String,
+    server_url: Option<String>,
 
     /// Transport for CI ↔ server communication.
     #[arg(long, default_value = "filesystem", value_enum)]
@@ -112,17 +115,38 @@ struct TransportFlags {
 
 impl TransportFlags {
     fn resolve(self, auth_token: Option<String>) -> miette::Result<TransportArgs> {
-        let auth_token =
-            auth_token.ok_or_else(|| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
-        let session = ApiSession {
-            run_id: self.run_id,
-            server_url: self.server_url,
-            auth_token,
-        };
-        Ok(match self.transport {
-            Transport::Filesystem => TransportArgs::Filesystem(Some(session)),
-            Transport::Api => TransportArgs::Api(session),
-        })
+        match self.transport {
+            Transport::Filesystem => match (self.run_id, self.server_url) {
+                (None, None) => Ok(TransportArgs::Filesystem(None)),
+                (Some(run_id), Some(server_url)) => {
+                    let auth_token = auth_token
+                        .ok_or_else(|| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
+                    Ok(TransportArgs::Filesystem(Some(ApiSession {
+                        run_id,
+                        server_url,
+                        auth_token,
+                    })))
+                }
+                _ => Err(miette::miette!(
+                    "--run-id and --server-url must both be provided or both omitted"
+                )),
+            },
+            Transport::Api => {
+                let run_id = self
+                    .run_id
+                    .ok_or_else(|| miette::miette!("--run-id is required for api transport"))?;
+                let server_url = self
+                    .server_url
+                    .ok_or_else(|| miette::miette!("--server-url is required for api transport"))?;
+                let auth_token = auth_token
+                    .ok_or_else(|| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
+                Ok(TransportArgs::Api(ApiSession {
+                    run_id,
+                    server_url,
+                    auth_token,
+                }))
+            }
+        }
     }
 }
 
