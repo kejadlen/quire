@@ -35,7 +35,7 @@ use crate::sink::{EventSink, JsonlSink, NullSink};
 
 const VERSION: &str = env!("QUIRE_VERSION");
 
-/// Run a quire CI pipeline locally.
+/// Run and validate quire CI pipelines.
 #[derive(Parser)]
 #[command(version, propagate_version = true)]
 struct Cli {
@@ -52,15 +52,22 @@ enum Commands {
     /// Compile and validate a ci.fnl pipeline.
     Validate,
 
-    /// Run the whole pipeline against the workspace, in topo order.
+    /// Run the pipeline locally against the workspace.
+    ///
+    /// Uses placeholder push metadata (SHA = 40 zeros, ref = "HEAD")
+    /// and no secrets — `(secret :name)` calls error, and `(jobs
+    /// upstream)` reads return Nil for everything except `quire/push`.
+    /// Sh logs are written to a tempdir and dumped to stdout when the
+    /// run finishes.
+    ///
+    /// For orchestrator-dispatched runs see the `run` command.
+    Local,
+
+    /// Execute a pipeline dispatched by the orchestrator.
     ///
     /// `--bootstrap <path>` points at a JSON file (see
-    /// [`quire_core::ci::bootstrap::Bootstrap`]) that supplies push
-    /// metadata and secrets when the orchestrator dispatches via
-    /// `:executor :quire-ci`. Standalone invocations omit the flag
-    /// and fall back to placeholder meta with no secrets — `(secret
-    /// :name)` calls error, and `(jobs upstream)` reads return Nil
-    /// for everything except `quire/push`.
+    /// [`quire_core::ci::bootstrap::Bootstrap`]) produced by the
+    /// orchestrator that supplies push metadata and secrets.
     Run {
         /// Where to send the structured event stream. Accepts:
         ///   `null`   — drop events (default).
@@ -78,11 +85,9 @@ enum Commands {
         out_dir: Option<PathBuf>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Carries push metadata and the secrets the run-fns may
-        /// resolve. Omit for standalone runs (placeholder meta, no
-        /// secrets).
+        /// Carries push metadata and the secrets the run-fns may resolve.
         #[arg(long)]
-        bootstrap: Option<PathBuf>,
+        bootstrap: PathBuf,
 
         #[command(flatten)]
         transport: TransportFlags,
@@ -135,9 +140,8 @@ impl TransportFlags {
     }
 }
 
-/// RAII wrapper around the tempdir that holds a `quire-ci run`'s
-/// captured sh logs when no `--out-dir` was passed. On drop, prints
-/// each log file's contents to stdout, then lets the underlying
+/// RAII wrapper around a tempdir holding captured sh logs. On drop,
+/// prints each log file's contents to stdout, then lets the underlying
 /// [`tempfile::TempDir`] clean up the directory. Drop fires whether
 /// the run succeeded or failed.
 struct DumpLogsOnDrop {
@@ -232,6 +236,22 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Validate => validate(cli.workspace),
+        Commands::Local => {
+            let miette_layer = MietteLayer::new();
+            telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+            let dir = tempfile::tempdir().into_diagnostic()?;
+            let log_dir = dir.path().to_path_buf();
+            let _dump = DumpLogsOnDrop { dir };
+            run_pipeline(
+                cli.workspace.clone(),
+                Box::new(NullSink),
+                log_dir,
+                cli.workspace.join(".git"),
+                placeholder_meta(),
+                HashMap::new(),
+                TransportArgs::Filesystem,
+            )
+        }
         Commands::Run {
             events,
             out_dir,
@@ -259,15 +279,7 @@ fn main() -> miette::Result<()> {
             };
             let auth_token = std::env::var("QUIRE_CI_TOKEN").ok();
             let transport = transport.resolve(auth_token)?;
-            let (git_dir, meta, secrets, sentry_handoff) = match bootstrap {
-                Some(path) => load_bootstrap(&path)?,
-                None => (
-                    cli.workspace.join(".git"),
-                    placeholder_meta(),
-                    HashMap::new(),
-                    None,
-                ),
-            };
+            let (git_dir, meta, secrets, sentry_handoff) = load_bootstrap(&bootstrap)?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
