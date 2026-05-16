@@ -6,6 +6,7 @@
 //!
 //! Server-rendered HTML via Askama templates. JavaScript-optional.
 
+pub mod api;
 pub mod auth;
 pub mod db;
 pub mod format;

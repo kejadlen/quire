@@ -52,10 +52,12 @@ pub async fn run(quire: &Quire, ci_routes: axum::Router) -> Result<()> {
     let quire_handle = quire.clone();
     let event_handle = tokio::spawn(event_listener(listener, quire_handle));
 
+    let api_routes = quire::quire::web::api::router(quire.clone());
     let app = Router::new()
         .route("/health", get(health))
         .route("/", get(index))
-        .merge(ci_routes);
+        .merge(ci_routes)
+        .merge(api_routes);
 
     tracing::info!(%addr, "starting HTTP server");
 
