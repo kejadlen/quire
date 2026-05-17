@@ -1,4 +1,3 @@
-mod secret_source;
 mod sink;
 
 use std::cell::RefCell;
@@ -16,9 +15,7 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
-use quire_core::secret::{SecretRegistry, SecretString};
-
-use crate::secret_source::{ApiSecrets, BootstrapSecrets, SecretSource as _};
+use quire_core::secret::{Error as SecretError, SecretRegistry, SecretString};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -240,14 +237,12 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            let registry = if transport.mode == TransportMode::Api {
-                ApiSecrets {
-                    session: transport.session.clone(),
-                }
-                .into_registry()
+            let source = if transport.mode == TransportMode::Api {
+                SecretSource::Api(transport.session.clone())
             } else {
-                BootstrapSecrets { secrets }.into_registry()
+                SecretSource::Bootstrap(secrets)
             };
+            let registry = source.into_registry();
 
             run_pipeline(
                 cli.workspace,
@@ -362,6 +357,66 @@ fn load_bootstrap(
         .map(|(name, value)| (name, SecretString::from(value)))
         .collect();
     Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
+}
+
+/// How this run resolves secret values.
+///
+/// `Bootstrap` reads the revealed values baked into the bootstrap file
+/// by the orchestrator — the current default. `Api` ignores those values
+/// and fetches each secret on demand from quire-server instead.
+///
+/// Once the `Api` path is validated in production, `Bootstrap` will be
+/// removed and the bootstrap file will stop carrying secret values.
+enum SecretSource {
+    Bootstrap(HashMap<String, SecretString>),
+    Api(ApiSession),
+}
+
+impl SecretSource {
+    fn into_registry(self) -> SecretRegistry {
+        match self {
+            Self::Bootstrap(secrets) => SecretRegistry::from(secrets),
+            Self::Api(session) => SecretRegistry::from(HashMap::new())
+                .with_fallback(move |name| Self::fetch_from_api(&session, name)),
+        }
+    }
+
+    /// Fetch a single secret from quire-server.
+    ///
+    /// Uses [`tokio::runtime::Handle::block_on`] to drive the async HTTP
+    /// call from synchronous Lua callback context. Requires the caller to
+    /// be on a thread that has entered a Tokio runtime (`rt.enter()` in
+    /// `main` satisfies this).
+    fn fetch_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
+        let url = format!(
+            "{}/api/runs/{}/secrets/{}",
+            session.server_url, session.run_id, name
+        );
+        let token = session.auth_token.clone();
+        let name_owned = name.to_string();
+
+        tokio::runtime::Handle::current().block_on(async move {
+            let resp = reqwest::Client::new()
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|e| SecretError::Resolve(e.to_string()))?;
+
+            let status = resp.status();
+            if status.is_success() {
+                resp.text()
+                    .await
+                    .map_err(|e| SecretError::Resolve(e.to_string()))
+            } else if status == reqwest::StatusCode::NOT_FOUND {
+                Err(SecretError::UnknownSecret(name_owned))
+            } else {
+                Err(SecretError::Resolve(format!(
+                    "secret API returned {status} for {name_owned:?}"
+                )))
+            }
+        })
+    }
 }
 
 fn run_pipeline(
