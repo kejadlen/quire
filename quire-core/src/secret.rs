@@ -140,6 +140,43 @@ impl<'de> serde::Deserialize<'de> for SecretString {
     }
 }
 
+// ── SecretFetcher trait ─────────────────────────────────────────
+
+/// Trait for fetching a named secret value.
+///
+/// Implementations may load from a local map (filesystem transport)
+/// or fetch from the server API (API transport).
+pub trait SecretFetcher {
+    fn fetch(&self, name: &str) -> Result<String>;
+}
+
+/// A `SecretFetcher` backed by an in-memory map of revealed secrets.
+pub struct LocalSecretFetcher {
+    secrets: HashMap<String, SecretString>,
+}
+
+impl LocalSecretFetcher {
+    pub fn new(secrets: HashMap<String, SecretString>) -> Self {
+        Self { secrets }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            secrets: HashMap::new(),
+        }
+    }
+}
+
+impl SecretFetcher for LocalSecretFetcher {
+    fn fetch(&self, name: &str) -> Result<String> {
+        let s = self
+            .secrets
+            .get(name)
+            .ok_or_else(|| Error::UnknownSecret(name.to_string()))?;
+        s.reveal().map(|v| v.to_string())
+    }
+}
+
 // ── Secret registry and redaction ───────────────────────────────
 
 /// Opaque wrapper for a revealed secret value. No Debug impl.
@@ -157,10 +194,11 @@ impl Revealed {
 
 // Explicitly no Debug impl — revealed values must never be printed.
 
-/// Per-run secret store: holds declared secrets and their revealed
-/// values for both lookup and redaction.
+/// Per-run secret store: holds a fetcher for resolving secrets and
+/// a cache of revealed values for redaction.
 ///
-/// Constructed with the declared secrets from global config.
+/// Constructed with a [`SecretFetcher`] that abstracts over the
+/// transport (local file vs. server API).
 /// As `(secret :name)` is called during CI execution, values are
 /// revealed and cached for redaction via [`redact`].
 ///
@@ -168,8 +206,8 @@ impl Revealed {
 /// across runs — values from previous runs would contaminate
 /// redaction of unrelated output.
 pub struct SecretRegistry {
-    /// name → declared secret (lazy reveal).
-    declared: HashMap<String, SecretString>,
+    /// Fetcher that resolves secret names to values.
+    fetcher: Box<dyn SecretFetcher>,
     /// name → revealed value (opaque, zeroed on drop).
     /// Populated on first `(secret :name)` call.
     revealed: HashMap<String, Revealed>,
@@ -178,18 +216,14 @@ pub struct SecretRegistry {
 impl std::fmt::Debug for SecretRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretRegistry")
-            .field("declared", &self.declared.keys().collect::<Vec<_>>())
             .field("revealed", &self.revealed.keys().collect::<Vec<_>>())
             .finish()
     }
 }
 
 impl From<HashMap<String, SecretString>> for SecretRegistry {
-    fn from(declared: HashMap<String, SecretString>) -> Self {
-        Self {
-            declared,
-            revealed: HashMap::new(),
-        }
+    fn from(secrets: HashMap<String, SecretString>) -> Self {
+        Self::new(Box::new(LocalSecretFetcher::new(secrets)))
     }
 }
 
@@ -201,18 +235,26 @@ impl From<Vec<(String, SecretString)>> for SecretRegistry {
 
 impl From<Vec<(&str, &str)>> for SecretRegistry {
     fn from(pairs: Vec<(&str, &str)>) -> Self {
-        let declared: HashMap<String, SecretString> = pairs
+        let map: HashMap<String, SecretString> = pairs
             .into_iter()
             .map(|(k, v)| (k.to_string(), SecretString::from(v)))
             .collect();
-        Self::from(declared)
+        Self::from(map)
     }
 }
 
 impl SecretRegistry {
+    /// Build a registry backed by `fetcher`.
+    pub fn new(fetcher: Box<dyn SecretFetcher>) -> Self {
+        Self {
+            fetcher,
+            revealed: HashMap::new(),
+        }
+    }
+
     /// Resolve a declared secret by name, caching the revealed value
-    /// for redaction. Returns `Err` if the name isn't declared or
-    /// the source can't be read.
+    /// for redaction. Returns `Err` if the name isn't known to the
+    /// fetcher or the source can't be read.
     ///
     /// Values shorter than 8 characters are returned to the caller
     /// but not registered for redaction — the false-positive rate on
@@ -227,11 +269,7 @@ impl SecretRegistry {
     /// through [`redact`] (e.g. `sh` command args, ShOutput) or wrap
     /// it in a type whose `Debug`/`Display` impl redacts.
     pub fn resolve(&mut self, name: &str) -> Result<String> {
-        let secret = self
-            .declared
-            .get(name)
-            .ok_or_else(|| Error::UnknownSecret(name.to_string()))?;
-        let value = secret.reveal()?.to_string();
+        let value = self.fetcher.fetch(name)?;
         if value.len() >= 8 {
             self.revealed
                 .insert(name.to_string(), Revealed::new(value.clone()));
