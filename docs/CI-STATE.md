@@ -18,12 +18,12 @@ stateDiagram-v2
     [*] --> pending : Runs::create
 
     pending  --> active     : transition(Active, None)
-    pending  --> superseded : Runs::create on same (repo, ref)\nsupersede_existing (raw SQL)
+    pending  --> superseded : Runs::create (same repo/ref) — supersede_existing
     pending  --> failed     : reconcile_orphans\nfailure_kind='orphaned'
 
     active   --> complete   : transition(Complete, None)
     active   --> failed     : transition(Failed, 'quire-ci-exit')
-    active   --> superseded : Runs::create on same (repo, ref)\ndocker kill + supersede_existing
+    active   --> superseded : Runs::create (same repo/ref) — docker kill + supersede_existing
     active   --> failed     : reconcile_orphans\nfailure_kind='orphaned'
 
     complete   --> [*]
