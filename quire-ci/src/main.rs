@@ -58,7 +58,7 @@ enum Commands {
     ///
     /// `--bootstrap <path>` points at a JSON file (see
     /// [`quire_core::ci::bootstrap::Bootstrap`]) produced by the
-    /// orchestrator that supplies push metadata and secrets.
+    /// orchestrator that supplies push metadata.
     Run {
         /// Where to send the structured event stream. Accepts:
         ///   `null`   — drop events (default).
@@ -76,7 +76,7 @@ enum Commands {
         out_dir: Option<PathBuf>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Carries push metadata and the secrets the run-fns may resolve.
+        /// Carries push metadata.
         #[arg(long)]
         bootstrap: PathBuf,
 
@@ -564,7 +564,6 @@ fn compile_at(workspace: &std::path::Path) -> Result<Pipeline> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn parse_events_target_classifies_input() {
@@ -593,7 +592,6 @@ mod tests {
                 pushed_at: jiff::Timestamp::now(),
             },
             git_dir: PathBuf::from("/tmp/repo.git"),
-            secrets: HashMap::new(),
             sentry: None,
         };
         fs_err::write(&path, serde_json::to_vec(&bootstrap).unwrap()).expect("write");

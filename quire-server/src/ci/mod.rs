@@ -1,7 +1,5 @@
 //! CI: trigger runs from push events, validate the job graph.
 
-use std::collections::HashMap;
-
 mod run;
 
 pub(crate) mod error;
@@ -114,7 +112,6 @@ struct TriggerContext<'a> {
 struct RunContext<'a> {
     repo: &'a Repo,
     db_path: &'a Path,
-    secrets: &'a HashMap<String, quire_core::secret::SecretString>,
     executor: Executor,
 }
 
@@ -157,7 +154,6 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         run: RunContext {
             repo: &repo,
             db_path: &db_path,
-            secrets: &config.secrets,
             executor: config.ci.executor,
         },
         event_repo: &event.repo,
@@ -262,14 +258,7 @@ fn run_ref_inner(
         Executor::Process => {
             // Compilation happens inside quire-ci so a malformed ci.fnl is
             // reported once, with the worker's trace context.
-            run.execute(
-                &ctx.repo.path(),
-                &workspace,
-                &meta,
-                ctx.secrets,
-                sentry,
-                Some(transport),
-            )?;
+            run.execute(&ctx.repo.path(), &workspace, &meta, sentry, Some(transport))?;
         }
     }
     Ok(())
@@ -417,15 +406,10 @@ mod tests {
         assert!(result.is_err(), "bad Fennel should fail");
     }
 
-    fn run_ctx<'a>(
-        repo: &'a crate::quire::Repo,
-        db_path: &'a std::path::Path,
-        secrets: &'a HashMap<String, quire_core::secret::SecretString>,
-    ) -> RunContext<'a> {
+    fn run_ctx<'a>(repo: &'a crate::quire::Repo, db_path: &'a std::path::Path) -> RunContext<'a> {
         RunContext {
             repo,
             db_path,
-            secrets,
             executor: Executor::Process,
         }
     }
@@ -517,8 +501,7 @@ exit 0
 
         let (_fake_dir, fake_path) = fake_quire_ci(0);
         let db_path = quire.db_path();
-        let secrets = HashMap::new();
-        let ctx = run_ctx(&repo, &db_path, &secrets);
+        let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
             run_ref_inner(
                 &ctx,
@@ -572,8 +555,7 @@ exit 0
 
         let (_fake_dir, fake_path) = fake_quire_ci(1);
         let db_path = quire.db_path();
-        let secrets = HashMap::new();
-        let ctx = run_ctx(&repo, &db_path, &secrets);
+        let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
             run_ref_inner(
                 &ctx,
@@ -617,8 +599,7 @@ exit 0
         };
 
         let db_path = quire.db_path();
-        let secrets = HashMap::new();
-        let ctx = run_ctx(&repo, &db_path, &secrets);
+        let ctx = run_ctx(&repo, &db_path);
         run_ref_inner(
             &ctx,
             pushed_at,

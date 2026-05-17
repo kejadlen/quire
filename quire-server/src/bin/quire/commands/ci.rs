@@ -45,11 +45,10 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path.clone());
 
-    // Pull secrets from the global config; absence is fine for local
-    // testing. A broken-but-present config is a real error.
-    let secrets = match quire.global_config() {
-        Ok(c) => c.secrets,
-        Err(quire::Error::ConfigNotFound(_)) => std::collections::HashMap::new(),
+    // Ensure the global config is valid; absence is fine for local testing.
+    match quire.global_config() {
+        Ok(_) => {}
+        Err(quire::Error::ConfigNotFound(_)) => {}
         Err(e) => return Err(e).into_diagnostic(),
     };
 
@@ -86,14 +85,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
         .into_diagnostic()?;
-    let exec_result = run.execute(
-        &repo_path.join(".git"),
-        &workspace,
-        &meta,
-        &secrets,
-        None,
-        None,
-    );
+    let exec_result = run.execute(&repo_path.join(".git"), &workspace, &meta, None, None);
 
     // Print the combined quire-ci log regardless of outcome.
     let log_path = tmp.path().join(&run_id).join("quire-ci.log");

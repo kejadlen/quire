@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use quire_core::ci::transport::ApiSession;
-use quire_core::secret::SecretString;
 use rand::{Rng, distr::Alphanumeric};
 
 use super::error::{Error, Result};
@@ -307,7 +306,6 @@ impl Run {
         git_dir: &Path,
         workspace: &Path,
         meta: &RunMeta,
-        secrets: &HashMap<String, SecretString>,
         sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
         transport: Option<&Transport>,
     ) -> Result<()> {
@@ -322,7 +320,7 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_bootstrap(&bootstrap_path, git_dir, meta, secrets, sentry)?;
+        write_bootstrap(&bootstrap_path, git_dir, meta, sentry)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -628,29 +626,18 @@ impl Run {
 }
 
 /// Serialize the bootstrap payload as JSON and write it to `path` with
-/// owner-only permissions on Unix. Secrets cross as plaintext so the
-/// 0600 mode is the line of defense against other local users; failure
-/// to set the mode aborts the write (better than leaking).
+/// owner-only permissions on Unix.
 fn write_bootstrap(
     path: &Path,
     git_dir: &Path,
     meta: &RunMeta,
-    secrets: &HashMap<String, SecretString>,
     sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
 ) -> Result<()> {
     use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 
-    let mut revealed: HashMap<String, String> = HashMap::with_capacity(secrets.len());
-    for (name, value) in secrets {
-        revealed.insert(
-            name.clone(),
-            value.reveal().map_err(Error::Secret)?.to_string(),
-        );
-    }
     let bootstrap = Bootstrap {
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
-        secrets: revealed,
         sentry: sentry.map(|s| SentryHandoff {
             dsn: s.dsn.clone(),
             trace_id: s.trace_id.clone(),
@@ -867,14 +854,7 @@ mod tests {
         let bootstrap_path = dir.path().join("bootstrap.json");
         let git_dir = dir.path().join("repos").join("test.git");
 
-        write_bootstrap(
-            &bootstrap_path,
-            &git_dir,
-            &test_meta(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("write_bootstrap");
+        write_bootstrap(&bootstrap_path, &git_dir, &test_meta(), None).expect("write_bootstrap");
 
         let bytes = fs_err::read(&bootstrap_path).expect("read bootstrap");
         let bootstrap: Bootstrap = serde_json::from_slice(&bytes).expect("parse bootstrap");
