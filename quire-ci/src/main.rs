@@ -108,9 +108,9 @@ impl TransportFlags {
             server_url: self.server_url,
             auth_token,
         };
-        Ok(match self.transport {
-            Transport::Filesystem => TransportArgs::Filesystem(session),
-            Transport::Api => TransportArgs::Api(session),
+        Ok(TransportArgs {
+            session,
+            mode: self.transport,
         })
     }
 }
@@ -196,15 +196,12 @@ pub enum Transport {
     Api,
 }
 
-/// Resolved transport.
-///
-/// - `Filesystem(_)`: filesystem executor; session info held for upcoming API route use.
-/// - `Api(_)`: HTTP API executor.
+/// Resolved transport. CLI-shape [`Transport`] + session from flags and env.
 #[derive(Debug)]
 #[allow(dead_code)] // session fields read by upcoming API client
-enum TransportArgs {
-    Filesystem(ApiSession),
-    Api(ApiSession),
+struct TransportArgs {
+    session: ApiSession,
+    mode: Transport,
 }
 
 fn main() -> miette::Result<()> {
