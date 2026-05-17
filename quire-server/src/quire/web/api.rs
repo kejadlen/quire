@@ -88,7 +88,7 @@ async fn get_secret(
     State(quire): State<Quire>,
     AxumPath((run_id, name)): AxumPath<(String, String)>,
     bearer: Option<TypedHeader<Authorization<Bearer>>>,
-) -> Result<(StatusCode, String), ApiError> {
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let Some(TypedHeader(Authorization(bearer))) = bearer else {
         return Err(ApiError::Unauthorized);
     };
@@ -109,7 +109,7 @@ async fn get_secret(
     .await
     .expect("blocking task panicked")?;
 
-    Ok((StatusCode::OK, value))
+    Ok(axum::Json(serde_json::json!({ "value": value })))
 }
 
 #[cfg(test)]
@@ -235,6 +235,7 @@ mod tests {
 
         use http_body_util::BodyExt;
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body.as_ref(), b"hunter2");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(parsed["value"], "hunter2");
     }
 }

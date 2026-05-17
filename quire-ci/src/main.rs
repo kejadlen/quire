@@ -383,9 +383,14 @@ fn fetch_secret_from_api(session: &ApiSession, name: &str) -> quire_core::secret
 
         let status = resp.status();
         if status.is_success() {
-            resp.text()
+            let body: serde_json::Value = resp
+                .json()
                 .await
-                .map_err(|e| SecretError::Resolve(e.to_string()))
+                .map_err(|e| SecretError::Resolve(e.to_string()))?;
+            body["value"]
+                .as_str()
+                .ok_or_else(|| SecretError::Resolve("secret response missing 'value' field".into()))
+                .map(String::from)
         } else if status == reqwest::StatusCode::NOT_FOUND {
             Err(SecretError::UnknownSecret(name_owned))
         } else {
