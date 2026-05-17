@@ -30,6 +30,18 @@ pub enum TransportMode {
     Api,
 }
 
+impl std::str::FromStr for TransportMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "filesystem" => Ok(Self::Filesystem),
+            "api" => Ok(Self::Api),
+            other => Err(format!("unknown transport mode: {other}")),
+        }
+    }
+}
+
 /// Runtime transport for a single CI run.
 /// Use `None` for local runs where no server is involved.
 #[derive(Clone, Debug)]

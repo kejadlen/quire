@@ -95,8 +95,8 @@ struct TransportFlags {
     server_url: String,
 
     /// Transport for CI ↔ server communication.
-    #[arg(long, default_value = "filesystem", value_enum)]
-    transport: TransportFlag,
+    #[arg(long, default_value = "filesystem")]
+    transport: TransportMode,
 }
 
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
@@ -170,13 +170,6 @@ fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
     }
 }
 
-/// CLI-only transport mode selector for `--transport`.
-#[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum TransportFlag {
-    Filesystem,
-    Api,
-}
-
 fn main() -> miette::Result<()> {
     miette::set_panic_hook();
     let cli = Cli::parse();
@@ -215,10 +208,7 @@ fn main() -> miette::Result<()> {
                     server_url: transport.server_url,
                     auth_token,
                 },
-                mode: match transport.transport {
-                    TransportFlag::Filesystem => TransportMode::Filesystem,
-                    TransportFlag::Api => TransportMode::Api,
-                },
+                mode: transport.transport,
             };
             let (git_dir, meta, secrets, sentry_handoff) = load_bootstrap(&bootstrap)?;
 
