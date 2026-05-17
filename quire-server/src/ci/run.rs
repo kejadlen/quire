@@ -984,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn for_new_run_mints_alphanumeric_token() {
+    fn new_transport_mints_alphanumeric_token() {
         for (transport, expected_url) in [
             (
                 new_transport(TransportMode::Filesystem, 3000),

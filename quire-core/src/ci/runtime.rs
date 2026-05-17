@@ -16,8 +16,6 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 use super::pipeline::{Job, Pipeline};
 use super::run::RunMeta;
 use crate::secret::{self, SecretFetcher, SecretRegistry, redact};
-#[cfg(test)]
-use crate::secret::{LocalSecretFetcher, SecretString};
 
 /// Errors produced by [`Runtime`] methods and the `RunFn::Rust`
 /// callbacks that hold them. A small sum carved out of the
@@ -661,6 +659,7 @@ pub struct ShOutput {
 mod tests {
     use super::*;
     use crate::ci::pipeline::{RunFn, compile};
+    use crate::secret::{LocalSecretFetcher, SecretString};
 
     /// Consume the pipeline for its VM, build a minimal runtime, and
     /// return the runtime, the first job's Lua run_fn, and the
