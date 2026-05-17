@@ -15,7 +15,7 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::RunMeta;
-use crate::secret::{self, SecretRegistry, SecretString, redact};
+use crate::secret::{self, LocalSecretFetcher, SecretFetcher, SecretRegistry, SecretString, redact};
 
 /// Errors produced by [`Runtime`] methods and the `RunFn::Rust`
 /// callbacks that hold them. A small sum carved out of the
@@ -135,7 +135,7 @@ impl Runtime {
     /// failure — abort is the right answer there.
     pub fn new(
         pipeline: Pipeline,
-        secrets: HashMap<String, SecretString>,
+        secret_fetcher: Box<dyn SecretFetcher>,
         meta: &RunMeta,
         git_dir: &std::path::Path,
         workspace: std::path::PathBuf,
@@ -175,7 +175,7 @@ impl Runtime {
         Self {
             pipeline,
             inputs,
-            registry: RefCell::new(SecretRegistry::from(secrets)),
+            registry: RefCell::new(SecretRegistry::new(secret_fetcher)),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),
@@ -340,12 +340,13 @@ impl Runtime {
     /// land under a fresh tempdir each call (leaked into the system
     /// temp area, since tests don't share a TempDir handle).
     fn for_test(pipeline: Pipeline, secrets: HashMap<String, SecretString>) -> Self {
+        // for_test keeps HashMap for convenience in tests
         let log_dir = tempfile::tempdir()
             .expect("tempdir for runtime logs")
             .keep();
         Self {
             pipeline,
-            registry: RefCell::new(SecretRegistry::from(secrets)),
+            registry: RefCell::new(SecretRegistry::new(Box::new(LocalSecretFetcher::new(secrets)))),
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),

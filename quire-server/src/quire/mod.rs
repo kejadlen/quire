@@ -50,6 +50,11 @@ pub struct CiConfig {
     /// the top-level `server-url`).
     #[serde(default)]
     pub transport: TransportMode,
+    /// When true, quire-ci fetches secrets via the server API
+    /// (`GET /api/runs/{id}/secrets/{name}`) instead of reading them
+    /// from the bootstrap file. Requires `transport = "api"`.
+    #[serde(default)]
+    pub api_secrets: bool,
 }
 
 #[derive(serde::Deserialize, Debug)]
