@@ -12,7 +12,7 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
-use quire_core::ci::transport::ApiSession;
+use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
@@ -96,11 +96,11 @@ struct TransportFlags {
 
     /// Transport for CI ↔ server communication.
     #[arg(long, default_value = "filesystem", value_enum)]
-    transport: Transport,
+    transport: TransportFlag,
 }
 
 impl TransportFlags {
-    fn resolve(self, auth_token: Option<String>) -> miette::Result<TransportArgs> {
+    fn resolve(self, auth_token: Option<String>) -> miette::Result<Transport> {
         let auth_token =
             auth_token.ok_or_else(|| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
         let session = ApiSession {
@@ -108,10 +108,11 @@ impl TransportFlags {
             server_url: self.server_url,
             auth_token,
         };
-        Ok(TransportArgs {
-            session,
-            mode: self.transport,
-        })
+        let mode = match self.transport {
+            TransportFlag::Filesystem => TransportMode::Filesystem,
+            TransportFlag::Api => TransportMode::Api,
+        };
+        Ok(Transport { session, mode })
     }
 }
 
@@ -186,22 +187,11 @@ fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
     }
 }
 
-/// Transport for CI ↔ server communication.
-///
-/// CLI-shape only; the resolved variant (carrying the shared
-/// [`ApiSession`]) is `TransportArgs`.
+/// CLI-only transport mode selector for `--transport`.
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum Transport {
+enum TransportFlag {
     Filesystem,
     Api,
-}
-
-/// Resolved transport. CLI-shape [`Transport`] + session from flags and env.
-#[derive(Debug)]
-#[allow(dead_code)] // session fields read by upcoming API client
-struct TransportArgs {
-    session: ApiSession,
-    mode: Transport,
 }
 
 fn main() -> miette::Result<()> {
@@ -389,7 +379,7 @@ fn run_pipeline(
     git_dir: PathBuf,
     meta: RunMeta,
     secrets: HashMap<String, quire_core::secret::SecretString>,
-    _transport: TransportArgs,
+    _transport: Transport,
 ) -> miette::Result<()> {
     let pipeline = match compile_at(&workspace) {
         Ok(p) => p,

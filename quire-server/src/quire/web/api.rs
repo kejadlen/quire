@@ -119,7 +119,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::Quire;
-    use crate::ci::{RunMeta, Runs, Transport, TransportMode};
+    use crate::ci::{RunMeta, Runs, TransportMode, new_transport};
 
     struct TestEnv {
         _dir: tempfile::TempDir,
@@ -167,7 +167,7 @@ mod tests {
     #[tokio::test]
     async fn secret_returns_401_without_auth_header() {
         let env = TestEnv::new();
-        let transport = Transport::for_new_run(TransportMode::Api, 3000);
+        let transport = new_transport(TransportMode::Api, 3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
@@ -180,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn secret_returns_401_for_wrong_token() {
         let env = TestEnv::new();
-        let transport = Transport::for_new_run(TransportMode::Api, 3000);
+        let transport = new_transport(TransportMode::Api, 3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
@@ -205,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn secret_returns_404_for_unknown_secret_name() {
         let env = TestEnv::new();
-        let transport = Transport::for_new_run(TransportMode::Api, 3000);
+        let transport = new_transport(TransportMode::Api, 3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
@@ -224,7 +224,7 @@ mod tests {
             r#"{:secrets {:my_token "hunter2"}}"#,
         )
         .expect("write config");
-        let transport = Transport::for_new_run(TransportMode::Api, 3000);
+        let transport = new_transport(TransportMode::Api, 3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");

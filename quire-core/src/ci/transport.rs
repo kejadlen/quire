@@ -1,7 +1,7 @@
 //! Shared transport types for CI ↔ server communication.
 //!
 //! The on-the-wire pairing both sides agree on. The orchestrator
-//! constructs an `ApiSession` per run (minting the auth token and
+//! constructs a `Transport` per run (minting the auth token and
 //! using the run's UUID); quire-ci reconstructs it from CLI flags
 //! plus `QUIRE_CI_TOKEN`.
 
@@ -19,4 +19,21 @@ pub struct ApiSession {
     /// Bearer token minted at run creation time. Matches
     /// `runs.auth_token` server-side.
     pub auth_token: String,
+}
+
+/// Transport mode for CI ↔ server communication.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransportMode {
+    #[default]
+    Filesystem,
+    Api,
+}
+
+/// Runtime transport for a single CI run.
+/// Use `None` for local runs where no server is involved.
+#[derive(Clone, Debug)]
+pub struct Transport {
+    pub session: ApiSession,
+    pub mode: TransportMode,
 }
