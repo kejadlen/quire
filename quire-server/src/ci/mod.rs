@@ -12,10 +12,10 @@ pub use quire_core::ci::pipeline::{
 };
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::transport::ApiSession;
+pub use quire_core::ci::transport::{Transport, TransportMode};
 pub use quire_core::ci::{pipeline, registration, runtime};
 pub use run::{
-    Executor, Run, RunState, Runs, Transport, TransportMode, materialize_workspace,
-    reconcile_orphans,
+    Executor, Run, RunState, Runs, materialize_workspace, new_transport, reconcile_orphans,
 };
 
 /// A resolved commit reference.
@@ -188,7 +188,7 @@ fn run_ref(
     trace_id: sentry::protocol::TraceId,
     span_id: sentry::protocol::SpanId,
 ) {
-    let transport = Transport::for_new_run(ctx.transport_mode, ctx.port);
+    let transport = new_transport(ctx.transport_mode, ctx.port);
     let sentry_handoff =
         ctx.sentry_dsn
             .as_ref()
@@ -524,7 +524,7 @@ exit 0
                 &ctx,
                 pushed_at,
                 &push_ref,
-                &Transport::for_new_run(TransportMode::Filesystem, 3000),
+                &new_transport(TransportMode::Filesystem, 3000),
                 None,
             )
         });
@@ -579,7 +579,7 @@ exit 0
                 &ctx,
                 pushed_at,
                 &push_ref,
-                &Transport::for_new_run(TransportMode::Filesystem, 3000),
+                &new_transport(TransportMode::Filesystem, 3000),
                 None,
             )
         });
@@ -623,7 +623,7 @@ exit 0
             &ctx,
             pushed_at,
             &push_ref,
-            &Transport::for_new_run(TransportMode::Filesystem, 3000),
+            &new_transport(TransportMode::Filesystem, 3000),
             None,
         )
         .expect("should succeed without ci.fnl");

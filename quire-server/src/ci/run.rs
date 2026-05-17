@@ -16,6 +16,7 @@ use rand::{Rng, distr::Alphanumeric};
 use super::error::{Error, Result};
 
 pub use quire_core::ci::run::RunMeta;
+pub use quire_core::ci::transport::{Transport, TransportMode};
 
 /// How a run dispatches its pipeline.
 ///
@@ -30,38 +31,17 @@ pub enum Executor {
     Process,
 }
 
-/// Transport for CI ↔ server communication.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TransportMode {
-    #[default]
-    Filesystem,
-    Api,
-}
-
-/// Runtime transport for a single CI run. Built once per run from
-/// the config-shape [`TransportMode`] + the server's listen port,
-/// then passed to `Runs::create` and `Run::execute`.
-/// Use `None` for local runs where no server is involved.
-#[derive(Clone, Debug)]
-pub struct Transport {
-    pub session: ApiSession,
-    pub mode: TransportMode,
-}
-
-impl Transport {
-    /// Build a runtime transport for a new run. Always mints a fresh
-    /// run ID and CSPRNG bearer token, deriving the loopback server
-    /// URL from `port`.
-    pub fn for_new_run(mode: TransportMode, port: u16) -> Self {
-        Self {
-            session: ApiSession {
-                run_id: uuid::Uuid::now_v7().to_string(),
-                server_url: format!("http://127.0.0.1:{port}"),
-                auth_token: mint_auth_token(),
-            },
-            mode,
-        }
+/// Mint a fresh transport for a new orchestrator-dispatched run. Generates
+/// a UUIDv7 run ID and CSPRNG bearer token, deriving the loopback server
+/// URL from `port`.
+pub fn new_transport(mode: TransportMode, port: u16) -> Transport {
+    Transport {
+        session: ApiSession {
+            run_id: uuid::Uuid::now_v7().to_string(),
+            server_url: format!("http://127.0.0.1:{port}"),
+            auth_token: mint_auth_token(),
+        },
+        mode,
     }
 }
 
@@ -768,7 +748,7 @@ mod tests {
     }
 
     fn test_transport() -> Transport {
-        Transport::for_new_run(TransportMode::Filesystem, 3000)
+        new_transport(TransportMode::Filesystem, 3000)
     }
 
     fn test_meta() -> RunMeta {
@@ -937,7 +917,7 @@ mod tests {
     fn create_with_filesystem_persists_auth_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let transport = Transport::for_new_run(TransportMode::Filesystem, 3000);
+        let transport = new_transport(TransportMode::Filesystem, 3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
         assert_eq!(run.id(), transport.session.run_id);
@@ -961,7 +941,7 @@ mod tests {
     fn create_with_api_persists_minted_auth_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let transport = Transport::for_new_run(TransportMode::Api, 3000);
+        let transport = new_transport(TransportMode::Api, 3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
         assert_eq!(run.id(), transport.session.run_id);
@@ -984,11 +964,11 @@ mod tests {
     fn for_new_run_mints_alphanumeric_token() {
         for (transport, expected_url) in [
             (
-                Transport::for_new_run(TransportMode::Filesystem, 3000),
+                new_transport(TransportMode::Filesystem, 3000),
                 "http://127.0.0.1:3000",
             ),
             (
-                Transport::for_new_run(TransportMode::Api, 4000),
+                new_transport(TransportMode::Api, 4000),
                 "http://127.0.0.1:4000",
             ),
         ] {
