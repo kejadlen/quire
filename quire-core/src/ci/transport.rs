@@ -48,4 +48,7 @@ impl std::str::FromStr for TransportMode {
 pub struct Transport {
     pub session: ApiSession,
     pub mode: TransportMode,
+    /// When true, the server does not embed secrets in the bootstrap file;
+    /// quire-ci fetches them via `GET /api/runs/{id}/secrets/{name}`.
+    pub api_secrets: bool,
 }

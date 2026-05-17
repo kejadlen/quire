@@ -211,6 +211,7 @@ fn main() -> miette::Result<()> {
                     auth_token,
                 },
                 mode: transport.transport,
+                api_secrets: false,
             };
             let (git_dir, meta, secrets, sentry_handoff) = load_bootstrap(&bootstrap)?;
 

@@ -42,6 +42,7 @@ pub fn new_transport(mode: TransportMode, port: u16) -> Transport {
             auth_token: mint_auth_token(),
         },
         mode,
+        api_secrets: false,
     }
 }
 
@@ -322,7 +323,13 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_bootstrap(&bootstrap_path, git_dir, meta, secrets, sentry)?;
+        let write_secrets = transport.map_or(true, |t| !t.api_secrets);
+        let bootstrap_secrets = if write_secrets {
+            secrets
+        } else {
+            &HashMap::new()
+        };
+        write_bootstrap(&bootstrap_path, git_dir, meta, bootstrap_secrets, sentry)?;
 
         tracing::info!(
             run_id = %self.id,

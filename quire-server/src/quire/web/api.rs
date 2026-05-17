@@ -4,12 +4,15 @@
 //! header auth used by the web UI). Each token is minted when the run
 //! is created and scoped to that run's ID.
 
+use std::path::PathBuf;
+
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response, Result};
 use axum_extra::TypedHeader;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
+use jiff::Timestamp;
 
 use crate::Quire;
 
@@ -19,6 +22,10 @@ use crate::Quire;
 /// Intended to be mounted at `/api` via `Router::nest`.
 pub fn router(quire: Quire) -> axum::Router {
     axum::Router::new()
+        .route(
+            "/runs/{run_id}/bootstrap",
+            axum::routing::get(get_bootstrap),
+        )
         .route(
             "/runs/{run_id}/secrets/{name}",
             axum::routing::get(get_secret),
@@ -32,6 +39,8 @@ enum ApiError {
     NotFound,
     #[error("unauthorized")]
     Unauthorized,
+    #[error("already fetched")]
+    AlreadyFetched,
     #[error(transparent)]
     Db(rusqlite::Error),
     #[error(transparent)]
@@ -54,6 +63,7 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
+            ApiError::AlreadyFetched => StatusCode::GONE.into_response(),
             e => {
                 tracing::error!(error = %e, "api error");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -77,6 +87,106 @@ fn verify_token(db: &rusqlite::Connection, run_id: &str, token: &str) -> Result<
         Some(ref t) if t == token => Ok(()),
         _ => Err(ApiError::Unauthorized),
     }
+}
+
+/// `GET /api/runs/:run_id/bootstrap`
+///
+/// Returns the bootstrap payload for the run: push metadata, the bare
+/// repo path, and the Sentry handoff (when configured). One-shot: sets
+/// `bootstrap_fetched_at_ms` on first successful read; subsequent
+/// requests get 410 Gone.
+///
+/// Auth: `Authorization: Bearer <token>` matching `runs.auth_token`.
+async fn get_bootstrap(
+    State(quire): State<Quire>,
+    AxumPath(run_id): AxumPath<String>,
+    bearer: Option<TypedHeader<Authorization<Bearer>>>,
+) -> Result<axum::Json<quire_core::ci::bootstrap::Bootstrap>, ApiError> {
+    let Some(TypedHeader(Authorization(bearer))) = bearer else {
+        return Err(ApiError::Unauthorized);
+    };
+    let token = bearer.token().to_string();
+
+    let bootstrap = tokio::task::spawn_blocking(move || -> std::result::Result<_, ApiError> {
+        let db = quire
+            .db_pool()
+            .lock()
+            .map_err(|_| crate::Error::Io(std::io::Error::other("db mutex poisoned")))?;
+
+        let row: (String, String, String, i64, Option<String>, Option<i64>) = db
+            .query_row(
+                "SELECT repo, sha, ref_name, pushed_at_ms, auth_token, bootstrap_fetched_at_ms
+                 FROM runs WHERE id = ?1",
+                rusqlite::params![run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .map_err(ApiError::from)?;
+
+        let (repo, sha, ref_name, pushed_at_ms, stored_token, fetched_at_ms) = row;
+
+        match stored_token {
+            Some(ref t) if t == &token => {}
+            _ => return Err(ApiError::Unauthorized),
+        }
+
+        if fetched_at_ms.is_some() {
+            return Err(ApiError::AlreadyFetched);
+        }
+
+        let now = Timestamp::now().as_millisecond();
+        let updated = db
+            .execute(
+                "UPDATE runs SET bootstrap_fetched_at_ms = ?1
+                 WHERE id = ?2 AND bootstrap_fetched_at_ms IS NULL",
+                rusqlite::params![now, run_id],
+            )
+            .map_err(ApiError::Db)?;
+
+        if updated == 0 {
+            return Err(ApiError::AlreadyFetched);
+        }
+
+        let config = quire.global_config()?;
+        let sentry = config.sentry.as_ref().and_then(|s| match s.dsn.reveal() {
+            Ok(dsn) => Some(quire_core::ci::bootstrap::SentryHandoff {
+                dsn: dsn.to_string(),
+                trace_id: String::new(),
+            }),
+            Err(e) => {
+                tracing::warn!(run_id = %run_id, error = %e, "failed to reveal sentry DSN");
+                None
+            }
+        });
+
+        let git_dir: PathBuf = quire.repos_dir().join(&repo);
+        let meta = quire_core::ci::run::RunMeta {
+            sha,
+            r#ref: ref_name,
+            pushed_at: Timestamp::from_millisecond(pushed_at_ms).map_err(|e| {
+                ApiError::App(crate::Error::from(std::io::Error::other(e.to_string())))
+            })?,
+        };
+
+        Ok(quire_core::ci::bootstrap::Bootstrap {
+            meta,
+            git_dir,
+            secrets: std::collections::HashMap::new(),
+            sentry,
+        })
+    })
+    .await
+    .expect("blocking task panicked")?;
+
+    Ok(axum::Json(bootstrap))
 }
 
 /// `GET /api/runs/:run_id/secrets/:name`
@@ -236,5 +346,72 @@ mod tests {
         use http_body_util::BodyExt;
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), b"hunter2");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_401_without_auth_header() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create");
+        let url = format!("/runs/{}/bootstrap", transport.session.run_id);
+
+        let resp = get(env.app(), &url, None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_401_for_wrong_token() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create");
+        let url = format!("/runs/{}/bootstrap", transport.session.run_id);
+
+        let resp = get(env.app(), &url, Some("wrongtoken")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_404_for_unknown_run() {
+        let env = TestEnv::new();
+        let resp = get(
+            env.app(),
+            "/runs/00000000-0000-0000-0000-000000000001/bootstrap",
+            Some("token"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_200_on_first_fetch() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create");
+        let url = format!("/runs/{}/bootstrap", transport.session.run_id);
+
+        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_410_on_second_fetch() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create");
+        let url = format!("/runs/{}/bootstrap", transport.session.run_id);
+
+        let first = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        assert_eq!(second.status(), StatusCode::GONE);
     }
 }
