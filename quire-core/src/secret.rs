@@ -157,6 +157,10 @@ impl Revealed {
 
 // Explicitly no Debug impl — revealed values must never be printed.
 
+/// Signature for a secret fallback fetcher: given a name, return the
+/// revealed value or an error.
+type SecretFetcher = Box<dyn Fn(&str) -> Result<String>>;
+
 /// Per-run secret store: holds declared secrets and their revealed
 /// values for both lookup and redaction.
 ///
@@ -173,6 +177,11 @@ pub struct SecretRegistry {
     /// name → revealed value (opaque, zeroed on drop).
     /// Populated on first `(secret :name)` call.
     revealed: HashMap<String, Revealed>,
+    /// Optional fallback invoked when a name is not in `declared`.
+    /// Intended for API transport: quire-ci installs a closure that
+    /// fetches the value from the server. Names resolved via the
+    /// fallback are registered for redaction just like declared ones.
+    fallback: Option<SecretFetcher>,
 }
 
 impl std::fmt::Debug for SecretRegistry {
@@ -180,6 +189,7 @@ impl std::fmt::Debug for SecretRegistry {
         f.debug_struct("SecretRegistry")
             .field("declared", &self.declared.keys().collect::<Vec<_>>())
             .field("revealed", &self.revealed.keys().collect::<Vec<_>>())
+            .field("fallback", &self.fallback.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -189,6 +199,7 @@ impl From<HashMap<String, SecretString>> for SecretRegistry {
         Self {
             declared,
             revealed: HashMap::new(),
+            fallback: None,
         }
     }
 }
@@ -210,9 +221,26 @@ impl From<Vec<(&str, &str)>> for SecretRegistry {
 }
 
 impl SecretRegistry {
-    /// Resolve a declared secret by name, caching the revealed value
-    /// for redaction. Returns `Err` if the name isn't declared or
-    /// the source can't be read.
+    /// Install a fallback resolver called when a secret name is not
+    /// found in the declared map. Intended for API transport: quire-ci
+    /// installs a closure that fetches the value from quire-server.
+    ///
+    /// The fallback is tried exactly once per `resolve` call — results
+    /// are not cached between calls, so the closure is responsible for
+    /// any fetch-level caching it needs. Revealed values are still
+    /// registered for redaction regardless of which path produced them.
+    pub fn with_fallback<F>(mut self, fallback: F) -> Self
+    where
+        F: Fn(&str) -> Result<String> + 'static,
+    {
+        self.fallback = Some(Box::new(fallback));
+        self
+    }
+
+    /// Resolve a secret by name, caching the revealed value for
+    /// redaction. Checks `declared` first; if the name is absent and a
+    /// fallback is installed, calls it. Returns `Err` if the name is
+    /// unknown through both paths or the source can't be read.
     ///
     /// Values shorter than 8 characters are returned to the caller
     /// but not registered for redaction — the false-positive rate on
@@ -227,11 +255,13 @@ impl SecretRegistry {
     /// through [`redact`] (e.g. `sh` command args, ShOutput) or wrap
     /// it in a type whose `Debug`/`Display` impl redacts.
     pub fn resolve(&mut self, name: &str) -> Result<String> {
-        let secret = self
-            .declared
-            .get(name)
-            .ok_or_else(|| Error::UnknownSecret(name.to_string()))?;
-        let value = secret.reveal()?.to_string();
+        let value = if let Some(secret) = self.declared.get(name) {
+            secret.reveal()?.to_string()
+        } else if let Some(ref fallback) = self.fallback {
+            fallback(name)?
+        } else {
+            return Err(Error::UnknownSecret(name.to_string()));
+        };
         if value.len() >= 8 {
             self.revealed
                 .insert(name.to_string(), Revealed::new(value.clone()));

@@ -9,11 +9,12 @@ loaded via the embedding described in [`fennel.md`](fennel.md).
 Lives at `/var/quire/config.fnl` on the bind-mounted volume.
 Operator-created. Re-read on every call (no caching today).
 
-| Key            | Type           | Required | Purpose                                                  |
-|----------------|----------------|----------|----------------------------------------------------------|
-| `:port`        | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
-| `:sentry :dsn` | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
-| `:secrets`     | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)`. |
+| Key                  | Type           | Required | Purpose                                                  |
+|----------------------|----------------|----------|----------------------------------------------------------|
+| `:port`              | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
+| `:sentry :dsn`       | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
+| `:secrets`           | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)`. |
+| `:ci :transport`     | string         | no       | How `quire-ci` receives secrets. `"filesystem"` (default) bakes revealed values into the bootstrap file; `"api"` serves them on demand via the HTTP API instead. See [Secret transport modes](#secret-transport-modes) below. |
 
 Minimal (no Sentry, no secrets):
 
@@ -82,6 +83,31 @@ Limits worth knowing:
   raw secret; subsequent `(sh ...)` calls composed from it have
   their *recorded* output redacted at record time.
 - Tracing output is not yet redacted (tracked separately).
+
+## Secret transport modes
+
+The `:ci :transport` key controls how `quire-ci` obtains secret values at
+run time. The two modes are:
+
+**`"filesystem"` (default):** Secrets are revealed into the bootstrap JSON
+file (mode `0600`) before `quire-ci` is spawned. The subprocess reads and
+immediately unlinks the file.
+
+**`"api"`:** `quire-ci` ignores the secrets map in the bootstrap file and
+fetches each value on demand from `GET /api/runs/{run_id}/secrets/{name}`
+using the per-run bearer token when a run-fn calls `(secret :name)`. The
+bootstrap file is still written and used for run metadata; only the secret
+values travel over the loopback HTTP channel instead of disk.
+
+To opt in:
+
+```fennel
+{:ci {:transport :api}}
+```
+
+The filesystem path remains the default. Use `:api` to validate the HTTP
+path before a future change stops writing secrets to the bootstrap file
+entirely.
 
 ## See also
 

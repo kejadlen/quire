@@ -349,18 +349,14 @@ impl Run {
                     .arg("--server-url")
                     .arg(&t.session.server_url);
                 cmd.env("QUIRE_CI_TOKEN", &t.session.auth_token);
-                match t.mode {
-                    TransportMode::Filesystem => {
-                        cmd.arg("--out-dir")
-                            .arg(&run_dir)
-                            .arg("--events")
-                            .arg(&events_path)
-                            .arg("--bootstrap")
-                            .arg(&bootstrap_path);
-                    }
-                    TransportMode::Api => {
-                        cmd.arg("--transport").arg("api");
-                    }
+                cmd.arg("--out-dir")
+                    .arg(&run_dir)
+                    .arg("--events")
+                    .arg(&events_path)
+                    .arg("--bootstrap")
+                    .arg(&bootstrap_path);
+                if t.mode == TransportMode::Api {
+                    cmd.arg("--transport").arg("api");
                 }
             }
         }
