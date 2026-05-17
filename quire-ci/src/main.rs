@@ -14,6 +14,7 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
+use quire_core::secret::SecretRegistry;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -235,13 +236,25 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
+            // API transport fetches secrets from the server on demand
+            // instead of reading them from the bootstrap file. The
+            // bootstrap secrets map is ignored in this path; a later
+            // change will stop writing secrets to bootstrap entirely.
+            let registry = if transport.mode == TransportMode::Api {
+                let session = transport.session.clone();
+                SecretRegistry::from(HashMap::new())
+                    .with_fallback(move |name| fetch_secret_from_api(&session, name))
+            } else {
+                SecretRegistry::from(secrets)
+            };
+
             run_pipeline(
                 cli.workspace,
                 sink,
                 log_dir,
                 git_dir,
                 meta,
-                secrets,
+                registry,
                 transport,
             )
         }
@@ -356,13 +369,56 @@ fn load_bootstrap(
     Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
 }
 
+/// Fetch a single secret value from quire-server's API.
+///
+/// Called by the [`SecretRegistry`] fallback when API transport is
+/// selected. Uses [`tokio::runtime::Handle::block_on`] to drive the
+/// async HTTP call from synchronous Lua callback context. The caller
+/// must be on a thread that has entered a Tokio runtime (guaranteed
+/// by `rt.enter()` in `main`).
+///
+/// Maps the server's 404 to [`quire_core::secret::Error::UnknownSecret`]
+/// so the error message mirrors the filesystem-backed path.
+fn fetch_secret_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
+    use quire_core::secret::Error as SecretError;
+
+    let url = format!(
+        "{}/api/runs/{}/secrets/{}",
+        session.server_url, session.run_id, name
+    );
+    let token = session.auth_token.clone();
+    let name_owned = name.to_string();
+
+    tokio::runtime::Handle::current().block_on(async move {
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| SecretError::Resolve(e.to_string()))?;
+
+        let status = resp.status();
+        if status.is_success() {
+            resp.text()
+                .await
+                .map_err(|e| SecretError::Resolve(e.to_string()))
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            Err(SecretError::UnknownSecret(name_owned))
+        } else {
+            Err(SecretError::Resolve(format!(
+                "secret API returned {status} for {name_owned:?}"
+            )))
+        }
+    })
+}
+
 fn run_pipeline(
     workspace: PathBuf,
     mut sink: Box<dyn EventSink>,
     log_dir: PathBuf,
     git_dir: PathBuf,
     meta: RunMeta,
-    secrets: HashMap<String, quire_core::secret::SecretString>,
+    registry: SecretRegistry,
     _transport: Transport,
 ) -> miette::Result<()> {
     let pipeline = match compile_at(&workspace) {
@@ -404,7 +460,7 @@ fn run_pipeline(
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
     let runtime = Rc::new(Runtime::new(
-        pipeline, secrets, &meta, &git_dir, workspace, log_dir,
+        pipeline, registry, &meta, &git_dir, workspace, log_dir,
     ));
 
     // Active job pointer, shared between the main loop and the
