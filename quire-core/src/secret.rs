@@ -157,39 +157,50 @@ impl Revealed {
 
 // Explicitly no Debug impl — revealed values must never be printed.
 
-/// Per-run secret store: holds declared secrets and their revealed
-/// values for both lookup and redaction.
+/// Signature for a secret fallback fetcher: given a name, return the
+/// revealed value or an error.
+type SecretFetcher = Box<dyn Fn(&str) -> Result<String>>;
+
+/// Per-run secret store. Resolves secret names to values via a fetcher
+/// closure, caching each result so the fetcher is called at most once
+/// per name. Revealed values are registered for redaction.
 ///
-/// Constructed with the declared secrets from global config.
-/// As `(secret :name)` is called during CI execution, values are
-/// revealed and cached for redaction via [`redact`].
+/// The normal construction path installs an API fetcher and starts with
+/// an empty cache. The filesystem source pre-warms the cache via
+/// [`SecretRegistry::seed`] so no fetches are needed at run time.
 ///
 /// Lifetime is bounded to a single CI run. Do not carry a registry
-/// across runs — values from previous runs would contaminate
+/// across runs — revealed values from previous runs would contaminate
 /// redaction of unrelated output.
 pub struct SecretRegistry {
-    /// name → declared secret (lazy reveal).
-    declared: HashMap<String, SecretString>,
-    /// name → revealed value (opaque, zeroed on drop).
-    /// Populated on first `(secret :name)` call.
+    /// Pull-through cache: name → secret. Pre-seeded for the filesystem
+    /// source; populated lazily for the API source.
+    cache: HashMap<String, SecretString>,
+    /// name → revealed value (opaque). Populated on first `(secret :name)` call.
     revealed: HashMap<String, Revealed>,
+    /// Called when a name is absent from the cache. Always present — the
+    /// normal case is an API fetcher; tests and the filesystem source use
+    /// a closure that returns [`Error::UnknownSecret`].
+    fetcher: SecretFetcher,
 }
 
 impl std::fmt::Debug for SecretRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretRegistry")
-            .field("declared", &self.declared.keys().collect::<Vec<_>>())
+            .field("cache", &self.cache.keys().collect::<Vec<_>>())
             .field("revealed", &self.revealed.keys().collect::<Vec<_>>())
+            .field("fetcher", &"<fn>")
             .finish()
     }
 }
 
+fn not_found_fetcher(name: &str) -> Result<String> {
+    Err(Error::UnknownSecret(name.to_string()))
+}
+
 impl From<HashMap<String, SecretString>> for SecretRegistry {
-    fn from(declared: HashMap<String, SecretString>) -> Self {
-        Self {
-            declared,
-            revealed: HashMap::new(),
-        }
+    fn from(secrets: HashMap<String, SecretString>) -> Self {
+        Self::new(not_found_fetcher).seed(secrets)
     }
 }
 
@@ -201,17 +212,44 @@ impl From<Vec<(String, SecretString)>> for SecretRegistry {
 
 impl From<Vec<(&str, &str)>> for SecretRegistry {
     fn from(pairs: Vec<(&str, &str)>) -> Self {
-        let declared: HashMap<String, SecretString> = pairs
+        let cache: HashMap<String, SecretString> = pairs
             .into_iter()
             .map(|(k, v)| (k.to_string(), SecretString::from(v)))
             .collect();
-        Self::from(declared)
+        Self::from(cache)
     }
 }
 
 impl SecretRegistry {
-    /// Resolve a declared secret by name, caching the revealed value
-    /// for redaction. Returns `Err` if the name isn't declared or
+    /// Create a registry backed by `fetcher`. The cache starts empty;
+    /// use [`SecretRegistry::seed`] to pre-warm it.
+    ///
+    /// `fetcher` is called at most once per name — results are cached
+    /// back into the registry so subsequent lookups are local. Values
+    /// fetched through either path are registered for redaction.
+    pub fn new<F>(fetcher: F) -> Self
+    where
+        F: Fn(&str) -> Result<String> + 'static,
+    {
+        Self {
+            cache: HashMap::new(),
+            revealed: HashMap::new(),
+            fetcher: Box::new(fetcher),
+        }
+    }
+
+    /// Pre-warm the cache with an existing set of secrets. Intended for
+    /// the filesystem source, which receives all secrets up-front in the
+    /// bootstrap file. Pre-seeded names are served from the cache without
+    /// invoking the fetcher.
+    pub fn seed(mut self, secrets: HashMap<String, SecretString>) -> Self {
+        self.cache = secrets;
+        self
+    }
+
+    /// Resolve a secret by name, caching the revealed value for
+    /// redaction. Checks the cache first; on a miss, calls the fetcher
+    /// and stores the result. Returns `Err` if the name is unknown or
     /// the source can't be read.
     ///
     /// Values shorter than 8 characters are returned to the caller
@@ -227,11 +265,14 @@ impl SecretRegistry {
     /// through [`redact`] (e.g. `sh` command args, ShOutput) or wrap
     /// it in a type whose `Debug`/`Display` impl redacts.
     pub fn resolve(&mut self, name: &str) -> Result<String> {
-        let secret = self
-            .declared
-            .get(name)
-            .ok_or_else(|| Error::UnknownSecret(name.to_string()))?;
-        let value = secret.reveal()?.to_string();
+        let value = if let Some(secret) = self.cache.get(name) {
+            secret.reveal()?.to_string()
+        } else {
+            let fetched = (self.fetcher)(name)?;
+            self.cache
+                .insert(name.to_string(), SecretString::from(fetched.clone()));
+            fetched
+        };
         if value.len() >= 8 {
             self.revealed
                 .insert(name.to_string(), Revealed::new(value.clone()));
@@ -308,7 +349,7 @@ mod tests {
         );
         assert!(
             debug_output.contains("github_token"),
-            "SecretRegistry Debug should still surface declared names: {debug_output}"
+            "SecretRegistry Debug should still surface cached names: {debug_output}"
         );
     }
 
@@ -430,6 +471,31 @@ mod tests {
         });
         let w: Wrapper = serde_json::from_value(json).expect("deserialize");
         assert_eq!(w.token.reveal().unwrap(), "from_file");
+    }
+
+    #[test]
+    fn fallback_result_is_cached_in_declared() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counter = call_count.clone();
+
+        let mut registry = SecretRegistry::new(move |name| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(format!("fetched_{name}_abcdefgh"))
+        });
+
+        let first = registry.resolve("token").unwrap();
+        let second = registry.resolve("token").unwrap();
+
+        assert_eq!(first, "fetched_token_abcdefgh");
+        assert_eq!(second, "fetched_token_abcdefgh");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "fallback should be called exactly once"
+        );
     }
 
     #[test]

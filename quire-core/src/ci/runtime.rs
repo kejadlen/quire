@@ -15,7 +15,9 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::RunMeta;
-use crate::secret::{self, SecretRegistry, SecretString, redact};
+#[cfg(test)]
+use crate::secret::SecretString;
+use crate::secret::{self, SecretRegistry, redact};
 
 /// Errors produced by [`Runtime`] methods and the `RunFn::Rust`
 /// callbacks that hold them. A small sum carved out of the
@@ -128,6 +130,9 @@ impl Runtime {
     ///
     /// Takes ownership of the pipeline (including its Lua VM). `meta`
     /// provides the push data for `:quire/push` source outputs.
+    /// `registry` supplies secrets for `(secret :name)` calls; build
+    /// it via [`SecretRegistry::new`] with an API fetcher, optionally
+    /// pre-seeded via [`SecretRegistry::seed`] for the filesystem source.
     ///
     /// Panics if any of the Lua table operations below fail. They run
     /// against a freshly initialized VM with `String`/`&str` keys and
@@ -135,7 +140,7 @@ impl Runtime {
     /// failure — abort is the right answer there.
     pub fn new(
         pipeline: Pipeline,
-        secrets: HashMap<String, SecretString>,
+        registry: SecretRegistry,
         meta: &RunMeta,
         git_dir: &std::path::Path,
         workspace: std::path::PathBuf,
@@ -175,7 +180,7 @@ impl Runtime {
         Self {
             pipeline,
             inputs,
-            registry: RefCell::new(SecretRegistry::from(secrets)),
+            registry: RefCell::new(registry),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),
             sh_timings: RefCell::new(HashMap::new()),

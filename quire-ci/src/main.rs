@@ -8,12 +8,14 @@ use std::rc::Rc;
 
 use clap::Parser;
 use miette::IntoDiagnostic;
+use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
+use quire_core::secret::{Error as SecretError, SecretRegistry, SecretString};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -235,13 +237,23 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
+            let session = transport.session.clone();
+            let registry = {
+                let base = SecretRegistry::new(move |name| fetch_secret_from_api(&session, name));
+                if transport.mode == TransportMode::Filesystem {
+                    base.seed(secrets)
+                } else {
+                    base
+                }
+            };
+
             run_pipeline(
                 cli.workspace,
                 sink,
                 log_dir,
                 git_dir,
                 meta,
-                secrets,
+                registry,
                 transport,
             )
         }
@@ -255,10 +267,7 @@ fn main() -> miette::Result<()> {
 /// the two sides' events group on the same trace. A malformed
 /// trace_id (shouldn't happen — the orchestrator emits the canonical
 /// hex form) is logged and skipped rather than aborting Sentry init.
-fn init_sentry(
-    handoff: Option<&quire_core::ci::bootstrap::SentryHandoff>,
-    meta: &RunMeta,
-) -> Option<sentry::ClientInitGuard> {
+fn init_sentry(handoff: Option<&SentryHandoff>, meta: &RunMeta) -> Option<sentry::ClientInitGuard> {
     let handoff = handoff?;
     let guard = sentry::init((
         handoff.dsn.as_str(),
@@ -331,12 +340,9 @@ fn load_bootstrap(
 ) -> miette::Result<(
     PathBuf,
     RunMeta,
-    HashMap<String, quire_core::secret::SecretString>,
-    Option<quire_core::ci::bootstrap::SentryHandoff>,
+    HashMap<String, SecretString>,
+    Option<SentryHandoff>,
 )> {
-    use quire_core::ci::bootstrap::Bootstrap;
-    use quire_core::secret::SecretString;
-
     let bytes = fs_err::read(path).into_diagnostic()?;
     if let Err(e) = fs_err::remove_file(path) {
         // Don't abort — the bytes are already loaded and the server
@@ -356,13 +362,50 @@ fn load_bootstrap(
     Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
 }
 
+/// Fetch a single secret from quire-server.
+///
+/// Uses [`tokio::runtime::Handle::block_on`] to drive the async HTTP
+/// call from synchronous Lua callback context. Requires the caller to
+/// be on a thread that has entered a Tokio runtime (`rt.enter()` in
+/// `main` satisfies this).
+fn fetch_secret_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
+    let url = format!(
+        "{}/api/runs/{}/secrets/{}",
+        session.server_url, session.run_id, name
+    );
+    let token = session.auth_token.clone();
+    let name_owned = name.to_string();
+
+    tokio::runtime::Handle::current().block_on(async move {
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| SecretError::Resolve(e.to_string()))?;
+
+        let status = resp.status();
+        if status.is_success() {
+            resp.text()
+                .await
+                .map_err(|e| SecretError::Resolve(e.to_string()))
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            Err(SecretError::UnknownSecret(name_owned))
+        } else {
+            Err(SecretError::Resolve(format!(
+                "secret API returned {status} for {name_owned:?}"
+            )))
+        }
+    })
+}
+
 fn run_pipeline(
     workspace: PathBuf,
     mut sink: Box<dyn EventSink>,
     log_dir: PathBuf,
     git_dir: PathBuf,
     meta: RunMeta,
-    secrets: HashMap<String, quire_core::secret::SecretString>,
+    registry: SecretRegistry,
     _transport: Transport,
 ) -> miette::Result<()> {
     let pipeline = match compile_at(&workspace) {
@@ -404,7 +447,7 @@ fn run_pipeline(
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
     let runtime = Rc::new(Runtime::new(
-        pipeline, secrets, &meta, &git_dir, workspace, log_dir,
+        pipeline, registry, &meta, &git_dir, workspace, log_dir,
     ));
 
     // Active job pointer, shared between the main loop and the
@@ -554,8 +597,6 @@ mod tests {
 
     #[test]
     fn load_bootstrap_unlinks_after_read() {
-        use quire_core::ci::bootstrap::Bootstrap;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bootstrap.json");
         let bootstrap = Bootstrap {
