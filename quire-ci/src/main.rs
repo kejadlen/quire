@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use clap::Parser;
-use miette::IntoDiagnostic;
+use miette::{IntoDiagnostic, Result, miette};
+use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
@@ -15,7 +16,9 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
-use quire_core::secret::{Error as SecretError, SecretRegistry, SecretString};
+use quire_core::secret::{
+    Error as SecretError, Result as SecretResult, SecretRegistry, SecretString,
+};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -172,7 +175,55 @@ fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
     }
 }
 
-fn main() -> miette::Result<()> {
+/// Thin wrapper around [`ApiSession`] for calling the quire-server API.
+/// Owns its session data so it can be moved into the `'static`
+/// closures that server-backed resources require.
+struct ApiClient {
+    session: ApiSession,
+}
+
+impl ApiClient {
+    fn new(session: ApiSession) -> Self {
+        Self { session }
+    }
+
+    /// Fetch a single secret by name from the server.
+    fn fetch_secret(&self, name: &str) -> SecretResult<String> {
+        let url = format!(
+            "{}/api/runs/{}/secrets/{}",
+            self.session.server_url, self.session.run_id, name
+        );
+        let token = self.session.auth_token.clone();
+        let name_owned = name.to_string();
+        tokio::runtime::Handle::current().block_on(async move {
+            let resp = match reqwest::Client::new()
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => return Err(SecretError::Resolve(e.to_string())),
+            };
+            let status = resp.status();
+            if status.is_success() {
+                let body = match resp.json::<SecretResponse>().await {
+                    Ok(body) => body,
+                    Err(e) => return Err(SecretError::Resolve(e.to_string())),
+                };
+                Ok(body.value)
+            } else if status == reqwest::StatusCode::NOT_FOUND {
+                Err(SecretError::UnknownSecret(name_owned))
+            } else {
+                Err(SecretError::Resolve(format!(
+                    "secret API returned {status} for {name_owned:?}"
+                )))
+            }
+        })
+    }
+}
+
+fn main() -> Result<()> {
     miette::set_panic_hook();
     let cli = Cli::parse();
     match cli.command {
@@ -203,7 +254,7 @@ fn main() -> miette::Result<()> {
                 }
             };
             let auth_token = std::env::var("QUIRE_CI_TOKEN")
-                .map_err(|_| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
+                .map_err(|_| miette!("QUIRE_CI_TOKEN env var is required"))?;
             let transport = Transport {
                 session: ApiSession {
                     run_id: transport.run_id,
@@ -240,8 +291,8 @@ fn main() -> miette::Result<()> {
             let registry = if transport.mode == TransportMode::Filesystem {
                 SecretRegistry::from(secrets)
             } else {
-                let session = transport.session.clone();
-                SecretRegistry::new(move |name| fetch_secret_from_api(&session, name))
+                let client = ApiClient::new(transport.session.clone());
+                SecretRegistry::new(move |name| client.fetch_secret(name))
             };
 
             run_pipeline(
@@ -298,7 +349,7 @@ fn init_sentry(handoff: Option<&SentryHandoff>, meta: &RunMeta) -> Option<sentry
     Some(guard)
 }
 
-fn validate(workspace: PathBuf) -> miette::Result<()> {
+fn validate(workspace: PathBuf) -> Result<()> {
     let pipeline = compile_at(&workspace)?;
 
     if pipeline.job_count() == 0 {
@@ -334,7 +385,7 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
 #[allow(clippy::type_complexity)]
 fn load_bootstrap(
     path: &std::path::Path,
-) -> miette::Result<(
+) -> Result<(
     PathBuf,
     RunMeta,
     HashMap<String, SecretString>,
@@ -359,48 +410,6 @@ fn load_bootstrap(
     Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
 }
 
-/// Fetch a single secret from quire-server.
-///
-/// Uses [`tokio::runtime::Handle::block_on`] to drive the async HTTP
-/// call from synchronous Lua callback context. Requires the caller to
-/// be on a thread that has entered a Tokio runtime (`rt.enter()` in
-/// `main` satisfies this).
-fn fetch_secret_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
-    let url = format!(
-        "{}/api/runs/{}/secrets/{}",
-        session.server_url, session.run_id, name
-    );
-    let token = session.auth_token.clone();
-    let name_owned = name.to_string();
-
-    tokio::runtime::Handle::current().block_on(async move {
-        let resp = reqwest::Client::new()
-            .get(&url)
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(|e| SecretError::Resolve(e.to_string()))?;
-
-        let status = resp.status();
-        if status.is_success() {
-            let body: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| SecretError::Resolve(e.to_string()))?;
-            body["value"]
-                .as_str()
-                .ok_or_else(|| SecretError::Resolve("secret response missing 'value' field".into()))
-                .map(String::from)
-        } else if status == reqwest::StatusCode::NOT_FOUND {
-            Err(SecretError::UnknownSecret(name_owned))
-        } else {
-            Err(SecretError::Resolve(format!(
-                "secret API returned {status} for {name_owned:?}"
-            )))
-        }
-    })
-}
-
 fn run_pipeline(
     workspace: PathBuf,
     mut sink: Box<dyn EventSink>,
@@ -409,7 +418,7 @@ fn run_pipeline(
     meta: RunMeta,
     registry: SecretRegistry,
     _transport: Transport,
-) -> miette::Result<()> {
+) -> Result<()> {
     let pipeline = match compile_at(&workspace) {
         Ok(p) => p,
         Err(e) => {
@@ -571,7 +580,7 @@ fn run_pipeline(
 }
 
 /// Read and compile the ci.fnl at `<workspace>/.quire/ci.fnl`.
-fn compile_at(workspace: &std::path::Path) -> miette::Result<Pipeline> {
+fn compile_at(workspace: &std::path::Path) -> Result<Pipeline> {
     let path = workspace.join(".quire").join("ci.fnl");
     let source = fs_err::read_to_string(&path).into_diagnostic()?;
     Ok(pipeline::compile(&source, &path.display().to_string())?)
