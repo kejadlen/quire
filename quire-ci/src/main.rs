@@ -1,7 +1,6 @@
 mod sink;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -16,9 +15,7 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
-use quire_core::secret::{
-    Error as SecretError, Result as SecretResult, SecretRegistry, SecretString,
-};
+use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -263,7 +260,7 @@ fn main() -> Result<()> {
                 },
                 mode: transport.transport,
             };
-            let (git_dir, meta, secrets, sentry_handoff) = load_bootstrap(&bootstrap)?;
+            let (git_dir, meta, sentry_handoff) = load_bootstrap(&bootstrap)?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
@@ -288,12 +285,8 @@ fn main() -> Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            let registry = if transport.mode == TransportMode::Filesystem {
-                SecretRegistry::from(secrets)
-            } else {
-                let client = ApiClient::new(transport.session.clone());
-                SecretRegistry::new(move |name| client.fetch_secret(name))
-            };
+            let client = ApiClient::new(transport.session.clone());
+            let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 
             run_pipeline(
                 cli.workspace,
@@ -372,25 +365,12 @@ fn validate(workspace: PathBuf) -> Result<()> {
 }
 
 /// Read and parse the bootstrap file the orchestrator wrote before
-/// spawning. Wraps revealed secret values back into `SecretString`.
+/// spawning.
 ///
-/// Unlinks the file as soon as the bytes are in memory — secrets only
-/// need to live on disk for the moment between `write_bootstrap` and
-/// this read, and getting them off disk early limits the blast radius
-/// of a later panic or crash leaving a 0600 file behind.
-///
-/// The Sentry handoff, when present, carries the DSN and the
-/// orchestrator's trace id — the 0600 bootstrap file is the line of
-/// defense for both.
-#[allow(clippy::type_complexity)]
-fn load_bootstrap(
-    path: &std::path::Path,
-) -> Result<(
-    PathBuf,
-    RunMeta,
-    HashMap<String, SecretString>,
-    Option<SentryHandoff>,
-)> {
+/// Unlinks the file as soon as the bytes are in memory — getting it off
+/// disk early limits the blast radius of a later panic or crash leaving
+/// a 0600 file behind.
+fn load_bootstrap(path: &std::path::Path) -> Result<(PathBuf, RunMeta, Option<SentryHandoff>)> {
     let bytes = fs_err::read(path).into_diagnostic()?;
     if let Err(e) = fs_err::remove_file(path) {
         // Don't abort — the bytes are already loaded and the server
@@ -402,12 +382,7 @@ fn load_bootstrap(
         );
     }
     let bootstrap: Bootstrap = serde_json::from_slice(&bytes).into_diagnostic()?;
-    let secrets = bootstrap
-        .secrets
-        .into_iter()
-        .map(|(name, value)| (name, SecretString::from(value)))
-        .collect();
-    Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
+    Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry))
 }
 
 fn run_pipeline(
@@ -589,6 +564,7 @@ fn compile_at(workspace: &std::path::Path) -> Result<Pipeline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn parse_events_target_classifies_input() {
@@ -617,19 +593,18 @@ mod tests {
                 pushed_at: jiff::Timestamp::now(),
             },
             git_dir: PathBuf::from("/tmp/repo.git"),
-            secrets: HashMap::from([("token".to_string(), "shh".to_string())]),
+            secrets: HashMap::new(),
             sentry: None,
         };
         fs_err::write(&path, serde_json::to_vec(&bootstrap).unwrap()).expect("write");
 
-        let (git_dir, meta, secrets, sentry) = load_bootstrap(&path).expect("load");
+        let (git_dir, meta, sentry) = load_bootstrap(&path).expect("load");
         assert!(
             !path.exists(),
             "bootstrap file should be removed after read"
         );
         assert_eq!(git_dir, PathBuf::from("/tmp/repo.git"));
         assert_eq!(meta.r#ref, "HEAD");
-        assert_eq!(secrets.len(), 1);
         assert!(sentry.is_none());
     }
 }
