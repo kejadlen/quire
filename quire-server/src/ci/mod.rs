@@ -108,6 +108,7 @@ struct TriggerContext<'a> {
     transport_mode: TransportMode,
     port: u16,
     sentry_dsn: Option<String>,
+    api_secrets: bool,
 }
 
 /// Repo-level context passed into the inner execution function.
@@ -164,6 +165,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         transport_mode: config.ci.transport,
         port: config.port,
         sentry_dsn,
+        api_secrets: config.ci.api_secrets,
     };
 
     for push_ref in event.updated_refs() {
@@ -188,7 +190,8 @@ fn run_ref(
     trace_id: sentry::protocol::TraceId,
     span_id: sentry::protocol::SpanId,
 ) {
-    let transport = new_transport(ctx.transport_mode, ctx.port);
+    let mut transport = new_transport(ctx.transport_mode, ctx.port);
+    transport.api_secrets = ctx.api_secrets;
     let sentry_handoff =
         ctx.sentry_dsn
             .as_ref()

@@ -15,7 +15,9 @@ use mlua::{IntoLua, Lua, LuaSerdeExt};
 
 use super::pipeline::{Job, Pipeline};
 use super::run::RunMeta;
-use crate::secret::{self, LocalSecretFetcher, SecretFetcher, SecretRegistry, SecretString, redact};
+use crate::secret::{self, SecretFetcher, SecretRegistry, redact};
+#[cfg(test)]
+use crate::secret::{LocalSecretFetcher, SecretString};
 
 /// Errors produced by [`Runtime`] methods and the `RunFn::Rust`
 /// callbacks that hold them. A small sum carved out of the
@@ -346,7 +348,9 @@ impl Runtime {
             .keep();
         Self {
             pipeline,
-            registry: RefCell::new(SecretRegistry::new(Box::new(LocalSecretFetcher::new(secrets)))),
+            registry: RefCell::new(SecretRegistry::new(Box::new(LocalSecretFetcher::new(
+                secrets,
+            )))),
             inputs: HashMap::new(),
             current_job: RefCell::new(None),
             outputs: RefCell::new(HashMap::new()),

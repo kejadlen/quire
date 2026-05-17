@@ -42,6 +42,7 @@ pub fn new_transport(mode: TransportMode, port: u16) -> Transport {
             auth_token: mint_auth_token(),
         },
         mode,
+        api_secrets: false,
     }
 }
 
@@ -317,12 +318,17 @@ impl Run {
         let log_path = run_dir.join("quire-ci.log");
         let events_path = run_dir.join("events.jsonl");
         let bootstrap_path = run_dir.join("bootstrap.json");
+        let secrets_path = run_dir.join("secrets.json");
         // fs_err for the path-bearing IO error; unwrap to std::fs::File so
         // it's convertible into Stdio.
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_bootstrap(&bootstrap_path, git_dir, meta, secrets, sentry)?;
+        let use_api_secrets = transport.map(|t| t.api_secrets).unwrap_or(false);
+        write_bootstrap(&bootstrap_path, git_dir, meta, sentry)?;
+        if !use_api_secrets {
+            write_secrets(&secrets_path, secrets)?;
+        }
 
         tracing::info!(
             run_id = %self.id,
@@ -342,6 +348,9 @@ impl Run {
                     .arg(&events_path)
                     .arg("--bootstrap")
                     .arg(&bootstrap_path);
+                if !use_api_secrets {
+                    cmd.arg("--secrets").arg(&secrets_path);
+                }
             }
             Some(t) => {
                 cmd.arg("--run-id")
@@ -357,6 +366,9 @@ impl Run {
                             .arg(&events_path)
                             .arg("--bootstrap")
                             .arg(&bootstrap_path);
+                        if !use_api_secrets {
+                            cmd.arg("--secrets").arg(&secrets_path);
+                        }
                     }
                     TransportMode::Api => {
                         cmd.arg("--transport").arg("api");
@@ -375,19 +387,20 @@ impl Run {
                 source,
             })?;
 
-        // quire-ci unlinks the bootstrap file after `load_bootstrap`;
-        // this is a best-effort safety net for paths where it didn't
-        // get that far (spawn failed mid-exec, arg parsing rejected
-        // input, panic before read). `NotFound` is the expected case.
-        if let Err(e) = fs_err::remove_file(&bootstrap_path)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(
-                run_id = %self.id,
-                path = %bootstrap_path.display(),
-                error = %e,
-                "failed to remove bootstrap file after run"
-            );
+        // quire-ci unlinks the bootstrap/secrets files after reading;
+        // these are best-effort safety nets for paths where it didn't
+        // get that far. `NotFound` is the expected case.
+        for cleanup_path in [&bootstrap_path, &secrets_path] {
+            if let Err(e) = fs_err::remove_file(cleanup_path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(
+                    run_id = %self.id,
+                    path = %cleanup_path.display(),
+                    error = %e,
+                    "failed to remove file after run"
+                );
+            }
         }
 
         // Ingest events before checking outcome — partial results from a
@@ -632,29 +645,20 @@ impl Run {
 }
 
 /// Serialize the bootstrap payload as JSON and write it to `path` with
-/// owner-only permissions on Unix. Secrets cross as plaintext so the
-/// 0600 mode is the line of defense against other local users; failure
-/// to set the mode aborts the write (better than leaking).
+/// owner-only permissions on Unix. The bootstrap file no longer carries
+/// secrets; use [`write_secrets`] for that. 0600 mode is kept because
+/// the Sentry DSN travels here.
 fn write_bootstrap(
     path: &Path,
     git_dir: &Path,
     meta: &RunMeta,
-    secrets: &HashMap<String, SecretString>,
     sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
 ) -> Result<()> {
     use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 
-    let mut revealed: HashMap<String, String> = HashMap::with_capacity(secrets.len());
-    for (name, value) in secrets {
-        revealed.insert(
-            name.clone(),
-            value.reveal().map_err(Error::Secret)?.to_string(),
-        );
-    }
     let bootstrap = Bootstrap {
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
-        secrets: revealed,
         sentry: sentry.map(|s| SentryHandoff {
             dsn: s.dsn.clone(),
             trace_id: s.trace_id.clone(),
@@ -664,6 +668,32 @@ fn write_bootstrap(
 
     // Open with mode 0600 from the start so there's no window where
     // the file is world-readable.
+    use fs_err::os::unix::fs::OpenOptionsExt;
+    use std::io::Write;
+    let mut file = fs_err::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(&json)?;
+    Ok(())
+}
+
+/// Serialize the revealed secrets map as JSON and write it to `path`
+/// with owner-only permissions. Used when `api_secrets` is false
+/// (filesystem transport) — secrets travel to quire-ci through this
+/// file rather than via API calls.
+fn write_secrets(path: &Path, secrets: &HashMap<String, SecretString>) -> Result<()> {
+    let mut revealed: HashMap<String, String> = HashMap::with_capacity(secrets.len());
+    for (name, value) in secrets {
+        revealed.insert(
+            name.clone(),
+            value.reveal().map_err(Error::Secret)?.to_string(),
+        );
+    }
+    let json = serde_json::to_vec_pretty(&revealed).map_err(std::io::Error::other)?;
+
     use fs_err::os::unix::fs::OpenOptionsExt;
     use std::io::Write;
     let mut file = fs_err::OpenOptions::new()
@@ -871,14 +901,7 @@ mod tests {
         let bootstrap_path = dir.path().join("bootstrap.json");
         let git_dir = dir.path().join("repos").join("test.git");
 
-        write_bootstrap(
-            &bootstrap_path,
-            &git_dir,
-            &test_meta(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("write_bootstrap");
+        write_bootstrap(&bootstrap_path, &git_dir, &test_meta(), None).expect("write_bootstrap");
 
         let bytes = fs_err::read(&bootstrap_path).expect("read bootstrap");
         let bootstrap: Bootstrap = serde_json::from_slice(&bytes).expect("parse bootstrap");

@@ -12,8 +12,9 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
-use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
+use quire_core::ci::transport::ApiSession;
 use quire_core::fennel::FennelError;
+use quire_core::secret::{LocalSecretFetcher, SecretFetcher, SecretString};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -74,9 +75,15 @@ enum Commands {
         out_dir: Option<PathBuf>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Carries push metadata and the secrets the run-fns may resolve.
+        /// Carries push metadata (and previously secrets — now separate).
         #[arg(long)]
         bootstrap: PathBuf,
+
+        /// Path to a JSON secrets file produced by the orchestrator.
+        /// Carries the revealed secrets map (name → plaintext value).
+        /// Omit when using API transport with server-side secrets.
+        #[arg(long)]
+        secrets: Option<PathBuf>,
 
         #[command(flatten)]
         transport: TransportFlags,
@@ -97,6 +104,15 @@ struct TransportFlags {
     /// Transport for CI ↔ server communication.
     #[arg(long, default_value = "filesystem")]
     transport: TransportMode,
+}
+
+/// Local transport mode enum for clap (mirrors quire_core's but is
+/// clap-parseable without pulling quire_core's full transport module).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum TransportMode {
+    #[default]
+    Filesystem,
+    Api,
 }
 
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
@@ -179,6 +195,7 @@ fn main() -> miette::Result<()> {
             events,
             out_dir,
             bootstrap,
+            secrets,
             transport,
         } => {
             let sink: Box<dyn EventSink> = match events {
@@ -202,15 +219,27 @@ fn main() -> miette::Result<()> {
             };
             let auth_token = std::env::var("QUIRE_CI_TOKEN")
                 .map_err(|_| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
-            let transport = Transport {
-                session: ApiSession {
-                    run_id: transport.run_id,
-                    server_url: transport.server_url,
-                    auth_token,
-                },
-                mode: transport.transport,
+            let session = ApiSession {
+                run_id: transport.run_id,
+                server_url: transport.server_url,
+                auth_token,
             };
-            let (git_dir, meta, secrets, sentry_handoff) = load_bootstrap(&bootstrap)?;
+            let (git_dir, meta, sentry_handoff) = load_bootstrap(&bootstrap)?;
+
+            // Resolve the secret fetcher: either a local map (from secrets file)
+            // or an API fetcher (from server when api_secrets mode).
+            let secret_fetcher: Box<dyn SecretFetcher> = match secrets {
+                Some(secrets_path) => {
+                    let secrets_map = load_secrets(&secrets_path)?;
+                    Box::new(LocalSecretFetcher::new(secrets_map))
+                }
+                None => {
+                    // When no secrets file is provided and transport is API,
+                    // use an empty local fetcher (API-based fetching not yet
+                    // implemented in this binary).
+                    Box::new(LocalSecretFetcher::empty())
+                }
+            };
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
@@ -235,15 +264,8 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            run_pipeline(
-                cli.workspace,
-                sink,
-                log_dir,
-                git_dir,
-                meta,
-                secrets,
-                transport,
-            )
+            let _ = session; // session available for future API use
+            run_pipeline(cli.workspace, sink, log_dir, git_dir, meta, secret_fetcher)
         }
     }
 }
@@ -315,27 +337,19 @@ fn validate(workspace: PathBuf) -> miette::Result<()> {
 }
 
 /// Read and parse the bootstrap file the orchestrator wrote before
-/// spawning. Wraps revealed secret values back into `SecretString`.
+/// spawning. Returns (git_dir, meta, sentry_handoff).
 ///
-/// Unlinks the file as soon as the bytes are in memory — secrets only
-/// need to live on disk for the moment between `write_bootstrap` and
-/// this read, and getting them off disk early limits the blast radius
-/// of a later panic or crash leaving a 0600 file behind.
-///
-/// The Sentry handoff, when present, carries the DSN and the
-/// orchestrator's trace id — the 0600 bootstrap file is the line of
-/// defense for both.
-#[allow(clippy::type_complexity)]
+/// Unlinks the file as soon as the bytes are in memory — the bootstrap
+/// file may carry a Sentry DSN and getting it off disk early limits
+/// the blast radius of a later panic or crash leaving a 0600 file behind.
 fn load_bootstrap(
     path: &std::path::Path,
 ) -> miette::Result<(
     PathBuf,
     RunMeta,
-    HashMap<String, quire_core::secret::SecretString>,
     Option<quire_core::ci::bootstrap::SentryHandoff>,
 )> {
     use quire_core::ci::bootstrap::Bootstrap;
-    use quire_core::secret::SecretString;
 
     let bytes = fs_err::read(path).into_diagnostic()?;
     if let Err(e) = fs_err::remove_file(path) {
@@ -348,12 +362,26 @@ fn load_bootstrap(
         );
     }
     let bootstrap: Bootstrap = serde_json::from_slice(&bytes).into_diagnostic()?;
-    let secrets = bootstrap
-        .secrets
+    Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry))
+}
+
+/// Read and parse the secrets file produced by the orchestrator.
+/// Returns a map of name → `SecretString` (plain-value backed).
+///
+/// Unlinks the file immediately after reading.
+fn load_secrets(path: &std::path::Path) -> miette::Result<HashMap<String, SecretString>> {
+    let bytes = fs_err::read(path).into_diagnostic()?;
+    if let Err(e) = fs_err::remove_file(path) {
+        eprintln!(
+            "warning: failed to remove secrets file {}: {e}",
+            path.display()
+        );
+    }
+    let raw: HashMap<String, String> = serde_json::from_slice(&bytes).into_diagnostic()?;
+    Ok(raw
         .into_iter()
         .map(|(name, value)| (name, SecretString::from(value)))
-        .collect();
-    Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
+        .collect())
 }
 
 fn run_pipeline(
@@ -362,8 +390,7 @@ fn run_pipeline(
     log_dir: PathBuf,
     git_dir: PathBuf,
     meta: RunMeta,
-    secrets: HashMap<String, quire_core::secret::SecretString>,
-    _transport: Transport,
+    secret_fetcher: Box<dyn SecretFetcher>,
 ) -> miette::Result<()> {
     let pipeline = match compile_at(&workspace) {
         Ok(p) => p,
@@ -404,7 +431,12 @@ fn run_pipeline(
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
     let runtime = Rc::new(Runtime::new(
-        pipeline, secrets, &meta, &git_dir, workspace, log_dir,
+        pipeline,
+        secret_fetcher,
+        &meta,
+        &git_dir,
+        workspace,
+        log_dir,
     ));
 
     // Active job pointer, shared between the main loop and the
@@ -565,19 +597,32 @@ mod tests {
                 pushed_at: jiff::Timestamp::now(),
             },
             git_dir: PathBuf::from("/tmp/repo.git"),
-            secrets: HashMap::from([("token".to_string(), "shh".to_string())]),
             sentry: None,
         };
         fs_err::write(&path, serde_json::to_vec(&bootstrap).unwrap()).expect("write");
 
-        let (git_dir, meta, secrets, sentry) = load_bootstrap(&path).expect("load");
+        let (git_dir, meta, sentry) = load_bootstrap(&path).expect("load");
         assert!(
             !path.exists(),
             "bootstrap file should be removed after read"
         );
         assert_eq!(git_dir, PathBuf::from("/tmp/repo.git"));
         assert_eq!(meta.r#ref, "HEAD");
-        assert_eq!(secrets.len(), 1);
         assert!(sentry.is_none());
+    }
+
+    #[test]
+    fn load_secrets_unlinks_after_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secrets.json");
+        let secrets: HashMap<String, String> = [("token".to_string(), "shh".to_string())]
+            .into_iter()
+            .collect();
+        fs_err::write(&path, serde_json::to_vec(&secrets).unwrap()).expect("write");
+
+        let loaded = load_secrets(&path).expect("load secrets");
+        assert!(!path.exists(), "secrets file should be removed after read");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["token"].reveal().unwrap(), "shh");
     }
 }
