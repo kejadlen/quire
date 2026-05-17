@@ -2,9 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-#[cfg(test)]
-use crate::fennel::Fennel;
-
 /// Errors produced by secret resolution.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
@@ -325,6 +322,7 @@ pub fn redact(text: &str, registry: &SecretRegistry) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fennel::Fennel;
 
     #[test]
     fn debug_redacts_value() {
@@ -474,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_result_is_cached_in_declared() {
+    fn fetcher_result_is_cached() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 

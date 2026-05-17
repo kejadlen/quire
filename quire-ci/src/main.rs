@@ -237,14 +237,11 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            let session = transport.session.clone();
-            let registry = {
-                let base = SecretRegistry::new(move |name| fetch_secret_from_api(&session, name));
-                if transport.mode == TransportMode::Filesystem {
-                    base.seed(secrets)
-                } else {
-                    base
-                }
+            let registry = if transport.mode == TransportMode::Filesystem {
+                SecretRegistry::from(secrets)
+            } else {
+                let session = transport.session.clone();
+                SecretRegistry::new(move |name| fetch_secret_from_api(&session, name))
             };
 
             run_pipeline(
