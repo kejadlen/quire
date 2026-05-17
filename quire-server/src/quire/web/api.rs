@@ -171,10 +171,7 @@ mod tests {
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
-        let Transport::Api(ref session) = transport else {
-            panic!("expected Api transport");
-        };
-        let url = format!("/runs/{}/secrets/my_secret", session.run_id);
+        let url = format!("/runs/{}/secrets/my_secret", transport.session.run_id);
 
         let resp = get(env.app(), &url, None).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -187,10 +184,7 @@ mod tests {
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
-        let Transport::Api(ref session) = transport else {
-            panic!("expected Api transport");
-        };
-        let url = format!("/runs/{}/secrets/my_secret", session.run_id);
+        let url = format!("/runs/{}/secrets/my_secret", transport.session.run_id);
 
         let resp = get(env.app(), &url, Some("wrongtoken")).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -215,12 +209,9 @@ mod tests {
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
-        let Transport::Api(ref session) = transport else {
-            panic!("expected Api transport");
-        };
-        let url = format!("/runs/{}/secrets/no_such_secret", session.run_id);
+        let url = format!("/runs/{}/secrets/no_such_secret", transport.session.run_id);
 
-        let resp = get(env.app(), &url, Some(&session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -237,12 +228,9 @@ mod tests {
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
-        let Transport::Api(ref session) = transport else {
-            panic!("expected Api transport");
-        };
-        let url = format!("/runs/{}/secrets/my_token", session.run_id);
+        let url = format!("/runs/{}/secrets/my_token", transport.session.run_id);
 
-        let resp = get(env.app(), &url, Some(&session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         use http_body_util::BodyExt;

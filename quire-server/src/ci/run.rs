@@ -42,28 +42,25 @@ pub enum TransportMode {
 /// Runtime transport for a single CI run. Built once per run from
 /// the config-shape [`TransportMode`] + the server's listen port,
 /// then passed to `Runs::create` and `Run::execute`.
-/// Both variants carry an [`ApiSession`] so quire-ci always receives
-/// session info. Use `None` for local runs where no server is involved.
+/// Use `None` for local runs where no server is involved.
 #[derive(Clone, Debug)]
-pub enum Transport {
-    Filesystem(ApiSession),
-    Api(ApiSession),
+pub struct Transport {
+    pub session: ApiSession,
+    pub mode: TransportMode,
 }
 
 impl Transport {
     /// Build a runtime transport for a new run. Always mints a fresh
     /// run ID and CSPRNG bearer token, deriving the loopback server
-    /// URL from `port`. The variant controls whether quire-ci uses
-    /// the filesystem or HTTP API executor.
+    /// URL from `port`.
     pub fn for_new_run(mode: TransportMode, port: u16) -> Self {
-        let session = ApiSession {
-            run_id: uuid::Uuid::now_v7().to_string(),
-            server_url: format!("http://127.0.0.1:{port}"),
-            auth_token: mint_auth_token(),
-        };
-        match mode {
-            TransportMode::Filesystem => Transport::Filesystem(session),
-            TransportMode::Api => Transport::Api(session),
+        Self {
+            session: ApiSession {
+                run_id: uuid::Uuid::now_v7().to_string(),
+                server_url: format!("http://127.0.0.1:{port}"),
+                auth_token: mint_auth_token(),
+            },
+            mode,
         }
     }
 }
@@ -144,9 +141,10 @@ impl Runs {
     pub fn create(&self, meta: &RunMeta, transport: Option<&Transport>) -> Result<Run> {
         let (id, auth_token_str) = match transport {
             None => (uuid::Uuid::now_v7().to_string(), None),
-            Some(Transport::Filesystem(api) | Transport::Api(api)) => {
-                (api.run_id.clone(), Some(api.auth_token.as_str()))
-            }
+            Some(t) => (
+                t.session.run_id.clone(),
+                Some(t.session.auth_token.as_str()),
+            ),
         };
         let workspace_path = self.base_dir.join(&id).join("workspace");
 
@@ -365,27 +363,25 @@ impl Run {
                     .arg("--bootstrap")
                     .arg(&bootstrap_path);
             }
-            Some(Transport::Filesystem(api)) => {
+            Some(t) => {
                 cmd.arg("--run-id")
-                    .arg(&api.run_id)
+                    .arg(&t.session.run_id)
                     .arg("--server-url")
-                    .arg(&api.server_url);
-                cmd.env("QUIRE_CI_TOKEN", &api.auth_token);
-                cmd.arg("--out-dir")
-                    .arg(&run_dir)
-                    .arg("--events")
-                    .arg(&events_path)
-                    .arg("--bootstrap")
-                    .arg(&bootstrap_path);
-            }
-            Some(Transport::Api(api)) => {
-                cmd.arg("--run-id")
-                    .arg(&api.run_id)
-                    .arg("--server-url")
-                    .arg(&api.server_url)
-                    .arg("--transport")
-                    .arg("api");
-                cmd.env("QUIRE_CI_TOKEN", &api.auth_token);
+                    .arg(&t.session.server_url);
+                cmd.env("QUIRE_CI_TOKEN", &t.session.auth_token);
+                match t.mode {
+                    TransportMode::Filesystem => {
+                        cmd.arg("--out-dir")
+                            .arg(&run_dir)
+                            .arg("--events")
+                            .arg(&events_path)
+                            .arg("--bootstrap")
+                            .arg(&bootstrap_path);
+                    }
+                    TransportMode::Api => {
+                        cmd.arg("--transport").arg("api");
+                    }
+                }
             }
         }
 
@@ -944,12 +940,7 @@ mod tests {
         let transport = Transport::for_new_run(TransportMode::Filesystem, 3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
-        let Transport::Filesystem(api) = &transport else {
-            panic!("expected Filesystem transport");
-        };
-
-        // Run id and ApiSession.run_id are the same value.
-        assert_eq!(run.id(), api.run_id);
+        assert_eq!(run.id(), transport.session.run_id);
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
@@ -961,7 +952,7 @@ mod tests {
             .expect("row");
         assert_eq!(
             stored.as_deref(),
-            Some(api.auth_token.as_str()),
+            Some(transport.session.auth_token.as_str()),
             "filesystem transport should persist its minted auth token"
         );
     }
@@ -973,13 +964,7 @@ mod tests {
         let transport = Transport::for_new_run(TransportMode::Api, 3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
-        let Transport::Api(api) = &transport else {
-            panic!("expected Api transport");
-        };
-
-        // Run id and ApiSession.run_id are the same value — quire-ci
-        // and the orchestrator agree on which run a token belongs to.
-        assert_eq!(run.id(), api.run_id);
+        assert_eq!(run.id(), transport.session.run_id);
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
@@ -989,7 +974,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("row");
-        assert_eq!(stored.as_deref(), Some(api.auth_token.as_str()));
+        assert_eq!(
+            stored.as_deref(),
+            Some(transport.session.auth_token.as_str())
+        );
     }
 
     #[test]
@@ -1004,20 +992,21 @@ mod tests {
                 "http://127.0.0.1:4000",
             ),
         ] {
-            let api = match &transport {
-                Transport::Filesystem(api) | Transport::Api(api) => api,
-            };
-            assert_eq!(api.server_url, expected_url);
-            assert_eq!(api.auth_token.len(), 32);
+            assert_eq!(transport.session.server_url, expected_url);
+            assert_eq!(transport.session.auth_token.len(), 32);
             assert!(
-                api.auth_token.chars().all(|c| c.is_ascii_alphanumeric()),
+                transport
+                    .session
+                    .auth_token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric()),
                 "token should be alphanumeric, got {:?}",
-                api.auth_token
+                transport.session.auth_token
             );
             assert!(
-                uuid::Uuid::parse_str(&api.run_id).is_ok(),
+                uuid::Uuid::parse_str(&transport.session.run_id).is_ok(),
                 "run_id should be a UUID, got {:?}",
-                api.run_id
+                transport.session.run_id
             );
         }
     }
