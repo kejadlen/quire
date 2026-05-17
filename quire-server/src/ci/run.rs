@@ -1440,7 +1440,9 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
+        let run2 = runs
+            .create(&meta2, Some(&test_transport()))
+            .expect("create run2");
         assert_eq!(run2.state(), RunState::Pending);
 
         // First run should now be superseded.
@@ -1470,7 +1472,9 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
+        let run2 = runs
+            .create(&meta2, Some(&test_transport()))
+            .expect("create run2");
         assert_eq!(run2.state(), RunState::Pending);
 
         // First run should be superseded.
@@ -1499,7 +1503,9 @@ mod tests {
             r#ref: "refs/heads/feature".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let _run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
+        let _run2 = runs
+            .create(&meta2, Some(&test_transport()))
+            .expect("create run2");
 
         // First run should still be pending.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
@@ -1526,7 +1532,9 @@ mod tests {
             r#ref: "refs/heads/main".to_string(),
             pushed_at: "2026-04-28T13:00:00Z".parse().unwrap(),
         };
-        let _run2 = runs.create(&meta2, Some(&test_transport())).expect("create run2");
+        let _run2 = runs
+            .create(&meta2, Some(&test_transport()))
+            .expect("create run2");
 
         // First run should still be complete.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
