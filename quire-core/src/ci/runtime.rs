@@ -131,8 +131,8 @@ impl Runtime {
     /// Takes ownership of the pipeline (including its Lua VM). `meta`
     /// provides the push data for `:quire/push` source outputs.
     /// `registry` supplies secrets for `(secret :name)` calls; build
-    /// it with [`SecretRegistry::with_fallback`] to enable API-backed
-    /// fetching.
+    /// it via [`SecretRegistry::new`] with an API fetcher, optionally
+    /// pre-seeded via [`SecretRegistry::seed`] for the filesystem source.
     ///
     /// Panics if any of the Lua table operations below fail. They run
     /// against a freshly initialized VM with `String`/`&str` keys and
