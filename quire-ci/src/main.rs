@@ -15,7 +15,7 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
-use quire_core::secret::{Error as SecretError, SecretRegistry, SecretString};
+use quire_core::secret::{Error as SecretError, RedactHandle, SecretRegistry, SecretString};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -226,23 +226,31 @@ fn main() -> miette::Result<()> {
                 .into_diagnostic()?;
             let _enter = rt.enter();
 
+            // Create the redaction handle first so we can thread it into
+            // both Sentry's before_send hook and the tracing fmt writer.
+            // The registry's attach_redact_handle call below ensures that
+            // every secret revealed during the run is registered here
+            // before it could appear in a log line.
+            let redact_handle = RedactHandle::new();
+
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
-            let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
+            let _sentry = init_sentry(sentry_handoff.as_ref(), &meta, redact_handle.clone());
             // No type registrations: quire-ci's user-level errors
             // (CompileError, JobError, FennelError) are no longer logged
             // at tracing::error, so the miette renderer would never fire
             // for them. The layer stays installed in case future ops
             // errors want to register types.
             let miette_layer = MietteLayer::new();
-            telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+            telemetry::init_tracing(miette_layer, FmtMode::Plain, Some(redact_handle.clone()))?;
 
-            let registry = if transport.mode == TransportMode::Filesystem {
+            let mut registry = if transport.mode == TransportMode::Filesystem {
                 SecretRegistry::from(secrets)
             } else {
                 let session = transport.session.clone();
                 SecretRegistry::new(move |name| fetch_secret_from_api(&session, name))
             };
+            registry.attach_redact_handle(redact_handle);
 
             run_pipeline(
                 cli.workspace,
@@ -264,11 +272,15 @@ fn main() -> miette::Result<()> {
 /// the two sides' events group on the same trace. A malformed
 /// trace_id (shouldn't happen — the orchestrator emits the canonical
 /// hex form) is logged and skipped rather than aborting Sentry init.
-fn init_sentry(handoff: Option<&SentryHandoff>, meta: &RunMeta) -> Option<sentry::ClientInitGuard> {
+fn init_sentry(
+    handoff: Option<&SentryHandoff>,
+    meta: &RunMeta,
+    redact: RedactHandle,
+) -> Option<sentry::ClientInitGuard> {
     let handoff = handoff?;
     let guard = sentry::init((
         handoff.dsn.as_str(),
-        telemetry::sentry_client_options(VERSION),
+        telemetry::sentry_client_options(VERSION, Some(redact)),
     ));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");

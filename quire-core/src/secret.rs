@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Errors produced by secret resolution.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -179,6 +179,9 @@ pub struct SecretRegistry {
     /// normal case is an API fetcher; tests and the filesystem source use
     /// a closure that returns [`Error::UnknownSecret`].
     fetcher: SecretFetcher,
+    /// Optional tracing-layer handle. When set, every revealed value (≥ 8 chars)
+    /// is pushed here so the fmt writer can redact it from log output.
+    redact_handle: Option<RedactHandle>,
 }
 
 impl std::fmt::Debug for SecretRegistry {
@@ -187,6 +190,7 @@ impl std::fmt::Debug for SecretRegistry {
             .field("cache", &self.cache.keys().collect::<Vec<_>>())
             .field("revealed", &self.revealed.keys().collect::<Vec<_>>())
             .field("fetcher", &"<fn>")
+            .field("redact_handle", &self.redact_handle.is_some())
             .finish()
     }
 }
@@ -232,7 +236,18 @@ impl SecretRegistry {
             cache: HashMap::new(),
             revealed: HashMap::new(),
             fetcher: Box::new(fetcher),
+            redact_handle: None,
         }
+    }
+
+    /// Attach a [`RedactHandle`] so that every subsequently revealed secret
+    /// (≥ 8 chars) is forwarded to the tracing layer for log redaction.
+    ///
+    /// Call this once, right after constructing the registry and before the
+    /// first `resolve()`. The handle should be the same one passed to
+    /// [`telemetry::init_tracing`].
+    pub fn attach_redact_handle(&mut self, handle: RedactHandle) {
+        self.redact_handle = Some(handle);
     }
 
     /// Pre-warm the cache with an existing set of secrets. Intended for
@@ -273,6 +288,9 @@ impl SecretRegistry {
         if value.len() >= 8 {
             self.revealed
                 .insert(name.to_string(), Revealed::new(value.clone()));
+            if let Some(h) = &self.redact_handle {
+                h.push(name.to_string(), value.clone());
+            }
         } else {
             tracing::warn!(
                 secret = %name,
@@ -317,6 +335,49 @@ pub fn redact(text: &str, registry: &SecretRegistry) -> String {
         result = result.replace(value, &replacement);
     }
     result
+}
+
+// ── Tracing-level redaction ─────────────────────────────────────────────────
+
+/// A thread-safe, cheaply cloneable handle to the set of revealed secrets for
+/// use by the tracing fmt layer.
+///
+/// `SecretRegistry::attach_redact_handle` registers this handle; the registry
+/// pushes each newly revealed secret (≥ 8 chars) into it via `push`. The
+/// tracing layer calls `redact` on every formatted log line before writing to
+/// stderr and Sentry.
+#[derive(Clone, Default)]
+pub struct RedactHandle(Arc<Mutex<Vec<(String, String)>>>);
+
+impl RedactHandle {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    /// Register a (name, value) pair. Called by the registry on each resolve.
+    pub(crate) fn push(&self, name: String, value: String) {
+        self.0.lock().unwrap().push((name, value));
+    }
+
+    /// Replace every known secret value in `text` with `{{ name }}`.
+    /// Returns the input unchanged when no secrets have been registered yet.
+    pub fn redact(&self, text: &str) -> String {
+        let entries = self.0.lock().unwrap();
+        if entries.is_empty() {
+            return text.to_string();
+        }
+        let mut sorted: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        // Longest first to prevent partial matches, then by name for stability.
+        sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+        let mut result = text.to_string();
+        for (name, value) in sorted {
+            result = result.replace(value, &format!("{{{{ {} }}}}", name));
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +530,44 @@ mod tests {
         });
         let w: Wrapper = serde_json::from_value(json).expect("deserialize");
         assert_eq!(w.token.reveal().unwrap(), "from_file");
+    }
+
+    #[test]
+    fn redact_handle_replaces_known_values() {
+        let handle = RedactHandle::new();
+        handle.push("token".into(), "supersecrettoken".into());
+        handle.push("password".into(), "hunter2password".into());
+        let out = handle.redact("token is supersecrettoken and password is hunter2password");
+        assert_eq!(out, "token is {{ token }} and password is {{ password }}");
+    }
+
+    #[test]
+    fn redact_handle_longest_first() {
+        let handle = RedactHandle::new();
+        // "longprefix_suffix" contains "longprefix" as a prefix; longest must go first.
+        handle.push("short".into(), "longprefix".into());
+        handle.push("long".into(), "longprefix_suffix".into());
+        let out = handle.redact("value: longprefix_suffix");
+        // The longer value "longprefix_suffix" should be replaced entirely,
+        // not partially replaced as "{{ short }}_suffix".
+        assert_eq!(out, "value: {{ long }}");
+    }
+
+    #[test]
+    fn redact_handle_empty_returns_input() {
+        let handle = RedactHandle::new();
+        let text = "no secrets here";
+        assert_eq!(handle.redact(text), text);
+    }
+
+    #[test]
+    fn attach_redact_handle_receives_resolved_secrets() {
+        let handle = RedactHandle::new();
+        let mut registry: SecretRegistry = vec![("api_key", "abcdefghijklmnop_secret")].into();
+        registry.attach_redact_handle(handle.clone());
+        let _ = registry.resolve("api_key").unwrap();
+        let out = handle.redact("key=abcdefghijklmnop_secret");
+        assert_eq!(out, "key={{ api_key }}");
     }
 
     #[test]

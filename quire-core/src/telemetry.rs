@@ -1,13 +1,16 @@
 use std::cell::RefCell;
 use std::error::Error;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write as _};
 use std::sync::Arc;
 
 use miette::IntoDiagnostic;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
+use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+
+use crate::secret::RedactHandle;
 
 thread_local! {
     static MIETTE_RENDER: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -165,6 +168,102 @@ pub fn before_send(
     Some(event)
 }
 
+// ── Redacting writer ────────────────────────────────────────────────────────
+
+/// A `MakeWriter` that applies secret redaction to each formatted log event.
+///
+/// `make_writer()` returns a `RedactingWriter` that accumulates the entire
+/// formatted event in a buffer, then redacts-and-flushes atomically on drop so
+/// substitutions span the full line rather than partial writes.
+pub struct RedactingMakeWriter<W> {
+    inner: W,
+    handle: RedactHandle,
+}
+
+impl<W> RedactingMakeWriter<W> {
+    pub fn new(inner: W, handle: RedactHandle) -> Self {
+        Self { inner, handle }
+    }
+}
+
+impl<'a, W> MakeWriter<'a> for RedactingMakeWriter<W>
+where
+    W: MakeWriter<'a>,
+{
+    type Writer = RedactingWriter<W::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactingWriter {
+            inner: self.inner.make_writer(),
+            handle: self.handle.clone(),
+            buf: Vec::new(),
+        }
+    }
+}
+
+/// Buffering writer produced by [`RedactingMakeWriter`].
+pub struct RedactingWriter<W: io::Write> {
+    inner: W,
+    handle: RedactHandle,
+    buf: Vec<u8>,
+}
+
+impl<W: io::Write> io::Write for RedactingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.buf.is_empty() {
+            return self.inner.flush();
+        }
+        let text = String::from_utf8_lossy(&self.buf);
+        let redacted = self.handle.redact(&text);
+        self.inner.write_all(redacted.as_bytes())?;
+        self.buf.clear();
+        self.inner.flush()
+    }
+}
+
+impl<W: io::Write> Drop for RedactingWriter<W> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+// ── Sentry event redaction ──────────────────────────────────────────────────
+
+fn redact_sentry_event(
+    mut event: sentry::protocol::Event<'static>,
+    handle: &RedactHandle,
+) -> sentry::protocol::Event<'static> {
+    if let Some(msg) = &mut event.message {
+        *msg = handle.redact(msg);
+    }
+    for ex in &mut event.exception.values {
+        if let Some(val) = &mut ex.value {
+            *val = handle.redact(val);
+        }
+    }
+    for crumb in &mut event.breadcrumbs.values {
+        if let Some(msg) = &mut crumb.message {
+            *msg = handle.redact(msg);
+        }
+        for val in crumb.data.values_mut() {
+            if let serde_json::Value::String(s) = val {
+                *s = handle.redact(s);
+            }
+        }
+    }
+    for val in event.extra.values_mut() {
+        if let serde_json::Value::String(s) = val {
+            *s = handle.redact(s);
+        }
+    }
+    event
+}
+
 /// How the stderr fmt layer formats events.
 pub enum FmtMode {
     /// Human-readable text on stderr.
@@ -178,11 +277,24 @@ pub enum FmtMode {
 /// Common Sentry [`ClientOptions`] with the [`before_send`] hook pre-wired
 /// to attach miette renderings.
 ///
+/// When `redact` is `Some`, the hook also replaces revealed secret values in
+/// the event's message, exception values, breadcrumb messages, and string-
+/// valued extra fields before the event is sent.
+///
 /// [`ClientOptions`]: sentry::ClientOptions
-pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
+pub fn sentry_client_options(
+    release: &'static str,
+    redact: Option<RedactHandle>,
+) -> sentry::ClientOptions {
     sentry::ClientOptions {
         release: Some(release.into()),
-        before_send: Some(Arc::new(before_send)),
+        before_send: Some(Arc::new(move |event| {
+            let event = before_send(event)?;
+            Some(match &redact {
+                Some(h) => redact_sentry_event(event, h),
+                None => event,
+            })
+        })),
         ..Default::default()
     }
 }
@@ -191,23 +303,51 @@ pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
 /// a stderr fmt layer per `fmt_mode`, the `sentry-tracing` bridge, and the
 /// supplied [`MietteLayer`].
 ///
+/// When `redact` is `Some`, the fmt layer wraps stderr with a
+/// [`RedactingMakeWriter`] that replaces revealed secret values in each
+/// formatted log line before it reaches the output.
+///
 /// Layer ordering is baked in: `miette_layer` registers before
 /// `sentry_tracing::layer()` so its thread-local is populated when
 /// sentry-tracing's `on_event` calls `capture_event`.
-pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Result<()> {
+pub fn init_tracing(
+    miette_layer: MietteLayer,
+    fmt_mode: FmtMode,
+    redact: Option<RedactHandle>,
+) -> miette::Result<()> {
     let filter = EnvFilter::builder()
         .with_env_var("QUIRE_LOG")
         .from_env()
         .into_diagnostic()?;
 
-    let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-    let fmt_layer = match fmt_mode {
-        FmtMode::Plain => layer.boxed(),
-        FmtMode::AutoJson => {
-            if std::io::stderr().is_terminal() {
-                layer.boxed()
-            } else {
-                layer.json().boxed()
+    let fmt_layer = match redact {
+        Some(handle) => {
+            let mw = RedactingMakeWriter::new(std::io::stderr, handle);
+            match fmt_mode {
+                FmtMode::Plain => tracing_subscriber::fmt::layer().with_writer(mw).boxed(),
+                FmtMode::AutoJson => {
+                    if std::io::stderr().is_terminal() {
+                        tracing_subscriber::fmt::layer().with_writer(mw).boxed()
+                    } else {
+                        tracing_subscriber::fmt::layer()
+                            .with_writer(mw)
+                            .json()
+                            .boxed()
+                    }
+                }
+            }
+        }
+        None => {
+            let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+            match fmt_mode {
+                FmtMode::Plain => layer.boxed(),
+                FmtMode::AutoJson => {
+                    if std::io::stderr().is_terminal() {
+                        layer.boxed()
+                    } else {
+                        layer.json().boxed()
+                    }
+                }
             }
         }
     };

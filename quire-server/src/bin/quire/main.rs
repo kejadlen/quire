@@ -131,7 +131,7 @@ fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
 
     Some(sentry::init((
         dsn,
-        telemetry::sentry_client_options(VERSION),
+        telemetry::sentry_client_options(VERSION, None),
     )))
 }
 
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
         .with_type::<quire_core::fennel::FennelError>();
-    telemetry::init_tracing(miette_layer, FmtMode::AutoJson)?;
+    telemetry::init_tracing(miette_layer, FmtMode::AutoJson, None)?;
 
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "quire", &mut std::io::stdout());
