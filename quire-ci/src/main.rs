@@ -236,17 +236,12 @@ fn main() -> miette::Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            // API transport fetches secrets from the server on demand
-            // instead of reading them from the bootstrap file. The
-            // bootstrap secrets map is ignored in this path; a later
-            // change will stop writing secrets to bootstrap entirely.
-            let registry = if transport.mode == TransportMode::Api {
-                let session = transport.session.clone();
-                SecretRegistry::from(HashMap::new())
-                    .with_fallback(move |name| fetch_secret_from_api(&session, name))
+            let source = if transport.mode == TransportMode::Api {
+                SecretSource::Api(transport.session.clone())
             } else {
-                SecretRegistry::from(secrets)
+                SecretSource::Bootstrap(secrets)
             };
+            let registry = source.into_registry();
 
             run_pipeline(
                 cli.workspace,
@@ -369,47 +364,66 @@ fn load_bootstrap(
     Ok((bootstrap.git_dir, bootstrap.meta, secrets, bootstrap.sentry))
 }
 
-/// Fetch a single secret value from quire-server's API.
+/// How this run resolves secret values.
 ///
-/// Called by the [`SecretRegistry`] fallback when API transport is
-/// selected. Uses [`tokio::runtime::Handle::block_on`] to drive the
-/// async HTTP call from synchronous Lua callback context. The caller
-/// must be on a thread that has entered a Tokio runtime (guaranteed
-/// by `rt.enter()` in `main`).
+/// `Bootstrap` reads the revealed values baked into the bootstrap file
+/// by the orchestrator — the current default. `Api` ignores those values
+/// and fetches each secret on demand from quire-server instead.
 ///
-/// Maps the server's 404 to [`quire_core::secret::Error::UnknownSecret`]
-/// so the error message mirrors the filesystem-backed path.
-fn fetch_secret_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
-    use quire_core::secret::Error as SecretError;
+/// Once the `Api` path is validated in production, `Bootstrap` will be
+/// removed and the bootstrap file will stop carrying secret values.
+enum SecretSource {
+    Bootstrap(HashMap<String, quire_core::secret::SecretString>),
+    Api(ApiSession),
+}
 
-    let url = format!(
-        "{}/api/runs/{}/secrets/{}",
-        session.server_url, session.run_id, name
-    );
-    let token = session.auth_token.clone();
-    let name_owned = name.to_string();
-
-    tokio::runtime::Handle::current().block_on(async move {
-        let resp = reqwest::Client::new()
-            .get(&url)
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(|e| SecretError::Resolve(e.to_string()))?;
-
-        let status = resp.status();
-        if status.is_success() {
-            resp.text()
-                .await
-                .map_err(|e| SecretError::Resolve(e.to_string()))
-        } else if status == reqwest::StatusCode::NOT_FOUND {
-            Err(SecretError::UnknownSecret(name_owned))
-        } else {
-            Err(SecretError::Resolve(format!(
-                "secret API returned {status} for {name_owned:?}"
-            )))
+impl SecretSource {
+    fn into_registry(self) -> SecretRegistry {
+        match self {
+            Self::Bootstrap(secrets) => SecretRegistry::from(secrets),
+            Self::Api(session) => SecretRegistry::from(HashMap::new())
+                .with_fallback(move |name| Self::fetch_from_api(&session, name)),
         }
-    })
+    }
+
+    /// Fetch a single secret from quire-server.
+    ///
+    /// Uses [`tokio::runtime::Handle::block_on`] to drive the async HTTP
+    /// call from synchronous Lua callback context. Requires the caller to
+    /// be on a thread that has entered a Tokio runtime (`rt.enter()` in
+    /// `main` satisfies this).
+    fn fetch_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
+        use quire_core::secret::Error as SecretError;
+
+        let url = format!(
+            "{}/api/runs/{}/secrets/{}",
+            session.server_url, session.run_id, name
+        );
+        let token = session.auth_token.clone();
+        let name_owned = name.to_string();
+
+        tokio::runtime::Handle::current().block_on(async move {
+            let resp = reqwest::Client::new()
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|e| SecretError::Resolve(e.to_string()))?;
+
+            let status = resp.status();
+            if status.is_success() {
+                resp.text()
+                    .await
+                    .map_err(|e| SecretError::Resolve(e.to_string()))
+            } else if status == reqwest::StatusCode::NOT_FOUND {
+                Err(SecretError::UnknownSecret(name_owned))
+            } else {
+                Err(SecretError::Resolve(format!(
+                    "secret API returned {status} for {name_owned:?}"
+                )))
+            }
+        })
+    }
 }
 
 fn run_pipeline(
