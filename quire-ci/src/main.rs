@@ -8,13 +8,14 @@ use std::rc::Rc;
 
 use clap::Parser;
 use miette::IntoDiagnostic;
+use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
-use quire_core::secret::SecretRegistry;
+use quire_core::secret::{Error as SecretError, SecretRegistry, SecretString};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
@@ -263,10 +264,7 @@ fn main() -> miette::Result<()> {
 /// the two sides' events group on the same trace. A malformed
 /// trace_id (shouldn't happen — the orchestrator emits the canonical
 /// hex form) is logged and skipped rather than aborting Sentry init.
-fn init_sentry(
-    handoff: Option<&quire_core::ci::bootstrap::SentryHandoff>,
-    meta: &RunMeta,
-) -> Option<sentry::ClientInitGuard> {
+fn init_sentry(handoff: Option<&SentryHandoff>, meta: &RunMeta) -> Option<sentry::ClientInitGuard> {
     let handoff = handoff?;
     let guard = sentry::init((
         handoff.dsn.as_str(),
@@ -339,12 +337,9 @@ fn load_bootstrap(
 ) -> miette::Result<(
     PathBuf,
     RunMeta,
-    HashMap<String, quire_core::secret::SecretString>,
-    Option<quire_core::ci::bootstrap::SentryHandoff>,
+    HashMap<String, SecretString>,
+    Option<SentryHandoff>,
 )> {
-    use quire_core::ci::bootstrap::Bootstrap;
-    use quire_core::secret::SecretString;
-
     let bytes = fs_err::read(path).into_diagnostic()?;
     if let Err(e) = fs_err::remove_file(path) {
         // Don't abort — the bytes are already loaded and the server
@@ -373,7 +368,7 @@ fn load_bootstrap(
 /// Once the `Api` path is validated in production, `Bootstrap` will be
 /// removed and the bootstrap file will stop carrying secret values.
 enum SecretSource {
-    Bootstrap(HashMap<String, quire_core::secret::SecretString>),
+    Bootstrap(HashMap<String, SecretString>),
     Api(ApiSession),
 }
 
@@ -393,8 +388,6 @@ impl SecretSource {
     /// be on a thread that has entered a Tokio runtime (`rt.enter()` in
     /// `main` satisfies this).
     fn fetch_from_api(session: &ApiSession, name: &str) -> quire_core::secret::Result<String> {
-        use quire_core::secret::Error as SecretError;
-
         let url = format!(
             "{}/api/runs/{}/secrets/{}",
             session.server_url, session.run_id, name
@@ -624,8 +617,6 @@ mod tests {
 
     #[test]
     fn load_bootstrap_unlinks_after_read() {
-        use quire_core::ci::bootstrap::Bootstrap;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bootstrap.json");
         let bootstrap = Bootstrap {
