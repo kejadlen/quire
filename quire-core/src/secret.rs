@@ -225,10 +225,10 @@ impl SecretRegistry {
     /// found in the declared map. Intended for API transport: quire-ci
     /// installs a closure that fetches the value from quire-server.
     ///
-    /// The fallback is tried exactly once per `resolve` call — results
-    /// are not cached between calls, so the closure is responsible for
-    /// any fetch-level caching it needs. Revealed values are still
-    /// registered for redaction regardless of which path produced them.
+    /// Values fetched via the fallback are cached back into `declared`,
+    /// so the fallback is called at most once per name. The registry
+    /// therefore acts as a pull-through cache: pre-populate it for the
+    /// filesystem source, leave it empty for the API source.
     pub fn with_fallback<F>(mut self, fallback: F) -> Self
     where
         F: Fn(&str) -> Result<String> + 'static,
@@ -257,10 +257,15 @@ impl SecretRegistry {
     pub fn resolve(&mut self, name: &str) -> Result<String> {
         let value = if let Some(secret) = self.declared.get(name) {
             secret.reveal()?.to_string()
-        } else if let Some(ref fallback) = self.fallback {
-            fallback(name)?
         } else {
-            return Err(Error::UnknownSecret(name.to_string()));
+            let fetched = if let Some(ref fallback) = self.fallback {
+                fallback(name)?
+            } else {
+                return Err(Error::UnknownSecret(name.to_string()));
+            };
+            self.declared
+                .insert(name.to_string(), SecretString::from(fetched.clone()));
+            fetched
         };
         if value.len() >= 8 {
             self.revealed
@@ -460,6 +465,31 @@ mod tests {
         });
         let w: Wrapper = serde_json::from_value(json).expect("deserialize");
         assert_eq!(w.token.reveal().unwrap(), "from_file");
+    }
+
+    #[test]
+    fn fallback_result_is_cached_in_declared() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counter = call_count.clone();
+
+        let mut registry = SecretRegistry::from(HashMap::new()).with_fallback(move |name| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(format!("fetched_{name}_abcdefgh"))
+        });
+
+        let first = registry.resolve("token").unwrap();
+        let second = registry.resolve("token").unwrap();
+
+        assert_eq!(first, "fetched_token_abcdefgh");
+        assert_eq!(second, "fetched_token_abcdefgh");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "fallback should be called exactly once"
+        );
     }
 
     #[test]
