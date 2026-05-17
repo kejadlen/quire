@@ -99,23 +99,6 @@ struct TransportFlags {
     transport: TransportFlag,
 }
 
-impl TransportFlags {
-    fn resolve(self, auth_token: Option<String>) -> miette::Result<Transport> {
-        let auth_token =
-            auth_token.ok_or_else(|| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
-        let session = ApiSession {
-            run_id: self.run_id,
-            server_url: self.server_url,
-            auth_token,
-        };
-        let mode = match self.transport {
-            TransportFlag::Filesystem => TransportMode::Filesystem,
-            TransportFlag::Api => TransportMode::Api,
-        };
-        Ok(Transport { session, mode })
-    }
-}
-
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
 /// prints each log file's contents to stdout, then lets the underlying
 /// [`tempfile::TempDir`] clean up the directory. Drop fires whether
@@ -224,8 +207,19 @@ fn main() -> miette::Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-            let auth_token = std::env::var("QUIRE_CI_TOKEN").ok();
-            let transport = transport.resolve(auth_token)?;
+            let auth_token = std::env::var("QUIRE_CI_TOKEN")
+                .map_err(|_| miette::miette!("QUIRE_CI_TOKEN env var is required"))?;
+            let transport = Transport {
+                session: ApiSession {
+                    run_id: transport.run_id,
+                    server_url: transport.server_url,
+                    auth_token,
+                },
+                mode: match transport.transport {
+                    TransportFlag::Filesystem => TransportMode::Filesystem,
+                    TransportFlag::Api => TransportMode::Api,
+                },
+            };
             let (git_dir, meta, secrets, sentry_handoff) = load_bootstrap(&bootstrap)?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
