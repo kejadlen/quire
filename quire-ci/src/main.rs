@@ -196,16 +196,44 @@ impl std::str::FromStr for EventsTarget {
     }
 }
 
-/// Thin wrapper around [`ApiSession`] for calling the quire-server API.
-/// Owns its session data so it can be moved into the `'static`
-/// closures that server-backed resources require.
+/// HTTP client for quire-server's CI API.
+///
+/// Wraps `reqwest::blocking::Client` with the `Authorization` header
+/// pre-configured and the per-run base URL baked in. Cloning is cheap
+/// (the underlying connection pool is reference-counted).
 struct ApiClient {
-    session: ApiSession,
+    client: reqwest::blocking::Client,
+    base_url: String,
 }
 
 impl ApiClient {
     fn new(session: ApiSession) -> Self {
-        Self { session }
+        use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        let mut auth = HeaderValue::from_str(&format!("Bearer {}", session.auth_token))
+            .expect("auth token contains only ASCII");
+        auth.set_sensitive(true);
+        headers.insert(AUTHORIZATION, auth);
+        Self {
+            client: reqwest::blocking::Client::builder()
+                .default_headers(headers)
+                .build()
+                .expect("failed to build HTTP client"),
+            base_url: format!("{}/api/runs/{}", session.server_url, session.run_id),
+        }
+    }
+
+    /// Send an authenticated GET to `{base_url}/{path}` and return the response.
+    ///
+    /// Spawns a dedicated OS thread so `reqwest::blocking` works regardless of
+    /// whether the calling thread holds a Tokio runtime guard (which it does
+    /// during pipeline execution due to Sentry's runtime requirement).
+    fn get(&self, path: &str) -> reqwest::Result<reqwest::blocking::Response> {
+        let url = format!("{}/{}", self.base_url, path);
+        let client = self.client.clone();
+        std::thread::spawn(move || client.get(&url).send())
+            .join()
+            .expect("HTTP thread panicked")
     }
 
     /// Fetch the bootstrap payload from the server API.
@@ -213,64 +241,29 @@ impl ApiClient {
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
     fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, Option<String>)> {
-        let url = format!(
-            "{}/api/runs/{}/bootstrap",
-            self.session.server_url, self.session.run_id
-        );
-        let token = self.session.auth_token.clone();
-        tokio::runtime::Handle::current().block_on(async move {
-            let resp = reqwest::Client::new()
-                .get(&url)
-                .bearer_auth(&token)
-                .send()
-                .await
-                .map_err(|e| miette!("bootstrap request failed: {e}"))?;
-
-            let status = resp.status();
-            if !status.is_success() {
-                miette::bail!("bootstrap API returned {status}");
-            }
-            let bootstrap: Bootstrap = resp
-                .json()
-                .await
-                .map_err(|e| miette!("failed to parse bootstrap response: {e}"))?;
-            Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
-        })
+        let bootstrap: Bootstrap = self
+            .get("bootstrap")
+            .into_diagnostic()?
+            .error_for_status()
+            .into_diagnostic()?
+            .json()
+            .into_diagnostic()?;
+        Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
     }
 
     /// Fetch a single secret by name from the server.
     fn fetch_secret(&self, name: &str) -> SecretResult<String> {
-        let url = format!(
-            "{}/api/runs/{}/secrets/{}",
-            self.session.server_url, self.session.run_id, name
-        );
-        let token = self.session.auth_token.clone();
-        let name_owned = name.to_string();
-        tokio::runtime::Handle::current().block_on(async move {
-            let resp = match reqwest::Client::new()
-                .get(&url)
-                .bearer_auth(&token)
-                .send()
-                .await
-            {
-                Ok(resp) => resp,
-                Err(e) => return Err(SecretError::Resolve(e.to_string())),
-            };
-            let status = resp.status();
-            if status.is_success() {
-                let body = match resp.json::<SecretResponse>().await {
-                    Ok(body) => body,
-                    Err(e) => return Err(SecretError::Resolve(e.to_string())),
-                };
-                Ok(body.value)
-            } else if status == reqwest::StatusCode::NOT_FOUND {
-                Err(SecretError::UnknownSecret(name_owned))
-            } else {
-                Err(SecretError::Resolve(format!(
-                    "secret API returned {status} for {name_owned:?}"
-                )))
-            }
-        })
+        let resp = self
+            .get(&format!("secrets/{name}"))
+            .map_err(|e| SecretError::Resolve(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(SecretError::UnknownSecret(name.to_string()));
+        }
+        resp.error_for_status()
+            .map_err(|e| SecretError::Resolve(e.to_string()))?
+            .json::<SecretResponse>()
+            .map(|r| r.value)
+            .map_err(|e| SecretError::Resolve(e.to_string()))
     }
 }
 
