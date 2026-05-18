@@ -93,14 +93,13 @@ async fn verify_bearer(
     };
     let token = bearer.token().to_string();
 
-    let run_id =
-        <AxumPath<HashMap<String, String>> as FromRequestParts<()>>::from_request_parts(
-            &mut parts,
-            &(),
-        )
-        .await
-        .ok()
-        .and_then(|mut p| p.0.remove("run_id"));
+    let run_id = <AxumPath<HashMap<String, String>> as FromRequestParts<()>>::from_request_parts(
+        &mut parts,
+        &(),
+    )
+    .await
+    .ok()
+    .and_then(|mut p| p.0.remove("run_id"));
 
     let req = axum::extract::Request::from_parts(parts, body);
 
