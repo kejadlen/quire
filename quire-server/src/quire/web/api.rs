@@ -81,14 +81,17 @@ async fn verify_bearer(
 ) -> Response {
     let (mut parts, body) = req.into_parts();
 
-    let token =
+    let Some(TypedHeader(Authorization(bearer))) =
         <TypedHeader<Authorization<Bearer>> as FromRequestParts<()>>::from_request_parts(
             &mut parts,
             &(),
         )
         .await
         .ok()
-        .map(|TypedHeader(Authorization(bearer))| bearer.token().to_string());
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let token = bearer.token().to_string();
 
     let run_id =
         <AxumPath<HashMap<String, String>> as FromRequestParts<()>>::from_request_parts(
@@ -100,10 +103,6 @@ async fn verify_bearer(
         .and_then(|mut p| p.0.remove("run_id"));
 
     let req = axum::extract::Request::from_parts(parts, body);
-
-    let Some(token) = token else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
 
     let Some(run_id) = run_id else {
         return StatusCode::NOT_FOUND.into_response();
