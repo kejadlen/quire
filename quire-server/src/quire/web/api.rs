@@ -78,7 +78,7 @@ async fn verify_bearer(
     State(quire): State<Quire>,
     req: axum::extract::Request,
     next: Next,
-) -> Response {
+) -> Result<Response, ApiError> {
     let (mut parts, body) = req.into_parts();
 
     let Some(TypedHeader(Authorization(bearer))) =
@@ -89,7 +89,7 @@ async fn verify_bearer(
         .await
         .ok()
     else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return Err(ApiError::Unauthorized);
     };
     let token = bearer.token().to_string();
 
@@ -105,7 +105,7 @@ async fn verify_bearer(
     let req = axum::extract::Request::from_parts(parts, body);
 
     let Some(run_id) = run_id else {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(ApiError::NotFound);
     };
 
     let result = tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
@@ -126,12 +126,9 @@ async fn verify_bearer(
         }
     })
     .await
-    .expect("blocking task panicked");
+    .expect("blocking task panicked")?;
 
-    match result {
-        Ok(()) => next.run(req).await,
-        Err(e) => e.into_response(),
-    }
+    Ok(next.run(req).await)
 }
 
 /// `GET /api/runs/:run_id/secrets/:name`
