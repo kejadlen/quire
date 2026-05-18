@@ -38,7 +38,7 @@ pub fn new_transport(mode: TransportMode, port: u16) -> Transport {
         session: ApiSession {
             run_id: uuid::Uuid::now_v7().to_string(),
             server_url: format!("http://127.0.0.1:{port}"),
-            auth_token: mint_auth_token(),
+            run_token: mint_run_token(),
         },
         mode,
     }
@@ -118,12 +118,9 @@ impl Runs {
     /// and the DB agree. Pass `None` for local runs; a fresh UUID is minted
     /// and no auth token is stored.
     pub fn create(&self, meta: &RunMeta, transport: Option<&Transport>) -> Result<Run> {
-        let (id, auth_token_str) = match transport {
+        let (id, run_token_str) = match transport {
             None => (uuid::Uuid::now_v7().to_string(), None),
-            Some(t) => (
-                t.session.run_id.clone(),
-                Some(t.session.auth_token.as_str()),
-            ),
+            Some(t) => (t.session.run_id.clone(), Some(t.session.run_token.as_str())),
         };
         let workspace_path = self.base_dir.join(&id).join("workspace");
 
@@ -135,7 +132,7 @@ impl Runs {
         self.supersede_existing(&db, &meta.r#ref)?;
 
         db.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path, auth_token)
+            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path, run_token)
              VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
             rusqlite::params![
                 &id,
@@ -148,7 +145,7 @@ impl Runs {
                     std::io::ErrorKind::InvalidData,
                     "workspace path is not valid UTF-8",
                 ))?,
-                auth_token_str,
+                run_token_str,
             ],
         )?;
 
@@ -345,7 +342,7 @@ impl Run {
             Some(t) => {
                 cmd.env("QUIRE__RUN_ID", &t.session.run_id);
                 cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
-                cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
+                cmd.env("QUIRE__RUN_TOKEN", &t.session.run_token);
                 if t.mode == TransportMode::Api {
                     self.store_bootstrap_data(git_dir, sentry_trace_id)?;
                     cmd.env("QUIRE__TRANSPORT", "api");
@@ -717,9 +714,9 @@ pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Res
 /// Mint a 32-character alphanumeric bearer token from the OS CSPRNG.
 ///
 /// ~190 bits of entropy, opaque to the holder. Used as the per-run
-/// auth secret for the API transport; stored in the `runs.auth_token`
-/// column and passed to quire-ci via `QUIRE_CI_TOKEN`.
-fn mint_auth_token() -> String {
+/// auth secret for the API transport; stored in the `runs.run_token`
+/// column and passed to quire-ci via `QUIRE__RUN_TOKEN`.
+fn mint_run_token() -> String {
     rand::rng()
         .sample_iter(&Alphanumeric)
         .take(32)
@@ -907,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn create_with_filesystem_persists_auth_token() {
+    fn create_with_filesystem_persists_run_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let transport = new_transport(TransportMode::Filesystem, 3000);
@@ -918,20 +915,20 @@ mod tests {
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
             .query_row(
-                "SELECT auth_token FROM runs WHERE id = ?1",
+                "SELECT run_token FROM runs WHERE id = ?1",
                 rusqlite::params![run.id()],
                 |row| row.get(0),
             )
             .expect("row");
         assert_eq!(
             stored.as_deref(),
-            Some(transport.session.auth_token.as_str()),
-            "filesystem transport should persist its minted auth token"
+            Some(transport.session.run_token.as_str()),
+            "filesystem transport should persist its minted run token"
         );
     }
 
     #[test]
-    fn create_with_api_persists_minted_auth_token() {
+    fn create_with_api_persists_minted_run_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let transport = new_transport(TransportMode::Api, 3000);
@@ -942,14 +939,14 @@ mod tests {
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
             .query_row(
-                "SELECT auth_token FROM runs WHERE id = ?1",
+                "SELECT run_token FROM runs WHERE id = ?1",
                 rusqlite::params![run.id()],
                 |row| row.get(0),
             )
             .expect("row");
         assert_eq!(
             stored.as_deref(),
-            Some(transport.session.auth_token.as_str())
+            Some(transport.session.run_token.as_str())
         );
     }
 
@@ -966,15 +963,15 @@ mod tests {
             ),
         ] {
             assert_eq!(transport.session.server_url, expected_url);
-            assert_eq!(transport.session.auth_token.len(), 32);
+            assert_eq!(transport.session.run_token.len(), 32);
             assert!(
                 transport
                     .session
-                    .auth_token
+                    .run_token
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric()),
                 "token should be alphanumeric, got {:?}",
-                transport.session.auth_token
+                transport.session.run_token
             );
             assert!(
                 uuid::Uuid::parse_str(&transport.session.run_id).is_ok(),
@@ -985,9 +982,9 @@ mod tests {
     }
 
     #[test]
-    fn mint_auth_token_returns_unique_values() {
-        let a = mint_auth_token();
-        let b = mint_auth_token();
+    fn mint_run_token_returns_unique_values() {
+        let a = mint_run_token();
+        let b = mint_run_token();
         assert_ne!(a, b, "two mints should not collide");
     }
 
