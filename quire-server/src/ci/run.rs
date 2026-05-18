@@ -342,19 +342,17 @@ impl Run {
                 write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
                 cmd.arg("--bootstrap").arg(&bootstrap_path);
             }
-            Some(t) if t.mode == TransportMode::Api => {
-                self.store_bootstrap_data(git_dir, sentry_trace_id)?;
-                cmd.env("QUIRE__RUN_ID", &t.session.run_id);
-                cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
-                cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
-                cmd.env("QUIRE__TRANSPORT", "api");
-            }
             Some(t) => {
-                write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
-                cmd.arg("--bootstrap").arg(&bootstrap_path);
                 cmd.env("QUIRE__RUN_ID", &t.session.run_id);
                 cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
                 cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
+                if t.mode == TransportMode::Api {
+                    self.store_bootstrap_data(git_dir, sentry_trace_id)?;
+                    cmd.env("QUIRE__TRANSPORT", "api");
+                } else {
+                    write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
+                    cmd.arg("--bootstrap").arg(&bootstrap_path);
+                }
             }
         }
         if let Some(dsn) = sentry_dsn {
