@@ -242,13 +242,10 @@ impl RunClient {
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
     fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, Option<String>)> {
-        let bootstrap: Bootstrap = self
-            .get("bootstrap")
-            .into_diagnostic()?
-            .error_for_status()
-            .into_diagnostic()?
-            .json()
-            .into_diagnostic()?;
+        let bootstrap: Bootstrap = (|| -> reqwest::Result<_> {
+            self.get("bootstrap")?.error_for_status()?.json()
+        })()
+        .into_diagnostic()?;
         Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
     }
 
@@ -261,8 +258,7 @@ impl RunClient {
             return Err(SecretError::UnknownSecret(name.to_string()));
         }
         resp.error_for_status()
-            .map_err(|e| SecretError::Resolve(Arc::new(e)))?
-            .json::<SecretResponse>()
+            .and_then(|r| r.json::<SecretResponse>())
             .map(|r| r.value)
             .map_err(|e| SecretError::Resolve(Arc::new(e)))
     }
