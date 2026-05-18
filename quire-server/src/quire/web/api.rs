@@ -115,17 +115,12 @@ async fn verify_bearer(
     };
 
     tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
-        let db = quire
-            .db_pool()
-            .lock()
-            .map_err(|_| crate::Error::Io(std::io::Error::other("db mutex poisoned")))?;
-        let stored: Option<String> = db
-            .query_row(
-                "SELECT auth_token FROM runs WHERE id = ?1",
-                rusqlite::params![run_id],
-                |row| row.get(0),
-            )
-            .map_err(ApiError::from)?;
+        let db = quire.db_pool().lock().expect("db mutex poisoned");
+        let stored: Option<String> = db.query_row(
+            "SELECT auth_token FROM runs WHERE id = ?1",
+            rusqlite::params![run_id],
+            |row| row.get(0),
+        )?;
         match stored {
             Some(ref t) if t == &token => Ok(()),
             _ => Err(ApiError::Unauthorized),
