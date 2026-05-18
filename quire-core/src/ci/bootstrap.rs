@@ -35,13 +35,13 @@ pub struct Bootstrap {
     pub sentry: Option<SentryHandoff>,
 }
 
-/// What quire-ci needs to mirror the orchestrator's Sentry context.
+/// What quire-ci needs to mirror the orchestrator's Sentry trace.
 ///
-/// `trace_id` is the hex form
-/// of [`sentry::protocol::TraceId`]; kept as a string here so
-/// `quire-core` doesn't grow a `sentry` dep.
-#[derive(Debug, Serialize, Deserialize)]
+/// `trace_id` is the hex form of [`sentry::protocol::TraceId`]; kept
+/// as a string here so `quire-core` doesn't grow a `sentry` dep.
+/// The DSN itself travels via the `QUIRE__SENTRY_DSN` environment
+/// variable, not this struct.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SentryHandoff {
-    pub dsn: String,
     pub trace_id: String,
 }

@@ -2,8 +2,8 @@
 //!
 //! The on-the-wire pairing both sides agree on. The orchestrator
 //! constructs a `Transport` per run (minting the auth token and
-//! using the run's UUID); quire-ci reconstructs it from CLI flags
-//! plus `QUIRE_CI_TOKEN`.
+//! using the run's UUID); quire-ci reconstructs it from the
+//! `QUIRE__*` environment variables.
 
 /// Credentials and endpoint coordinates for a single CI run's API
 /// channel. Holds everything quire-ci needs to call back to the

@@ -307,6 +307,7 @@ impl Run {
         workspace: &Path,
         meta: &RunMeta,
         sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
+        sentry_dsn: Option<&str>,
         transport: Option<&Transport>,
     ) -> Result<()> {
         self.transition(RunState::Active, None)?;
@@ -330,33 +331,26 @@ impl Run {
         );
 
         let mut cmd = std::process::Command::new("quire-ci");
-        cmd.arg("run").arg("--workspace").arg(workspace);
+        cmd.arg("run")
+            .arg("--workspace")
+            .arg(workspace)
+            .arg("--out-dir")
+            .arg(&run_dir)
+            .arg("--events")
+            .arg(&events_path)
+            .arg("--bootstrap")
+            .arg(&bootstrap_path);
 
-        match transport {
-            None => {
-                cmd.arg("--out-dir")
-                    .arg(&run_dir)
-                    .arg("--events")
-                    .arg(&events_path)
-                    .arg("--bootstrap")
-                    .arg(&bootstrap_path);
+        if let Some(t) = transport {
+            cmd.env("QUIRE__RUN_ID", &t.session.run_id);
+            cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
+            cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
+            if t.mode == TransportMode::Api {
+                cmd.env("QUIRE__TRANSPORT", "api");
             }
-            Some(t) => {
-                cmd.arg("--run-id")
-                    .arg(&t.session.run_id)
-                    .arg("--server-url")
-                    .arg(&t.session.server_url);
-                cmd.env("QUIRE_CI_TOKEN", &t.session.auth_token);
-                cmd.arg("--out-dir")
-                    .arg(&run_dir)
-                    .arg("--events")
-                    .arg(&events_path)
-                    .arg("--bootstrap")
-                    .arg(&bootstrap_path);
-                if t.mode == TransportMode::Api {
-                    cmd.arg("--transport").arg("api");
-                }
-            }
+        }
+        if let Some(dsn) = sentry_dsn {
+            cmd.env("QUIRE__SENTRY_DSN", dsn);
         }
 
         let status = cmd
@@ -633,15 +627,12 @@ fn write_bootstrap(
     meta: &RunMeta,
     sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
 ) -> Result<()> {
-    use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
+    use quire_core::ci::bootstrap::Bootstrap;
 
     let bootstrap = Bootstrap {
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
-        sentry: sentry.map(|s| SentryHandoff {
-            dsn: s.dsn.clone(),
-            trace_id: s.trace_id.clone(),
-        }),
+        sentry: sentry.cloned(),
     };
     let json = serde_json::to_vec_pretty(&bootstrap).map_err(std::io::Error::other)?;
 
