@@ -36,7 +36,6 @@ pub enum Executor {
 pub fn new_transport(mode: TransportMode, port: u16) -> Transport {
     Transport {
         session: ApiSession {
-            run_id: uuid::Uuid::now_v7().to_string(),
             server_url: format!("http://127.0.0.1:{port}"),
             run_token: mint_run_token(),
         },
@@ -120,7 +119,10 @@ impl Runs {
     pub fn create(&self, meta: &RunMeta, transport: Option<&Transport>) -> Result<Run> {
         let (id, run_token_str) = match transport {
             None => (uuid::Uuid::now_v7().to_string(), None),
-            Some(t) => (t.session.run_id.clone(), Some(t.session.run_token.as_str())),
+            Some(t) => {
+                let id = uuid::Uuid::now_v7().to_string();
+                (id, Some(t.session.run_token.as_str()))
+            }
         };
         let workspace_path = self.base_dir.join(&id).join("workspace");
 
@@ -340,7 +342,6 @@ impl Run {
                 cmd.arg("--bootstrap").arg(&bootstrap_path);
             }
             Some(t) => {
-                cmd.env("QUIRE__RUN_ID", &t.session.run_id);
                 cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
                 cmd.env("QUIRE__RUN_TOKEN", &t.session.run_token);
                 if t.mode == TransportMode::Api {
@@ -910,7 +911,8 @@ mod tests {
         let transport = new_transport(TransportMode::Filesystem, 3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
-        assert_eq!(run.id(), transport.session.run_id);
+        // Run ID is minted by the server, not taken from the transport.
+        assert!(uuid::Uuid::parse_str(run.id()).is_ok());
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
@@ -934,7 +936,8 @@ mod tests {
         let transport = new_transport(TransportMode::Api, 3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
-        assert_eq!(run.id(), transport.session.run_id);
+        // Run ID is minted by the server, not taken from the transport.
+        assert!(uuid::Uuid::parse_str(run.id()).is_ok());
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let stored: Option<String> = conn
@@ -973,11 +976,9 @@ mod tests {
                 "token should be alphanumeric, got {:?}",
                 transport.session.run_token
             );
-            assert!(
-                uuid::Uuid::parse_str(&transport.session.run_id).is_ok(),
-                "run_id should be a UUID, got {:?}",
-                transport.session.run_id
-            );
+            // Transport no longer carries a run_id — the server mints
+            // the run ID at creation time and the token alone identifies
+            // the run.
         }
     }
 

@@ -11,13 +11,11 @@
 /// the bearer token it issued.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiSession {
-    /// Run UUID assigned by the orchestrator. Also the value stored
-    /// in `runs.id` server-side.
-    pub run_id: String,
     /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
     pub server_url: String,
     /// Bearer token minted at run creation time. Matches
-    /// `runs.run_token` server-side.
+    /// `runs.run_token` server-side. Also serves as the run
+    /// identifier — the server looks up the run by this token.
     pub run_token: String,
 }
 

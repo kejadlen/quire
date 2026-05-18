@@ -49,8 +49,8 @@ struct Cli {
 
     /// Transport credentials and telemetry settings for
     /// orchestrator-dispatched runs, sourced from `QUIRE__*` env vars:
-    /// `QUIRE__RUN_ID`, `QUIRE__SERVER_URL`, `QUIRE__RUN_TOKEN`,
-    /// `QUIRE__TRANSPORT`, `QUIRE__SENTRY_DSN`.
+    /// `QUIRE__SERVER_URL`, `QUIRE__RUN_TOKEN`, `QUIRE__TRANSPORT`,
+    /// `QUIRE__SENTRY_DSN`.
     #[facet(args::config, args::env_prefix = "QUIRE")]
     quire: QuireConfig,
 
@@ -66,10 +66,6 @@ struct Cli {
 /// `--quire.<field>` on the CLI.
 #[derive(Facet)]
 struct QuireConfig {
-    /// Run UUID assigned by the orchestrator (`QUIRE__RUN_ID`).
-    #[facet(default)]
-    run_id: String,
-
     /// Base URL of quire-server, e.g. `http://127.0.0.1:3000`
     /// (`QUIRE__SERVER_URL`).
     #[facet(default)]
@@ -318,7 +314,6 @@ fn main() -> Result<()> {
             let _enter = rt.enter();
 
             let session = ApiSession {
-                run_id: cli.quire.run_id,
                 server_url: cli.quire.server_url,
                 run_token: cli.quire.run_token,
             };
