@@ -309,7 +309,20 @@ impl Run {
         sentry_dsn: Option<&str>,
         transport: Option<&Transport>,
     ) -> Result<()> {
-        self.transition(RunState::Active, None)?;
+        // For API transport the GET /api/run/bootstrap endpoint owns the
+        // pending → active transition (it sets started_at_ms when quire-ci
+        // fetches the payload). Calling transition() here would set state =
+        // 'active' in the DB before quire-ci connects, causing the endpoint
+        // to return 410 Gone. Update local state only so the later
+        // transition(Complete/Failed) call passes the state-machine check.
+        let uses_api_transport = transport
+            .map(|t| t.mode == TransportMode::Api)
+            .unwrap_or(false);
+        if uses_api_transport {
+            self.state = RunState::Active;
+        } else {
+            self.transition(RunState::Active, None)?;
+        }
 
         let run_dir = self.path();
         let log_path = run_dir.join("quire-ci.log");
