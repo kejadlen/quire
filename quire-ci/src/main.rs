@@ -77,10 +77,9 @@ struct QuireConfig {
     #[facet(sensitive, default)]
     auth_token: String,
 
-    /// Transport mode: `filesystem` (default) or `api`
-    /// (`QUIRE__TRANSPORT`).
-    #[facet(default = "filesystem")]
-    transport: String,
+    /// Transport mode (`QUIRE__TRANSPORT`).
+    #[facet(default)]
+    transport: TransportMode,
 
     /// Sentry DSN for error reporting (`QUIRE__SENTRY_DSN`).
     #[facet(default)]
@@ -282,12 +281,6 @@ fn main() -> Result<()> {
                 }
             };
 
-            let transport_mode = cli
-                .quire
-                .transport
-                .parse::<TransportMode>()
-                .map_err(|e| miette!("{e}"))?;
-
             let (git_dir, meta, sentry_handoff) = load_bootstrap(&PathBuf::from(&bootstrap))?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
@@ -322,7 +315,7 @@ fn main() -> Result<()> {
             };
             let transport = Transport {
                 session: session.clone(),
-                mode: transport_mode,
+                mode: cli.quire.transport,
             };
 
             let client = ApiClient::new(session);
