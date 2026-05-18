@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
@@ -114,9 +114,10 @@ enum Commands {
         out_dir: Option<PathBuf>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Carries push metadata and the Sentry trace id.
-        #[facet(args::named)]
-        bootstrap: PathBuf,
+        /// Required for `filesystem` transport; omitted for `api`
+        /// transport, which fetches bootstrap via the server API instead.
+        #[facet(args::named, default)]
+        bootstrap: Option<PathBuf>,
     },
 }
 
@@ -207,6 +208,36 @@ impl ApiClient {
         Self { session }
     }
 
+    /// Fetch the bootstrap payload from the server API.
+    ///
+    /// One-shot: the server marks the bootstrap as fetched after the first
+    /// successful call and returns 410 on any subsequent call.
+    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, Option<String>)> {
+        let url = format!(
+            "{}/api/runs/{}/bootstrap",
+            self.session.server_url, self.session.run_id
+        );
+        let token = self.session.auth_token.clone();
+        tokio::runtime::Handle::current().block_on(async move {
+            let resp = reqwest::Client::new()
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|e| miette!("bootstrap request failed: {e}"))?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                miette::bail!("bootstrap API returned {status}");
+            }
+            let bootstrap: Bootstrap = resp
+                .json()
+                .await
+                .map_err(|e| miette!("failed to parse bootstrap response: {e}"))?;
+            Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
+        })
+    }
+
     /// Fetch a single secret by name from the server.
     fn fetch_secret(&self, name: &str) -> SecretResult<String> {
         let url = format!(
@@ -282,9 +313,6 @@ fn main() -> Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-
-            let (git_dir, meta, sentry_trace_id) = load_bootstrap(&bootstrap)?;
-
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
             // within a runtime context. A single worker thread is
@@ -296,6 +324,27 @@ fn main() -> Result<()> {
                 .build()
                 .into_diagnostic()?;
             let _enter = rt.enter();
+
+            let session = ApiSession {
+                run_id: cli.quire.run_id,
+                server_url: cli.quire.server_url,
+                auth_token: cli.quire.auth_token,
+            };
+            let transport = Transport {
+                session: session.clone(),
+                mode: cli.quire.transport,
+            };
+            let client = ApiClient::new(session);
+
+            let (git_dir, meta, sentry_trace_id) = match transport.mode {
+                TransportMode::Api => client.fetch_bootstrap()?,
+                TransportMode::Filesystem => {
+                    let path = bootstrap.ok_or_else(|| {
+                        miette!("--bootstrap is required for filesystem transport")
+                    })?;
+                    load_bootstrap(&path)?
+                }
+            };
 
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
@@ -313,17 +362,6 @@ fn main() -> Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            let session = ApiSession {
-                run_id: cli.quire.run_id,
-                server_url: cli.quire.server_url,
-                auth_token: cli.quire.auth_token,
-            };
-            let transport = Transport {
-                session: session.clone(),
-                mode: cli.quire.transport,
-            };
-
-            let client = ApiClient::new(session);
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 
             run_pipeline(workspace, sink, log_dir, git_dir, meta, registry, transport)
