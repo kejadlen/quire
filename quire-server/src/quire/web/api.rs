@@ -10,6 +10,9 @@ use axum::extract::{FromRequestParts, Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Result};
+use axum_extra::TypedHeader;
+use axum_extra::headers::Authorization;
+use axum_extra::headers::authorization::Bearer;
 
 use crate::Quire;
 
@@ -76,19 +79,17 @@ async fn verify_bearer(
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let token = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .map(|s| s.to_string());
-
-    let Some(token) = token else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-
-    // Extract the run_id path param set by the enclosing nest("/runs/{run_id}", ...).
     let (mut parts, body) = req.into_parts();
+
+    let token =
+        <TypedHeader<Authorization<Bearer>> as FromRequestParts<()>>::from_request_parts(
+            &mut parts,
+            &(),
+        )
+        .await
+        .ok()
+        .map(|TypedHeader(Authorization(bearer))| bearer.token().to_string());
+
     let run_id =
         <AxumPath<HashMap<String, String>> as FromRequestParts<()>>::from_request_parts(
             &mut parts,
@@ -97,7 +98,12 @@ async fn verify_bearer(
         .await
         .ok()
         .and_then(|mut p| p.0.remove("run_id"));
+
     let req = axum::extract::Request::from_parts(parts, body);
+
+    let Some(token) = token else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
 
     let Some(run_id) = run_id else {
         return StatusCode::NOT_FOUND.into_response();
