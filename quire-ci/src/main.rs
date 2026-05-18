@@ -202,12 +202,12 @@ impl std::str::FromStr for EventsTarget {
 /// Wraps `reqwest::blocking::Client` with the `Authorization` header
 /// pre-configured and the per-run base URL baked in. Cloning is cheap
 /// (the underlying connection pool is reference-counted).
-struct ApiClient {
+struct RunClient {
     client: reqwest::blocking::Client,
     base_url: String,
 }
 
-impl ApiClient {
+impl RunClient {
     fn new(session: ApiSession) -> Self {
         let mut headers = HeaderMap::new();
         let mut auth = HeaderValue::from_str(&format!("Bearer {}", session.auth_token))
@@ -327,7 +327,7 @@ fn main() -> Result<()> {
                 session: session.clone(),
                 mode: cli.quire.transport,
             };
-            let client = ApiClient::new(session);
+            let client = RunClient::new(session);
 
             let (git_dir, meta, sentry_trace_id) = match transport.mode {
                 TransportMode::Api => client.fetch_bootstrap()?,
