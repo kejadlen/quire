@@ -1,18 +1,15 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// Errors produced by secret resolution.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
-    /// File-backed secret could not be read.
-    ///
-    /// Stored as a string because `OnceLock` in `SecretString::reveal` caches
-    /// the error and `std::io::Error` is not `Clone`. Once `once_cell_try`
-    /// stabilizes (allowing `OnceLock::get_or_try_init` with a separate error
-    /// type), we can store a structured error instead of a string.
-    #[error("secret resolution failed: {0}")]
-    Resolve(String),
+    /// Secret could not be resolved. The source error is preserved for
+    /// diagnostics. `Arc` provides `Clone` without requiring the inner
+    /// error to be `Clone`.
+    #[error("secret resolution failed")]
+    Resolve(#[source] Arc<dyn std::error::Error + Send + Sync>),
 
     #[error("unknown secret: {0:?}")]
     UnknownSecret(String),
@@ -38,7 +35,7 @@ enum SecretSource {
     Plain(String),
     File {
         path: PathBuf,
-        resolved: OnceLock<std::result::Result<String, String>>,
+        resolved: OnceLock<std::result::Result<String, Arc<dyn std::error::Error + Send + Sync>>>,
     },
 }
 
@@ -60,12 +57,6 @@ impl SecretString {
     ///
     /// For the file variant, reads from disk on first call and caches the
     /// result. Errors are also cached — subsequent calls return the same error.
-    ///
-    /// The error is stored as a formatted string inside `OnceLock` because
-    /// `std::io::Error` is not `Clone`, and `OnceLock::get_or_init` requires
-    /// the closure output to be `Sized` + ownable. Once `once_cell_try`
-    /// stabilizes (allowing `OnceLock::get_or_try_init` with a separate error
-    /// type), we can store a structured error instead of a string.
     pub fn reveal(&self) -> Result<&str> {
         match &self.0 {
             SecretSource::Plain(s) => Ok(s.as_str()),
@@ -73,11 +64,11 @@ impl SecretString {
                 .get_or_init(|| {
                     fs_err::read_to_string(path)
                         .map(|s| s.strip_suffix('\n').unwrap_or(&s).to_string())
-                        .map_err(|e| format!("{}: {e}", path.display()))
+                        .map_err(|e| Arc::new(e) as Arc<dyn std::error::Error + Send + Sync>)
                 })
                 .as_ref()
                 .map(|s| s.as_str())
-                .map_err(|msg| Error::Resolve(msg.clone())),
+                .map_err(|arc| Error::Resolve(Arc::clone(arc))),
         }
     }
 }
