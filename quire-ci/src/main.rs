@@ -242,10 +242,9 @@ impl RunClient {
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
     fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, Option<String>)> {
-        let bootstrap: Bootstrap = (|| -> reqwest::Result<_> {
-            self.get("bootstrap")?.error_for_status()?.json()
-        })()
-        .into_diagnostic()?;
+        let bootstrap: Bootstrap =
+            (|| -> reqwest::Result<_> { self.get("bootstrap")?.error_for_status()?.json() })()
+                .into_diagnostic()?;
         Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
     }
 
