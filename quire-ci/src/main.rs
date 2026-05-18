@@ -183,11 +183,15 @@ enum EventsTarget {
     File(PathBuf),
 }
 
-fn parse_events_target(s: &str) -> EventsTarget {
-    match s {
-        "null" => EventsTarget::Null,
-        "stdout" => EventsTarget::Stdout,
-        path => EventsTarget::File(PathBuf::from(path)),
+impl std::str::FromStr for EventsTarget {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "null" => EventsTarget::Null,
+            "stdout" => EventsTarget::Stdout,
+            path => EventsTarget::File(PathBuf::from(path)),
+        })
     }
 }
 
@@ -259,7 +263,7 @@ fn main() -> Result<()> {
             out_dir,
             bootstrap,
         } => {
-            let sink: Box<dyn EventSink> = match parse_events_target(&events) {
+            let sink: Box<dyn EventSink> = match events.parse::<EventsTarget>().unwrap() {
                 EventsTarget::Null => Box::new(NullSink),
                 EventsTarget::Stdout => Box::new(JsonlSink::new(io::stdout())),
                 EventsTarget::File(path) => {
