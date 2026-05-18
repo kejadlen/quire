@@ -19,6 +19,7 @@ use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use std::sync::Arc;
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
 /// via [`FennelError::from_lua`] so they carry the same source-code
@@ -255,15 +256,15 @@ impl RunClient {
     fn fetch_secret(&self, name: &str) -> SecretResult<String> {
         let resp = self
             .get(&format!("secrets/{name}"))
-            .map_err(|e| SecretError::Resolve(e.to_string()))?;
+            .map_err(|e| SecretError::Resolve(Arc::new(e)))?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(SecretError::UnknownSecret(name.to_string()));
         }
         resp.error_for_status()
-            .map_err(|e| SecretError::Resolve(e.to_string()))?
+            .map_err(|e| SecretError::Resolve(Arc::new(e)))?
             .json::<SecretResponse>()
             .map(|r| r.value)
-            .map_err(|e| SecretError::Resolve(e.to_string()))
+            .map_err(|e| SecretError::Resolve(Arc::new(e)))
     }
 }
 
