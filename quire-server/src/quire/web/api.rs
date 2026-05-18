@@ -107,7 +107,7 @@ async fn verify_bearer(
         return Err(ApiError::NotFound);
     };
 
-    let result = tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
+    tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
         let db = quire
             .db_pool()
             .lock()
