@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result};
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
@@ -183,11 +183,11 @@ enum EventsTarget {
     File(PathBuf),
 }
 
-fn parse_events_target(s: &str) -> Result<EventsTarget, String> {
+fn parse_events_target(s: &str) -> EventsTarget {
     match s {
-        "null" => Ok(EventsTarget::Null),
-        "stdout" => Ok(EventsTarget::Stdout),
-        path => Ok(EventsTarget::File(PathBuf::from(path))),
+        "null" => EventsTarget::Null,
+        "stdout" => EventsTarget::Stdout,
+        path => EventsTarget::File(PathBuf::from(path)),
     }
 }
 
@@ -243,7 +243,7 @@ fn main() -> Result<()> {
     miette::set_panic_hook();
 
     let config = figue::builder::<Cli>()
-        .map_err(|e| miette!("{e}"))?
+        .into_diagnostic()?
         .cli(|cli| cli.args(std::env::args().skip(1)))
         .env(|env| env)
         .help(|h| h.program_name("quire-ci").version(VERSION))
@@ -259,8 +259,7 @@ fn main() -> Result<()> {
             out_dir,
             bootstrap,
         } => {
-            let events = parse_events_target(&events).map_err(|e| miette!("{e}"))?;
-            let sink: Box<dyn EventSink> = match events {
+            let sink: Box<dyn EventSink> = match parse_events_target(&events) {
                 EventsTarget::Null => Box::new(NullSink),
                 EventsTarget::Stdout => Box::new(JsonlSink::new(io::stdout())),
                 EventsTarget::File(path) => {
@@ -595,15 +594,12 @@ mod tests {
 
     #[test]
     fn parse_events_target_classifies_input() {
-        assert!(matches!(
-            parse_events_target("null"),
-            Ok(EventsTarget::Null)
-        ));
+        assert!(matches!(parse_events_target("null"), EventsTarget::Null));
         assert!(matches!(
             parse_events_target("stdout"),
-            Ok(EventsTarget::Stdout)
+            EventsTarget::Stdout
         ));
-        let Ok(EventsTarget::File(path)) = parse_events_target("/tmp/run.jsonl") else {
+        let EventsTarget::File(path) = parse_events_target("/tmp/run.jsonl") else {
             panic!("expected File target");
         };
         assert_eq!(path, PathBuf::from("/tmp/run.jsonl"));
