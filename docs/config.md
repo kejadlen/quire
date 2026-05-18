@@ -94,7 +94,7 @@ file (mode `0600`) before `quire-ci` is spawned. The subprocess reads and
 immediately unlinks the file.
 
 **`"api"`:** `quire-ci` ignores the secrets map in the bootstrap file and
-fetches each value on demand from `GET /api/runs/{run_id}/secrets/{name}`
+fetches each value on demand from `GET /api/run/secrets/{name}`
 using the per-run bearer token when a run-fn calls `(secret :name)`. The
 bootstrap file is still written and used for run metadata; only the secret
 values travel over the loopback HTTP channel instead of disk.

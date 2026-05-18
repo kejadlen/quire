@@ -2,7 +2,11 @@
 //!
 //! These routes use per-run bearer-token auth (not the Remote-User
 //! header auth used by the web UI). Each token is minted when the run
-//! is created and scoped to that run's ID.
+//! is created and stored in `runs.run_token`.
+//!
+//! Two route families are provided:
+//! - `/runs/{run_id}/…` — legacy; path carries the run UUID, bearer token is verified against it.
+//! - `/run/…` — token-only; no run ID in the path, the bearer token itself identifies the run.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,11 +25,12 @@ use quire_core::ci::run::RunMeta;
 
 use crate::Quire;
 
-/// Build the API router. Routes under `/runs/{run_id}` are wrapped in
-/// [`verify_bearer`] middleware which authenticates the bearer token against
-/// the run's stored token before any handler runs.
+/// Build the API router. Intended to be mounted at `/api` via `Router::nest`.
 ///
-/// Intended to be mounted at `/api` via `Router::nest`.
+/// - `/runs/{run_id}/…` — [`verify_bearer`] checks the bearer token against the run's stored
+///   token before any handler runs.
+/// - `/run/…` — [`verify_run_token`] looks the run up by the bearer token itself (no run ID
+///   in the path) and injects the resolved run ID as a request extension.
 pub fn router(quire: Quire) -> axum::Router {
     let run_routes = axum::Router::new()
         .route("/bootstrap", axum::routing::get(get_bootstrap))
@@ -35,8 +40,17 @@ pub fn router(quire: Quire) -> axum::Router {
             verify_bearer,
         ));
 
+    let token_routes = axum::Router::new()
+        .route("/bootstrap", axum::routing::get(get_bootstrap_by_token))
+        .route("/secrets/{name}", axum::routing::get(get_secret))
+        .layer(axum::middleware::from_fn_with_state(
+            quire.clone(),
+            verify_run_token,
+        ));
+
     axum::Router::new()
         .nest("/runs/{run_id}", run_routes)
+        .nest("/run", token_routes)
         .with_state(quire)
 }
 
@@ -89,10 +103,9 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Middleware that authenticates requests under `/runs/{run_id}` by verifying
-/// the `Authorization: Bearer <token>` header against `runs.auth_token` in the
-/// DB. Returns 401 if the header is absent or the token doesn't match, 404 if
-/// the run doesn't exist.
+/// Middleware for `/runs/{run_id}/…`: verifies the `Authorization: Bearer <token>` header
+/// against `runs.run_token` in the DB. Returns 401 if the header is absent or the token
+/// doesn't match, 404 if the run doesn't exist.
 async fn verify_bearer(
     State(quire): State<Quire>,
     req: axum::extract::Request,
@@ -129,7 +142,7 @@ async fn verify_bearer(
     tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
         let db = quire.db_pool().lock().expect("db mutex poisoned");
         let stored: Option<String> = db.query_row(
-            "SELECT auth_token FROM runs WHERE id = ?1",
+            "SELECT run_token FROM runs WHERE id = ?1",
             rusqlite::params![run_id],
             |row| row.get(0),
         )?;
@@ -144,21 +157,52 @@ async fn verify_bearer(
     Ok(next.run(req).await)
 }
 
-/// `GET /api/runs/:run_id/bootstrap`
-///
-/// Returns the bootstrap payload for a run. One-shot: the server marks
-/// bootstrap as fetched on the first successful read and returns 410 on
-/// any subsequent call. Auth is handled by [`verify_bearer`] middleware.
-///
-/// Returns 404 if the run does not have API bootstrap data (e.g. the run
-/// was created with filesystem transport and `store_bootstrap_data` was
-/// never called).
-async fn get_bootstrap(
+/// Middleware for `/run/…`: looks up the run by the `Authorization: Bearer <token>` header
+/// value against `runs.run_token`. Returns 401 if the header is absent or no run matches.
+/// On success, injects the resolved run ID as a request extension so handlers can use it.
+async fn verify_run_token(
     State(quire): State<Quire>,
-    AxumPath(params): AxumPath<HashMap<String, String>>,
-) -> Result<axum::Json<Bootstrap>, ApiError> {
-    let run_id = params.get("run_id").cloned().ok_or(ApiError::NotFound)?;
+    req: axum::extract::Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let (mut parts, body) = req.into_parts();
 
+    let Some(TypedHeader(Authorization(bearer))) =
+        <TypedHeader<Authorization<Bearer>> as FromRequestParts<()>>::from_request_parts(
+            &mut parts,
+            &(),
+        )
+        .await
+        .ok()
+    else {
+        return Err(ApiError::Unauthorized);
+    };
+    let token = bearer.token().to_string();
+
+    let run_id = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
+        let db = quire.db_pool().lock().expect("db mutex poisoned");
+        let result: rusqlite::Result<String> = db.query_row(
+            "SELECT id FROM runs WHERE run_token = ?1",
+            rusqlite::params![token],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(id) => Ok(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Err(ApiError::Unauthorized),
+            Err(e) => Err(ApiError::Db(e)),
+        }
+    })
+    .await
+    .expect("blocking task panicked")?;
+
+    let mut req = axum::extract::Request::from_parts(parts, body);
+    req.extensions_mut().insert(run_id);
+    Ok(next.run(req).await)
+}
+
+/// Fetch and activate bootstrap data for `run_id`. One-shot: transitions the run from
+/// `pending` → `active` and returns 410 on any subsequent call.
+async fn fetch_bootstrap(quire: Quire, run_id: String) -> Result<axum::Json<Bootstrap>, ApiError> {
     let bootstrap =
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
             let db = crate::db::open(&quire.db_path())?;
@@ -211,6 +255,35 @@ async fn get_bootstrap(
         .expect("blocking task panicked")?;
 
     Ok(axum::Json(bootstrap))
+}
+
+/// `GET /api/runs/:run_id/bootstrap`
+///
+/// Returns the bootstrap payload for a run. One-shot: the server marks
+/// bootstrap as fetched on the first successful read and returns 410 on
+/// any subsequent call. Auth is handled by [`verify_bearer`] middleware.
+///
+/// Returns 404 if the run does not have API bootstrap data (e.g. the run
+/// was created with filesystem transport and `store_bootstrap_data` was
+/// never called).
+async fn get_bootstrap(
+    State(quire): State<Quire>,
+    AxumPath(params): AxumPath<HashMap<String, String>>,
+) -> Result<axum::Json<Bootstrap>, ApiError> {
+    let run_id = params.get("run_id").cloned().ok_or(ApiError::NotFound)?;
+    fetch_bootstrap(quire, run_id).await
+}
+
+/// `GET /api/run/bootstrap`
+///
+/// Token-only variant of [`get_bootstrap`]: no run ID in the path; the bearer token
+/// itself identifies the run. Auth and run-ID injection are handled by
+/// [`verify_run_token`] middleware.
+async fn get_bootstrap_by_token(
+    State(quire): State<Quire>,
+    axum::Extension(run_id): axum::Extension<String>,
+) -> Result<axum::Json<Bootstrap>, ApiError> {
+    fetch_bootstrap(quire, run_id).await
 }
 
 /// `GET /api/runs/:run_id/secrets/:name`
@@ -339,7 +412,7 @@ mod tests {
             .expect("create");
         let url = format!("/runs/{}/secrets/no_such_secret", transport.session.run_id);
 
-        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -396,7 +469,7 @@ mod tests {
             .expect("create run");
         let url = format!("/runs/{}/bootstrap", transport.session.run_id);
 
-        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -407,7 +480,7 @@ mod tests {
         let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
 
-        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         use http_body_util::BodyExt;
@@ -432,7 +505,7 @@ mod tests {
         .await;
         let url = format!("/runs/{run_id}/bootstrap");
 
-        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         use http_body_util::BodyExt;
@@ -450,7 +523,7 @@ mod tests {
         let transport = new_transport(TransportMode::Api, 3000);
         let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
-        let token = &transport.session.auth_token;
+        let token = &transport.session.run_token;
 
         let first = get(env.app(), &url, Some(token)).await;
         assert_eq!(first.status(), StatusCode::OK);
@@ -466,7 +539,7 @@ mod tests {
         let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
 
-        get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        get(env.app(), &url, Some(&transport.session.run_token)).await;
 
         let db = crate::db::open(&env.quire.db_path()).expect("db open");
         let (state, started_at_ms): (String, Option<i64>) = db
@@ -495,7 +568,100 @@ mod tests {
             .expect("create");
         let url = format!("/runs/{}/secrets/my_token", transport.session.run_id);
 
-        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        let resp = get(env.app(), &url, Some(&transport.session.run_token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        use http_body_util::BodyExt;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(parsed["value"], "hunter2");
+    }
+
+    // Token-only routes (/run/…)
+
+    #[tokio::test]
+    async fn token_route_bootstrap_returns_401_without_auth() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+
+        let resp = get(env.app(), "/run/bootstrap", None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn token_route_bootstrap_returns_401_for_unknown_token() {
+        let env = TestEnv::new();
+
+        let resp = get(env.app(), "/run/bootstrap", Some("nosuchtoken")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn token_route_bootstrap_returns_payload_on_first_fetch() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+
+        let resp = get(
+            env.app(),
+            "/run/bootstrap",
+            Some(&transport.session.run_token),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        use http_body_util::BodyExt;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(parsed["git_dir"], "/repos/test.git");
+    }
+
+    #[tokio::test]
+    async fn token_route_bootstrap_returns_410_on_second_fetch() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let token = &transport.session.run_token;
+
+        let first = get(env.app(), "/run/bootstrap", Some(token)).await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = get(env.app(), "/run/bootstrap", Some(token)).await;
+        assert_eq!(second.status(), StatusCode::GONE);
+    }
+
+    #[tokio::test]
+    async fn token_route_secret_returns_401_without_auth() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create");
+
+        let resp = get(env.app(), "/run/secrets/my_secret", None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn token_route_secret_returns_plaintext_value() {
+        let env = TestEnv::new();
+        fs_err::write(
+            env.quire.config_path(),
+            r#"{:secrets {:my_token "hunter2"}}"#,
+        )
+        .expect("write config");
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create");
+
+        let resp = get(
+            env.app(),
+            "/run/secrets/my_token",
+            Some(&transport.session.run_token),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         use http_body_util::BodyExt;

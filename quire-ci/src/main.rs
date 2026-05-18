@@ -49,7 +49,7 @@ struct Cli {
 
     /// Transport credentials and telemetry settings for
     /// orchestrator-dispatched runs, sourced from `QUIRE__*` env vars:
-    /// `QUIRE__RUN_ID`, `QUIRE__SERVER_URL`, `QUIRE__AUTH_TOKEN`,
+    /// `QUIRE__RUN_ID`, `QUIRE__SERVER_URL`, `QUIRE__RUN_TOKEN`,
     /// `QUIRE__TRANSPORT`, `QUIRE__SENTRY_DSN`.
     #[facet(args::config, args::env_prefix = "QUIRE")]
     quire: QuireConfig,
@@ -75,9 +75,9 @@ struct QuireConfig {
     #[facet(default)]
     server_url: String,
 
-    /// Bearer token minted at run creation time (`QUIRE__AUTH_TOKEN`).
+    /// Bearer token minted at run creation time (`QUIRE__RUN_TOKEN`).
     #[facet(sensitive, default)]
-    auth_token: String,
+    run_token: String,
 
     /// Transport mode (`QUIRE__TRANSPORT`).
     #[facet(default)]
@@ -211,7 +211,7 @@ struct RunClient {
 impl RunClient {
     fn new(session: ApiSession) -> Self {
         let mut headers = HeaderMap::new();
-        let mut auth = HeaderValue::from_str(&format!("Bearer {}", session.auth_token))
+        let mut auth = HeaderValue::from_str(&format!("Bearer {}", session.run_token))
             .expect("auth token contains only ASCII");
         auth.set_sensitive(true);
         headers.insert(AUTHORIZATION, auth);
@@ -220,7 +220,7 @@ impl RunClient {
                 .default_headers(headers)
                 .build()
                 .expect("failed to build HTTP client"),
-            base_url: format!("{}/api/runs/{}", session.server_url, session.run_id),
+            base_url: format!("{}/api/run", session.server_url),
         }
     }
 
@@ -320,7 +320,7 @@ fn main() -> Result<()> {
             let session = ApiSession {
                 run_id: cli.quire.run_id,
                 server_url: cli.quire.server_url,
-                auth_token: cli.quire.auth_token,
+                run_token: cli.quire.run_token,
             };
             let transport = Transport {
                 session: session.clone(),

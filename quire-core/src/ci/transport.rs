@@ -17,8 +17,8 @@ pub struct ApiSession {
     /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
     pub server_url: String,
     /// Bearer token minted at run creation time. Matches
-    /// `runs.auth_token` server-side.
-    pub auth_token: String,
+    /// `runs.run_token` server-side.
+    pub run_token: String,
 }
 
 /// Transport mode for CI ↔ server communication.
