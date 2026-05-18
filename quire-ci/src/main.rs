@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result, bail};
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
@@ -332,9 +332,9 @@ fn main() -> Result<()> {
             let (git_dir, meta, sentry_trace_id) = match transport.mode {
                 TransportMode::Api => client.fetch_bootstrap()?,
                 TransportMode::Filesystem => {
-                    let path = bootstrap.ok_or_else(|| {
-                        miette!("--bootstrap is required for filesystem transport")
-                    })?;
+                    let Some(path) = bootstrap else {
+                        bail!("--bootstrap is required for filesystem transport");
+                    };
                     load_bootstrap(&path)?
                 }
             };
