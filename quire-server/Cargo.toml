@@ -38,6 +38,7 @@ clap_complete = "*"
 rand = "*"
 rusqlite = { version = "*", features = ["bundled"] }
 rusqlite_migration = "*"
+serde_rusqlite = "*"
 sentry = { workspace = true }
 serde_yaml_ng = "*"
 shell-words = "*"

@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use serde::Deserialize;
+
 use axum::extract::{FromRequestParts, Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -60,6 +62,16 @@ impl From<rusqlite::Error> for ApiError {
             rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
             _ => ApiError::Db(e),
         }
+    }
+}
+
+impl From<serde_rusqlite::Error> for ApiError {
+    fn from(e: serde_rusqlite::Error) -> Self {
+        ApiError::Db(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(e),
+        ))
     }
 }
 
@@ -151,39 +163,35 @@ async fn get_bootstrap(
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
             let db = crate::db::open(&quire.db_path())?;
 
-            let (sha, ref_name, pushed_at_ms, git_dir_opt, sentry_trace_id, state): (
-                String,
-                String,
-                i64,
-                Option<String>,
-                Option<String>,
-                String,
-            ) = db.query_row(
-                "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
-                     FROM runs WHERE id = ?1",
-                rusqlite::params![run_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )?;
+            #[derive(Deserialize)]
+            struct RunRow {
+                sha: String,
+                ref_name: String,
+                pushed_at_ms: i64,
+                git_dir: Option<String>,
+                sentry_trace_id: Option<String>,
+                state: String,
+            }
 
-            if state != "pending" {
+            let row: RunRow = db
+                .prepare(
+                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
+                     FROM runs WHERE id = ?1",
+                )?
+                .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
+                .next()
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
+
+            if row.state != "pending" {
                 return Err(ApiError::Gone);
             }
 
-            let git_dir: PathBuf = git_dir_opt.map(PathBuf::from).ok_or(ApiError::NotFound)?;
+            let git_dir: PathBuf = row.git_dir.map(PathBuf::from).ok_or(ApiError::NotFound)?;
 
             let meta = RunMeta {
-                sha,
-                r#ref: ref_name,
-                pushed_at: jiff::Timestamp::from_millisecond(pushed_at_ms)
+                sha: row.sha,
+                r#ref: row.ref_name,
+                pushed_at: jiff::Timestamp::from_millisecond(row.pushed_at_ms)
                     .expect("db stores valid timestamps"),
             };
 
@@ -196,7 +204,7 @@ async fn get_bootstrap(
             Ok(Bootstrap {
                 meta,
                 git_dir,
-                sentry_trace_id,
+                sentry_trace_id: row.sentry_trace_id,
             })
         })
         .await

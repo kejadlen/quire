@@ -2557,6 +2557,7 @@ dependencies = [
  "sentry",
  "serde",
  "serde_json",
+ "serde_rusqlite",
  "serde_yaml_ng",
  "shell-words",
  "tempfile",
@@ -3110,6 +3111,16 @@ checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
 dependencies = [
  "itoa",
  "serde",
+ "serde_core",
+]
+
+[[package]]
+name = "serde_rusqlite"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee252eeacd2dc6d0dcbc7b3e5a17f4c1bae19e811e843a9c7698f849b1611d67"
+dependencies = [
+ "rusqlite",
  "serde_core",
 ]
 
