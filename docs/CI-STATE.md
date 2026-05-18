@@ -15,16 +15,16 @@ A run owns its jobs; jobs FK on `(run_id, job_id)` and cascade delete.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending : Runs::create
+    [*] --> pending
 
     pending  --> active     : transition(Active, None)
-    pending  --> superseded : Runs::create (same repo/ref) — supersede_existing
-    pending  --> failed     : reconcile_orphans\nfailure_kind='orphaned'
+    pending  --> superseded : Runs::create same repo/ref
+    pending  --> failed     : reconcile_orphans orphaned
 
     active   --> complete   : transition(Complete, None)
-    active   --> failed     : transition(Failed, 'quire-ci-exit')
-    active   --> superseded : Runs::create (same repo/ref) — docker kill + supersede_existing
-    active   --> failed     : reconcile_orphans\nfailure_kind='orphaned'
+    active   --> failed     : transition(Failed, quire-ci-exit)
+    active   --> superseded : Runs::create same repo/ref
+    active   --> failed     : reconcile_orphans orphaned
 
     complete   --> [*]
     failed     --> [*]
@@ -100,16 +100,16 @@ Successful and superseded runs leave `failure_kind` NULL. The set is open — UI
 
 ```mermaid
 stateDiagram-v2
-    [*] --> complete : ingest JobFinished(outcome='complete')
-    [*] --> failed   : ingest JobFinished(outcome='failed')
+    [*] --> complete
+    [*] --> failed
 
     complete --> [*]
     failed   --> [*]
 
-    pending --> [*] : no producer yet — see Gaps
-    active  --> [*] : no producer yet — see Gaps
-    skipped --> [*] : no producer yet — see Gaps
-    aborted --> [*] : no producer yet — see Gaps
+    pending --> [*] : no producer yet
+    active  --> [*] : no producer yet
+    skipped --> [*] : no producer yet
+    aborted --> [*] : no producer yet
 ```
 
 ### Transitions in code
