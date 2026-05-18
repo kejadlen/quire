@@ -136,11 +136,15 @@ async fn verify_bearer(
 /// Returns the plain-text value of a named secret from the global config.
 /// Auth is handled by [`verify_bearer`] middleware before this handler runs.
 /// Returns 404 if the secret is not declared in config.
+#[derive(serde::Deserialize)]
+struct SecretPath {
+    name: String,
+}
+
 async fn get_secret(
     State(quire): State<Quire>,
-    AxumPath(params): AxumPath<HashMap<String, String>>,
+    AxumPath(SecretPath { name }): AxumPath<SecretPath>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
-    let name = params.get("name").cloned().unwrap_or_default();
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         let config = quire.global_config()?;
         match config.secrets.get(&name) {
