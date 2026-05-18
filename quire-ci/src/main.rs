@@ -18,6 +18,7 @@ use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
 /// via [`FennelError::from_lua`] so they carry the same source-code
@@ -208,7 +209,6 @@ struct ApiClient {
 
 impl ApiClient {
     fn new(session: ApiSession) -> Self {
-        use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
         let mut headers = HeaderMap::new();
         let mut auth = HeaderValue::from_str(&format!("Bearer {}", session.auth_token))
             .expect("auth token contains only ASCII");
