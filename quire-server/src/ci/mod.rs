@@ -185,12 +185,7 @@ fn run_ref(
     span_id: sentry::protocol::SpanId,
 ) {
     let transport = new_transport(ctx.transport_mode, ctx.port);
-    let sentry_handoff =
-        ctx.sentry_dsn
-            .as_ref()
-            .map(|_| quire_core::ci::bootstrap::SentryHandoff {
-                trace_id: trace_id.to_string(),
-            });
+    let sentry_trace_id = ctx.sentry_dsn.as_ref().map(|_| trace_id.to_string());
     sentry::with_scope(
         |scope| {
             scope.set_context(
@@ -209,7 +204,7 @@ fn run_ref(
                 pushed_at,
                 push_ref,
                 &transport,
-                sentry_handoff.as_ref(),
+                sentry_trace_id.as_deref(),
                 ctx.sentry_dsn.as_deref(),
             ) {
                 tracing::error!(
@@ -229,7 +224,7 @@ fn run_ref_inner(
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     transport: &Transport,
-    sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
+    sentry_trace_id: Option<&str>,
     sentry_dsn: Option<&str>,
 ) -> error::Result<()> {
     let ci = ctx.repo.ci();
@@ -263,7 +258,7 @@ fn run_ref_inner(
                 &ctx.repo.path(),
                 &workspace,
                 &meta,
-                sentry,
+                sentry_trace_id,
                 sentry_dsn,
                 Some(transport),
             )?;

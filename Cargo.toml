@@ -4,6 +4,7 @@ resolver = "3"
 
 [workspace.dependencies]
 clap = { version = "*", features = ["derive", "env"] }
+facet = "*"
 fs-err = "*"
 jiff = { version = "*", features = ["serde"] }
 miette = "*"

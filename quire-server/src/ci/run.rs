@@ -306,7 +306,7 @@ impl Run {
         git_dir: &Path,
         workspace: &Path,
         meta: &RunMeta,
-        sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
+        sentry_trace_id: Option<&str>,
         sentry_dsn: Option<&str>,
         transport: Option<&Transport>,
     ) -> Result<()> {
@@ -321,7 +321,7 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_bootstrap(&bootstrap_path, git_dir, meta, sentry)?;
+        write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
 
         tracing::info!(
             run_id = %self.id,
@@ -625,14 +625,14 @@ fn write_bootstrap(
     path: &Path,
     git_dir: &Path,
     meta: &RunMeta,
-    sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
+    sentry_trace_id: Option<&str>,
 ) -> Result<()> {
     use quire_core::ci::bootstrap::Bootstrap;
 
     let bootstrap = Bootstrap {
         meta: meta.clone(),
         git_dir: git_dir.to_path_buf(),
-        sentry: sentry.cloned(),
+        sentry_trace_id: sentry_trace_id.map(Into::into),
     };
     let json = serde_json::to_vec_pretty(&bootstrap).map_err(std::io::Error::other)?;
 
