@@ -94,6 +94,7 @@ pub struct RunDetailTemplate {
     pub crumbs: Vec<Crumb>,
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
+    pub quire_ci_log: String,
 }
 
 impl RunDetailTemplate {
