@@ -254,13 +254,16 @@ impl RunClient {
         let resp = self
             .get(&format!("secrets/{name}"))
             .map_err(|e| SecretError::Resolve(Arc::new(e)))?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(SecretError::UnknownSecret(name.to_string()));
+        match resp.status() {
+            s if s.is_success() => resp
+                .json::<SecretResponse>()
+                .map(|r| r.value)
+                .map_err(|e| SecretError::Resolve(Arc::new(e))),
+            reqwest::StatusCode::NOT_FOUND => Err(SecretError::UnknownSecret(name.to_string())),
+            _ => Err(SecretError::Resolve(Arc::new(
+                resp.error_for_status().unwrap_err(),
+            ))),
         }
-        resp.error_for_status()
-            .and_then(|r| r.json::<SecretResponse>())
-            .map(|r| r.value)
-            .map_err(|e| SecretError::Resolve(Arc::new(e)))
     }
 }
 
