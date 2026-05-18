@@ -28,20 +28,10 @@ use crate::ci::run::RunMeta;
 pub struct Bootstrap {
     pub meta: RunMeta,
     pub git_dir: PathBuf,
-    /// Sentry handoff, present only when the orchestrator's global
-    /// config sets a DSN. Carries the matching trace id so both
-    /// sides' events land on the same trace.
+    /// Sentry trace id for the orchestrator's span, present only when
+    /// the global config sets a DSN. Allows quire-ci to attach its
+    /// events to the same trace. The DSN itself travels via the
+    /// `QUIRE__SENTRY_DSN` environment variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sentry: Option<SentryHandoff>,
-}
-
-/// What quire-ci needs to mirror the orchestrator's Sentry trace.
-///
-/// `trace_id` is the hex form of [`sentry::protocol::TraceId`]; kept
-/// as a string here so `quire-core` doesn't grow a `sentry` dep.
-/// The DSN itself travels via the `QUIRE__SENTRY_DSN` environment
-/// variable, not this struct.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SentryHandoff {
-    pub trace_id: String,
+    pub sentry_trace_id: Option<String>,
 }

@@ -9,7 +9,7 @@ use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
 use miette::{IntoDiagnostic, Result};
 use quire_core::api::SecretResponse;
-use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
+use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
@@ -280,7 +280,7 @@ fn main() -> Result<()> {
                 }
             };
 
-            let (git_dir, meta, sentry_handoff) = load_bootstrap(&PathBuf::from(&bootstrap))?;
+            let (git_dir, meta, sentry_trace_id) = load_bootstrap(&PathBuf::from(&bootstrap))?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
@@ -296,8 +296,11 @@ fn main() -> Result<()> {
 
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
-            let trace_id = sentry_handoff.as_ref().map(|h| h.trace_id.as_str());
-            let _sentry = init_sentry(cli.quire.sentry_dsn.as_deref(), trace_id, &meta);
+            let _sentry = init_sentry(
+                cli.quire.sentry_dsn.as_deref(),
+                sentry_trace_id.as_deref(),
+                &meta,
+            );
 
             // No type registrations: quire-ci's user-level errors
             // (CompileError, JobError, FennelError) are no longer logged
@@ -397,7 +400,7 @@ fn validate(workspace: PathBuf) -> Result<()> {
 /// Unlinks the file as soon as the bytes are in memory — getting it off
 /// disk early limits the blast radius of a later panic or crash leaving
 /// a 0600 file behind.
-fn load_bootstrap(path: &std::path::Path) -> Result<(PathBuf, RunMeta, Option<SentryHandoff>)> {
+fn load_bootstrap(path: &std::path::Path) -> Result<(PathBuf, RunMeta, Option<String>)> {
     let bytes = fs_err::read(path).into_diagnostic()?;
     if let Err(e) = fs_err::remove_file(path) {
         // Don't abort — the bytes are already loaded and the server
@@ -409,7 +412,7 @@ fn load_bootstrap(path: &std::path::Path) -> Result<(PathBuf, RunMeta, Option<Se
         );
     }
     let bootstrap: Bootstrap = serde_json::from_slice(&bytes).into_diagnostic()?;
-    Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry))
+    Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
 }
 
 fn run_pipeline(
@@ -616,17 +619,17 @@ mod tests {
                 pushed_at: jiff::Timestamp::now(),
             },
             git_dir: PathBuf::from("/tmp/repo.git"),
-            sentry: None,
+            sentry_trace_id: None,
         };
         fs_err::write(&path, serde_json::to_vec(&bootstrap).unwrap()).expect("write");
 
-        let (git_dir, meta, sentry) = load_bootstrap(&path).expect("load");
+        let (git_dir, meta, sentry_trace_id) = load_bootstrap(&path).expect("load");
         assert!(
             !path.exists(),
             "bootstrap file should be removed after read"
         );
         assert_eq!(git_dir, PathBuf::from("/tmp/repo.git"));
         assert_eq!(meta.r#ref, "HEAD");
-        assert!(sentry.is_none());
+        assert!(sentry_trace_id.is_none());
     }
 }
