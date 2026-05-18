@@ -23,6 +23,7 @@ pub struct ApiSession {
 
 /// Transport mode for CI ↔ server communication.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, facet::Facet, serde::Deserialize)]
+#[facet(rename_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
 #[repr(u8)]
 pub enum TransportMode {
