@@ -188,8 +188,7 @@ fn run_ref(
     let sentry_handoff =
         ctx.sentry_dsn
             .as_ref()
-            .map(|dsn| quire_core::ci::bootstrap::SentryHandoff {
-                dsn: dsn.clone(),
+            .map(|_| quire_core::ci::bootstrap::SentryHandoff {
                 trace_id: trace_id.to_string(),
             });
     sentry::with_scope(
@@ -211,6 +210,7 @@ fn run_ref(
                 push_ref,
                 &transport,
                 sentry_handoff.as_ref(),
+                ctx.sentry_dsn.as_deref(),
             ) {
                 tracing::error!(
                     repo = %ctx.event_repo,
@@ -230,6 +230,7 @@ fn run_ref_inner(
     push_ref: &PushRef,
     transport: &Transport,
     sentry: Option<&quire_core::ci::bootstrap::SentryHandoff>,
+    sentry_dsn: Option<&str>,
 ) -> error::Result<()> {
     let ci = ctx.repo.ci();
 
@@ -258,7 +259,14 @@ fn run_ref_inner(
         Executor::Process => {
             // Compilation happens inside quire-ci so a malformed ci.fnl is
             // reported once, with the worker's trace context.
-            run.execute(&ctx.repo.path(), &workspace, &meta, sentry, Some(transport))?;
+            run.execute(
+                &ctx.repo.path(),
+                &workspace,
+                &meta,
+                sentry,
+                sentry_dsn,
+                Some(transport),
+            )?;
         }
     }
     Ok(())
@@ -509,6 +517,7 @@ exit 0
                 &push_ref,
                 &new_transport(TransportMode::Filesystem, 3000),
                 None,
+                None,
             )
         });
 
@@ -563,6 +572,7 @@ exit 0
                 &push_ref,
                 &new_transport(TransportMode::Filesystem, 3000),
                 None,
+                None,
             )
         });
 
@@ -605,6 +615,7 @@ exit 0
             pushed_at,
             &push_ref,
             &new_transport(TransportMode::Filesystem, 3000),
+            None,
             None,
         )
         .expect("should succeed without ci.fnl");

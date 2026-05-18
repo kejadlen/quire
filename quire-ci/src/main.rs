@@ -5,7 +5,8 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use clap::Parser;
+use facet::Facet;
+use figue::{self as args, Driver, FigueBuiltins};
 use miette::{IntoDiagnostic, Result, miette};
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::{Bootstrap, SentryHandoff};
@@ -38,27 +39,65 @@ use crate::sink::{EventSink, JsonlSink, NullSink};
 const VERSION: &str = env!("QUIRE_VERSION");
 
 /// Run and validate quire CI pipelines.
-#[derive(Parser)]
-#[command(version, propagate_version = true)]
+#[derive(Facet)]
 struct Cli {
     /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
-    #[arg(short, long, default_value = ".", global = true)]
-    workspace: PathBuf,
+    #[facet(args::named, args::short = 'w', default = ".")]
+    workspace: String,
 
-    #[command(subcommand)]
+    /// Transport credentials and telemetry settings for
+    /// orchestrator-dispatched runs, sourced from `QUIRE__*` env vars:
+    /// `QUIRE__RUN_ID`, `QUIRE__SERVER_URL`, `QUIRE__AUTH_TOKEN`,
+    /// `QUIRE__TRANSPORT`, `QUIRE__SENTRY_DSN`.
+    #[facet(args::config, args::env_prefix = "QUIRE")]
+    quire: QuireConfig,
+
+    #[facet(flatten)]
+    builtins: FigueBuiltins,
+
+    #[facet(args::subcommand)]
     command: Commands,
 }
 
-#[derive(clap::Subcommand)]
+/// Transport credentials and telemetry settings sourced from `QUIRE__*`
+/// environment variables. Fields can also be overridden via
+/// `--quire.<field>` on the CLI.
+#[derive(Facet)]
+struct QuireConfig {
+    /// Run UUID assigned by the orchestrator (`QUIRE__RUN_ID`).
+    #[facet(default)]
+    run_id: String,
+
+    /// Base URL of quire-server, e.g. `http://127.0.0.1:3000`
+    /// (`QUIRE__SERVER_URL`).
+    #[facet(default)]
+    server_url: String,
+
+    /// Bearer token minted at run creation time (`QUIRE__AUTH_TOKEN`).
+    #[facet(sensitive, default)]
+    auth_token: String,
+
+    /// Transport mode: `filesystem` (default) or `api`
+    /// (`QUIRE__TRANSPORT`).
+    #[facet(default = "filesystem")]
+    transport: String,
+
+    /// Sentry DSN for error reporting (`QUIRE__SENTRY_DSN`).
+    #[facet(default)]
+    sentry_dsn: Option<String>,
+}
+
+#[derive(Facet)]
+#[repr(u8)]
 enum Commands {
     /// Compile and validate a ci.fnl pipeline.
     Validate,
 
     /// Execute a pipeline dispatched by the orchestrator.
     ///
-    /// `--bootstrap <path>` points at a JSON file (see
-    /// [`quire_core::ci::bootstrap::Bootstrap`]) produced by the
-    /// orchestrator that supplies push metadata.
+    /// Transport credentials and telemetry settings are supplied via
+    /// `QUIRE__*` environment variables (see top-level `--quire.*`
+    /// options).
     Run {
         /// Where to send the structured event stream. Accepts:
         ///   `null`   — drop events (default).
@@ -66,40 +105,20 @@ enum Commands {
         ///   `<path>` — write JSONL to this file. The orchestrator
         ///              reads the file post-run to populate `jobs`
         ///              and `sh_events` database rows.
-        #[arg(long, default_value = "null", value_parser = parse_events_target)]
-        events: EventsTarget,
+        #[facet(args::named, default = "null")]
+        events: String,
 
         /// Directory for per-sh CRI log files. Defaults to a fresh
         /// tempdir whose path is printed on stdout at the end of the
         /// run.
-        #[arg(long)]
-        out_dir: Option<PathBuf>,
+        #[facet(args::named, default)]
+        out_dir: Option<String>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Carries push metadata.
-        #[arg(long)]
-        bootstrap: PathBuf,
-
-        #[command(flatten)]
-        transport: TransportFlags,
+        /// Carries push metadata and the Sentry trace id.
+        #[facet(args::named)]
+        bootstrap: String,
     },
-}
-
-/// Session and transport flags for orchestrator-dispatched runs.
-#[derive(clap::Args, Debug)]
-struct TransportFlags {
-    /// Run ID assigned by the orchestrator.
-    #[arg(long)]
-    run_id: String,
-
-    /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
-    /// Falls back to `QUIRE_SERVER_URL` if the flag is omitted.
-    #[arg(long, env = "QUIRE_SERVER_URL")]
-    server_url: String,
-
-    /// Transport for CI ↔ server communication.
-    #[arg(long, default_value = "filesystem")]
-    transport: TransportMode,
 }
 
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
@@ -223,15 +242,25 @@ impl ApiClient {
 
 fn main() -> Result<()> {
     miette::set_panic_hook();
-    let cli = Cli::parse();
+
+    let config = figue::builder::<Cli>()
+        .map_err(|e| miette!("{e}"))?
+        .cli(|cli| cli.args(std::env::args().skip(1)))
+        .env(|env| env)
+        .help(|h| h.program_name("quire-ci").version(VERSION))
+        .build();
+
+    let cli: Cli = Driver::new(config).run().unwrap();
+    let workspace = PathBuf::from(&cli.workspace);
+
     match cli.command {
-        Commands::Validate => validate(cli.workspace),
+        Commands::Validate => validate(workspace),
         Commands::Run {
             events,
             out_dir,
             bootstrap,
-            transport,
         } => {
+            let events = parse_events_target(&events).map_err(|e| miette!("{e}"))?;
             let sink: Box<dyn EventSink> = match events {
                 EventsTarget::Null => Box::new(NullSink),
                 EventsTarget::Stdout => Box::new(JsonlSink::new(io::stdout())),
@@ -242,6 +271,7 @@ fn main() -> Result<()> {
             };
             let (log_dir, _dump) = match out_dir {
                 Some(path) => {
+                    let path = PathBuf::from(path);
                     fs_err::create_dir_all(&path).into_diagnostic()?;
                     (path, None)
                 }
@@ -251,30 +281,14 @@ fn main() -> Result<()> {
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
             };
-            let auth_token = std::env::var("QUIRE_CI_TOKEN")
-                .map_err(|_| miette!("QUIRE_CI_TOKEN env var is required"))?;
-            let transport = Transport {
-                session: ApiSession {
-                    run_id: transport.run_id,
-                    server_url: transport.server_url,
-                    auth_token,
-                },
-                mode: transport.transport,
-            };
-            let (git_dir, meta, bootstrap_sentry) = load_bootstrap(&bootstrap)?;
-            // SENTRY_DSN env var overrides (or supplies) the DSN; the
-            // trace id is still taken from the bootstrap handoff when
-            // present so both sides' events land on the same trace.
-            let sentry_handoff = std::env::var("SENTRY_DSN")
-                .ok()
-                .map(|dsn| SentryHandoff {
-                    dsn,
-                    trace_id: bootstrap_sentry
-                        .as_ref()
-                        .map(|h| h.trace_id.clone())
-                        .unwrap_or_default(),
-                })
-                .or(bootstrap_sentry);
+
+            let transport_mode = cli
+                .quire
+                .transport
+                .parse::<TransportMode>()
+                .map_err(|e| miette!("{e}"))?;
+
+            let (git_dir, meta, sentry_handoff) = load_bootstrap(&PathBuf::from(&bootstrap))?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
@@ -290,7 +304,9 @@ fn main() -> Result<()> {
 
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
-            let _sentry = init_sentry(sentry_handoff.as_ref(), &meta);
+            let trace_id = sentry_handoff.as_ref().map(|h| h.trace_id.as_str());
+            let _sentry = init_sentry(cli.quire.sentry_dsn.as_deref(), trace_id, &meta);
+
             // No type registrations: quire-ci's user-level errors
             // (CompileError, JobError, FennelError) are no longer logged
             // at tracing::error, so the miette renderer would never fire
@@ -299,57 +315,62 @@ fn main() -> Result<()> {
             let miette_layer = MietteLayer::new();
             telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            let client = ApiClient::new(transport.session.clone());
+            let session = ApiSession {
+                run_id: cli.quire.run_id,
+                server_url: cli.quire.server_url,
+                auth_token: cli.quire.auth_token,
+            };
+            let transport = Transport {
+                session: session.clone(),
+                mode: transport_mode,
+            };
+
+            let client = ApiClient::new(session);
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 
-            run_pipeline(
-                cli.workspace,
-                sink,
-                log_dir,
-                git_dir,
-                meta,
-                registry,
-                transport,
-            )
+            run_pipeline(workspace, sink, log_dir, git_dir, meta, registry, transport)
         }
     }
 }
 
-/// Initialize Sentry when the orchestrator passed a handoff. Tags
-/// the scope with `service=quire-ci` plus the run's sha and ref so
-/// events from this binary are distinguishable from quire-server's
-/// in the same project, and attaches the orchestrator's trace id so
-/// the two sides' events group on the same trace. A malformed
-/// trace_id (shouldn't happen — the orchestrator emits the canonical
-/// hex form) is logged and skipped rather than aborting Sentry init.
-fn init_sentry(handoff: Option<&SentryHandoff>, meta: &RunMeta) -> Option<sentry::ClientInitGuard> {
-    let handoff = handoff?;
-    let guard = sentry::init((
-        handoff.dsn.as_str(),
-        telemetry::sentry_client_options(VERSION),
-    ));
+/// Initialize Sentry when a DSN is provided. Tags the scope with
+/// `service=quire-ci` plus the run's sha and ref so events from this
+/// binary are distinguishable from quire-server's in the same project.
+/// When a trace id is also available (from the bootstrap handoff),
+/// attaches it so both sides' events group on the same trace.
+fn init_sentry(
+    dsn: Option<&str>,
+    trace_id: Option<&str>,
+    meta: &RunMeta,
+) -> Option<sentry::ClientInitGuard> {
+    let dsn = dsn?;
+    let guard = sentry::init((dsn, telemetry::sentry_client_options(VERSION)));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");
         scope.set_tag("sha", &meta.sha);
         scope.set_tag("ref", &meta.r#ref);
-        match handoff.trace_id.parse::<sentry::protocol::TraceId>() {
-            Ok(trace_id) => {
-                scope.set_context(
-                    "trace",
-                    sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
-                        trace_id,
-                        span_id: sentry::protocol::SpanId::default(),
-                        op: Some("quire.ci.run".into()),
-                        ..Default::default()
-                    })),
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    trace_id = %handoff.trace_id,
-                    error = %e,
-                    "malformed trace_id in bootstrap; quire-ci events won't link to orchestrator",
-                );
+        if let Some(tid) = trace_id {
+            match tid.parse::<sentry::protocol::TraceId>() {
+                Ok(trace_id) => {
+                    scope.set_context(
+                        "trace",
+                        sentry::protocol::Context::Trace(Box::new(
+                            sentry::protocol::TraceContext {
+                                trace_id,
+                                span_id: sentry::protocol::SpanId::default(),
+                                op: Some("quire.ci.run".into()),
+                                ..Default::default()
+                            },
+                        )),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        trace_id = %tid,
+                        error = %e,
+                        "malformed trace_id in bootstrap; quire-ci events won't link to orchestrator",
+                    );
+                }
             }
         }
     });
