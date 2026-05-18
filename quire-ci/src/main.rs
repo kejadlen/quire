@@ -93,7 +93,8 @@ struct TransportFlags {
     run_id: String,
 
     /// Base URL of quire-server (e.g. `http://127.0.0.1:3000`).
-    #[arg(long)]
+    /// Falls back to `QUIRE_SERVER_URL` if the flag is omitted.
+    #[arg(long, env = "QUIRE_SERVER_URL")]
     server_url: String,
 
     /// Transport for CI ↔ server communication.
@@ -260,7 +261,20 @@ fn main() -> Result<()> {
                 },
                 mode: transport.transport,
             };
-            let (git_dir, meta, sentry_handoff) = load_bootstrap(&bootstrap)?;
+            let (git_dir, meta, bootstrap_sentry) = load_bootstrap(&bootstrap)?;
+            // SENTRY_DSN env var overrides (or supplies) the DSN; the
+            // trace id is still taken from the bootstrap handoff when
+            // present so both sides' events land on the same trace.
+            let sentry_handoff = std::env::var("SENTRY_DSN")
+                .ok()
+                .map(|dsn| SentryHandoff {
+                    dsn,
+                    trace_id: bootstrap_sentry
+                        .as_ref()
+                        .map(|h| h.trace_id.clone())
+                        .unwrap_or_default(),
+                })
+                .or(bootstrap_sentry);
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
