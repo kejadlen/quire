@@ -43,7 +43,7 @@ const VERSION: &str = env!("QUIRE_VERSION");
 struct Cli {
     /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
     #[facet(args::named, args::short = 'w', default = ".")]
-    workspace: String,
+    workspace: PathBuf,
 
     /// Transport credentials and telemetry settings for
     /// orchestrator-dispatched runs, sourced from `QUIRE__*` env vars:
@@ -111,12 +111,12 @@ enum Commands {
         /// tempdir whose path is printed on stdout at the end of the
         /// run.
         #[facet(args::named, default)]
-        out_dir: Option<String>,
+        out_dir: Option<PathBuf>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
         /// Carries push metadata and the Sentry trace id.
         #[facet(args::named)]
-        bootstrap: String,
+        bootstrap: PathBuf,
     },
 }
 
@@ -250,7 +250,7 @@ fn main() -> Result<()> {
         .build();
 
     let cli: Cli = Driver::new(config).run().unwrap();
-    let workspace = PathBuf::from(&cli.workspace);
+    let workspace = cli.workspace;
 
     match cli.command {
         Commands::Validate => validate(workspace),
@@ -269,7 +269,6 @@ fn main() -> Result<()> {
             };
             let (log_dir, _dump) = match out_dir {
                 Some(path) => {
-                    let path = PathBuf::from(path);
                     fs_err::create_dir_all(&path).into_diagnostic()?;
                     (path, None)
                 }
@@ -280,7 +279,7 @@ fn main() -> Result<()> {
                 }
             };
 
-            let (git_dir, meta, sentry_trace_id) = load_bootstrap(&PathBuf::from(&bootstrap))?;
+            let (git_dir, meta, sentry_trace_id) = load_bootstrap(&bootstrap)?;
 
             // Sentry's reqwest transport spawns Tokio tasks for HTTP
             // sends, so the client must be constructed and dropped from
