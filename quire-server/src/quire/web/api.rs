@@ -158,22 +158,21 @@ async fn get_bootstrap(
                 Option<String>,
                 Option<String>,
                 String,
-            ) = db
-                .query_row(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
+            ) = db.query_row(
+                "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
                      FROM runs WHERE id = ?1",
-                    rusqlite::params![run_id],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                        ))
-                    },
-                )?;
+                rusqlite::params![run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
 
             if state != "pending" {
                 return Err(ApiError::Gone);
@@ -361,8 +360,7 @@ mod tests {
     async fn bootstrap_returns_401_without_auth() {
         let env = TestEnv::new();
         let transport = new_transport(TransportMode::Api, 3000);
-        let run_id =
-            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
 
         let resp = get(env.app(), &url, None).await;
@@ -398,8 +396,7 @@ mod tests {
     async fn bootstrap_returns_payload_on_first_fetch() {
         let env = TestEnv::new();
         let transport = new_transport(TransportMode::Api, 3000);
-        let run_id =
-            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
 
         let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
@@ -443,8 +440,7 @@ mod tests {
     async fn bootstrap_returns_410_on_second_fetch() {
         let env = TestEnv::new();
         let transport = new_transport(TransportMode::Api, 3000);
-        let run_id =
-            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
         let token = &transport.session.auth_token;
 
@@ -459,8 +455,7 @@ mod tests {
     async fn bootstrap_transitions_run_to_active() {
         let env = TestEnv::new();
         let transport = new_transport(TransportMode::Api, 3000);
-        let run_id =
-            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let run_id = create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let url = format!("/runs/{run_id}/bootstrap");
 
         get(env.app(), &url, Some(&transport.session.auth_token)).await;
