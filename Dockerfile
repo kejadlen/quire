@@ -29,7 +29,7 @@ RUN curl -fsSL https://github.com/git/git/archive/refs/tags/v${GIT_VERSION}.tar.
     && make prefix=/usr/local install
 
 # Cargo-chef stage for dependency caching.
-FROM rust:1.88-trixie AS chef
+FROM rust:1.95-trixie AS chef
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     cargo install --locked cargo-chef
