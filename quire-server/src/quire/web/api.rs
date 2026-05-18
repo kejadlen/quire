@@ -5,6 +5,7 @@
 //! is created and scoped to that run's ID.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use axum::extract::{FromRequestParts, Path as AxumPath, State};
 use axum::http::StatusCode;
@@ -13,6 +14,8 @@ use axum::response::{IntoResponse, Response, Result};
 use axum_extra::TypedHeader;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
+use quire_core::ci::bootstrap::Bootstrap;
+use quire_core::ci::run::RunMeta;
 
 use crate::Quire;
 
@@ -23,6 +26,7 @@ use crate::Quire;
 /// Intended to be mounted at `/api` via `Router::nest`.
 pub fn router(quire: Quire) -> axum::Router {
     let run_routes = axum::Router::new()
+        .route("/bootstrap", axum::routing::get(get_bootstrap))
         .route("/secrets/{name}", axum::routing::get(get_secret))
         .layer(axum::middleware::from_fn_with_state(
             quire.clone(),
@@ -40,6 +44,8 @@ enum ApiError {
     NotFound,
     #[error("unauthorized")]
     Unauthorized,
+    #[error("gone")]
+    Gone,
     #[error(transparent)]
     Db(rusqlite::Error),
     #[error(transparent)]
@@ -62,6 +68,7 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
+            ApiError::Gone => StatusCode::GONE.into_response(),
             e => {
                 tracing::error!(error = %e, "api error");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -128,6 +135,81 @@ async fn verify_bearer(
     .expect("blocking task panicked")?;
 
     Ok(next.run(req).await)
+}
+
+/// `GET /api/runs/:run_id/bootstrap`
+///
+/// Returns the bootstrap payload for a run. One-shot: the server marks
+/// bootstrap as fetched on the first successful read and returns 410 on
+/// any subsequent call. Auth is handled by [`verify_bearer`] middleware.
+///
+/// Returns 404 if the run does not have API bootstrap data (e.g. the run
+/// was created with filesystem transport and `store_bootstrap_data` was
+/// never called).
+async fn get_bootstrap(
+    State(quire): State<Quire>,
+    AxumPath(params): AxumPath<HashMap<String, String>>,
+) -> Result<axum::Json<Bootstrap>, ApiError> {
+    let run_id = params.get("run_id").cloned().ok_or(ApiError::NotFound)?;
+
+    let bootstrap =
+        tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
+            let db = crate::db::open(&quire.db_path()).map_err(ApiError::Db)?;
+
+            let (sha, ref_name, pushed_at_ms, git_dir_opt, sentry_trace_id, state): (
+                String,
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                String,
+            ) = db
+                .query_row(
+                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
+                     FROM runs WHERE id = ?1",
+                    rusqlite::params![run_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .map_err(ApiError::from)?;
+
+            if state != "pending" {
+                return Err(ApiError::Gone);
+            }
+
+            let git_dir: PathBuf = git_dir_opt.map(PathBuf::from).ok_or(ApiError::NotFound)?;
+
+            let meta = RunMeta {
+                sha,
+                r#ref: ref_name,
+                pushed_at: jiff::Timestamp::from_millisecond(pushed_at_ms)
+                    .expect("db stores valid timestamps"),
+            };
+
+            let started_at_ms = jiff::Timestamp::now().as_millisecond();
+            db.execute(
+                "UPDATE runs SET state = 'active', started_at_ms = ?1 WHERE id = ?2",
+                rusqlite::params![started_at_ms, run_id],
+            )?;
+
+            Ok(Bootstrap {
+                meta,
+                git_dir,
+                sentry_trace_id,
+            })
+        })
+        .await
+        .expect("blocking task panicked")?;
+
+    Ok(axum::Json(bootstrap))
 }
 
 /// `GET /api/runs/:run_id/secrets/:name`
@@ -258,6 +340,147 @@ mod tests {
 
         let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn create_run_with_bootstrap(
+        env: &TestEnv,
+        transport: &crate::ci::Transport,
+        git_dir: &str,
+        sentry_trace_id: Option<&str>,
+    ) -> String {
+        let run = env
+            .runs()
+            .create(&TestEnv::meta(), Some(transport))
+            .expect("create run");
+        let run_id = run.id().to_string();
+
+        let db = crate::db::open(&env.quire.db_path()).expect("db open");
+        db.execute(
+            "UPDATE runs SET git_dir = ?1, sentry_trace_id = ?2 WHERE id = ?3",
+            rusqlite::params![git_dir, sentry_trace_id, &run_id],
+        )
+        .expect("update bootstrap data");
+        run_id
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_401_without_auth() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        let run_id =
+            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let url = format!("/runs/{run_id}/bootstrap");
+
+        let resp = get(env.app(), &url, None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_404_for_unknown_run() {
+        let env = TestEnv::new();
+        let resp = get(
+            env.app(),
+            "/runs/00000000-0000-0000-0000-000000000001/bootstrap",
+            Some("token"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_404_when_git_dir_not_stored() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        env.runs()
+            .create(&TestEnv::meta(), Some(&transport))
+            .expect("create run");
+        let url = format!("/runs/{}/bootstrap", transport.session.run_id);
+
+        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_payload_on_first_fetch() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        let run_id =
+            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let url = format!("/runs/{run_id}/bootstrap");
+
+        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        use http_body_util::BodyExt;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(parsed["git_dir"], "/repos/test.git");
+        assert_eq!(parsed["meta"]["sha"], "abc1".repeat(10));
+        assert_eq!(parsed["meta"]["ref"], "refs/heads/main");
+        assert!(parsed["sentry_trace_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_sentry_trace_id_when_stored() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        let run_id = create_run_with_bootstrap(
+            &env,
+            &transport,
+            "/repos/test.git",
+            Some("aaaabbbbccccdddd0000111122223333"),
+        )
+        .await;
+        let url = format!("/runs/{run_id}/bootstrap");
+
+        let resp = get(env.app(), &url, Some(&transport.session.auth_token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        use http_body_util::BodyExt;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            parsed["sentry_trace_id"],
+            "aaaabbbbccccdddd0000111122223333"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_returns_410_on_second_fetch() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        let run_id =
+            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let url = format!("/runs/{run_id}/bootstrap");
+        let token = &transport.session.auth_token;
+
+        let first = get(env.app(), &url, Some(token)).await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = get(env.app(), &url, Some(token)).await;
+        assert_eq!(second.status(), StatusCode::GONE);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_transitions_run_to_active() {
+        let env = TestEnv::new();
+        let transport = new_transport(TransportMode::Api, 3000);
+        let run_id =
+            create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let url = format!("/runs/{run_id}/bootstrap");
+
+        get(env.app(), &url, Some(&transport.session.auth_token)).await;
+
+        let db = crate::db::open(&env.quire.db_path()).expect("db open");
+        let (state, started_at_ms): (String, Option<i64>) = db
+            .query_row(
+                "SELECT state, started_at_ms FROM runs WHERE id = ?1",
+                rusqlite::params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query");
+        assert_eq!(state, "active");
+        assert!(started_at_ms.is_some());
     }
 
     #[tokio::test]

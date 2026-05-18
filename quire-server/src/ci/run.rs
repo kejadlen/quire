@@ -321,8 +321,6 @@ impl Run {
         let log = fs_err::File::create(&log_path)?.into_parts().0;
         let log_clone = log.try_clone()?;
 
-        write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
-
         tracing::info!(
             run_id = %self.id,
             log = %log_path.display(),
@@ -337,16 +335,26 @@ impl Run {
             .arg("--out-dir")
             .arg(&run_dir)
             .arg("--events")
-            .arg(&events_path)
-            .arg("--bootstrap")
-            .arg(&bootstrap_path);
+            .arg(&events_path);
 
-        if let Some(t) = transport {
-            cmd.env("QUIRE__RUN_ID", &t.session.run_id);
-            cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
-            cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
-            if t.mode == TransportMode::Api {
+        match transport {
+            None => {
+                write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
+                cmd.arg("--bootstrap").arg(&bootstrap_path);
+            }
+            Some(t) if t.mode == TransportMode::Api => {
+                self.store_bootstrap_data(git_dir, sentry_trace_id)?;
+                cmd.env("QUIRE__RUN_ID", &t.session.run_id);
+                cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
+                cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
                 cmd.env("QUIRE__TRANSPORT", "api");
+            }
+            Some(t) => {
+                write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
+                cmd.arg("--bootstrap").arg(&bootstrap_path);
+                cmd.env("QUIRE__RUN_ID", &t.session.run_id);
+                cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
+                cmd.env("QUIRE__AUTH_TOKEN", &t.session.auth_token);
             }
         }
         if let Some(dsn) = sentry_dsn {
@@ -499,6 +507,30 @@ impl Run {
         }
 
         Ok(run_outcome)
+    }
+
+    /// Persist bootstrap data in the DB so the API endpoint can serve it.
+    ///
+    /// Called by `execute` when the API transport is active, before spawning
+    /// quire-ci. quire-ci fetches this via `GET /api/runs/:id/bootstrap`
+    /// instead of reading a file.
+    fn store_bootstrap_data(
+        &self,
+        git_dir: &Path,
+        sentry_trace_id: Option<&str>,
+    ) -> Result<()> {
+        let git_dir_str = git_dir.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "git_dir path is not valid UTF-8",
+            )
+        })?;
+        let db = crate::db::open(&self.db_path)?;
+        db.execute(
+            "UPDATE runs SET git_dir = ?1, sentry_trace_id = ?2 WHERE id = ?3",
+            rusqlite::params![git_dir_str, sentry_trace_id, &self.id],
+        )?;
+        Ok(())
     }
 
     /// Transition the run from its current state to a new state.
