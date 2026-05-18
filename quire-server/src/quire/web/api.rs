@@ -154,7 +154,7 @@ async fn get_bootstrap(
 
     let bootstrap =
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
-            let db = crate::db::open(&quire.db_path()).map_err(ApiError::Db)?;
+            let db = crate::db::open(&quire.db_path())?;
 
             let (sha, ref_name, pushed_at_ms, git_dir_opt, sentry_trace_id, state): (
                 String,
@@ -178,8 +178,7 @@ async fn get_bootstrap(
                             row.get(5)?,
                         ))
                     },
-                )
-                .map_err(ApiError::from)?;
+                )?;
 
             if state != "pending" {
                 return Err(ApiError::Gone);
