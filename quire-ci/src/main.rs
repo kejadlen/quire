@@ -299,11 +299,11 @@ fn main() -> Result<()> {
 
             // Drop order: `_sentry` flushes first (still inside the
             // runtime), then `_enter`, then `rt`.
-            let _sentry = init_sentry(
-                cli.quire.sentry_dsn.as_deref(),
-                sentry_trace_id.as_deref(),
-                &meta,
-            );
+            let _sentry = cli
+                .quire
+                .sentry_dsn
+                .as_deref()
+                .map(|dsn| init_sentry(dsn, sentry_trace_id.as_deref(), &meta));
 
             // No type registrations: quire-ci's user-level errors
             // (CompileError, JobError, FennelError) are no longer logged
@@ -331,17 +331,12 @@ fn main() -> Result<()> {
     }
 }
 
-/// Initialize Sentry when a DSN is provided. Tags the scope with
-/// `service=quire-ci` plus the run's sha and ref so events from this
-/// binary are distinguishable from quire-server's in the same project.
-/// When a trace id is also available (from the bootstrap handoff),
-/// attaches it so both sides' events group on the same trace.
-fn init_sentry(
-    dsn: Option<&str>,
-    trace_id: Option<&str>,
-    meta: &RunMeta,
-) -> Option<sentry::ClientInitGuard> {
-    let dsn = dsn?;
+/// Initialize Sentry. Tags the scope with `service=quire-ci` plus the
+/// run's sha and ref so events from this binary are distinguishable
+/// from quire-server's in the same project. When a trace id is also
+/// available (from the bootstrap handoff), attaches it so both sides'
+/// events group on the same trace.
+fn init_sentry(dsn: &str, trace_id: Option<&str>, meta: &RunMeta) -> sentry::ClientInitGuard {
     let guard = sentry::init((dsn, telemetry::sentry_client_options(VERSION)));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");
@@ -372,7 +367,7 @@ fn init_sentry(
             }
         }
     });
-    Some(guard)
+    guard
 }
 
 fn validate(workspace: PathBuf) -> Result<()> {
