@@ -514,11 +514,7 @@ impl Run {
     /// Called by `execute` when the API transport is active, before spawning
     /// quire-ci. quire-ci fetches this via `GET /api/runs/:id/bootstrap`
     /// instead of reading a file.
-    fn store_bootstrap_data(
-        &self,
-        git_dir: &Path,
-        sentry_trace_id: Option<&str>,
-    ) -> Result<()> {
+    fn store_bootstrap_data(&self, git_dir: &Path, sentry_trace_id: Option<&str>) -> Result<()> {
         let git_dir_str = git_dir.to_str().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
