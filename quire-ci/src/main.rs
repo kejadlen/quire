@@ -595,12 +595,9 @@ mod tests {
 
     #[test]
     fn parse_events_target_classifies_input() {
-        assert!(matches!(parse_events_target("null"), EventsTarget::Null));
-        assert!(matches!(
-            parse_events_target("stdout"),
-            EventsTarget::Stdout
-        ));
-        let EventsTarget::File(path) = parse_events_target("/tmp/run.jsonl") else {
+        assert!(matches!("null".parse(), Ok(EventsTarget::Null)));
+        assert!(matches!("stdout".parse(), Ok(EventsTarget::Stdout)));
+        let Ok(EventsTarget::File(path)) = "/tmp/run.jsonl".parse::<EventsTarget>() else {
             panic!("expected File target");
         };
         assert_eq!(path, PathBuf::from("/tmp/run.jsonl"));
