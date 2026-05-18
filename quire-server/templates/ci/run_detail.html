@@ -46,4 +46,10 @@
 {% else %}
 <div class="ci-empty">no jobs recorded</div>
 {% endfor %}
+{% if !quire_ci_log.is_empty() %}
+<div class="ci-job">
+  <div class="ci-job-header">quire-ci</div>
+  <pre class="ci-sh-log">{{ quire_ci_log }}</pre>
+</div>
+{% endif %}
 {% endblock %}

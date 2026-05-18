@@ -187,7 +187,13 @@ pub async fn run_detail(
     }
 
     let runs_base = quire.base_dir().join("runs").join(&repo_name);
-    let job_dir_base = runs_base.join(&run_id).join("jobs");
+    let run_dir = runs_base.join(&run_id);
+    let job_dir_base = run_dir.join("jobs");
+
+    // Spawn quire-ci.log read concurrently with the per-sh log reads below.
+    let quire_ci_log_path = run_dir.join("quire-ci.log");
+    let quire_ci_log_handle: tokio::task::JoinHandle<String> =
+        tokio::spawn(async move { read_log(&quire_ci_log_path).await });
 
     // Build a flat list of log paths keyed by (job index, event index)
     // so we can issue all reads concurrently and reassemble in order.
@@ -258,6 +264,8 @@ pub async fn run_detail(
         });
     }
 
+    let quire_ci_log = quire_ci_log_handle.await.unwrap_or_default();
+
     let crumbs = vec![
         Crumb::with_href("ci", format!("/{}/ci", repo_display)),
         Crumb::new(detail_run.sha_short()),
@@ -267,6 +275,7 @@ pub async fn run_detail(
         crumbs,
         run: detail_run,
         jobs: detail_jobs,
+        quire_ci_log,
     };
     render(&tmpl)
 }
