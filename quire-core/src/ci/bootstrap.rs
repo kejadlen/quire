@@ -1,11 +1,9 @@
-//! Wire format for handing off a run from the orchestrator to
-//! `quire-ci`.
+//! Wire format for the bootstrap API response.
 //!
-//! For server-dispatched runs the orchestrator stores a [`Bootstrap`]
-//! in the database; `quire-ci` fetches it via `GET /api/run/bootstrap`
-//! using the per-run bearer token. For local dev runs without a server
-//! the orchestrator writes the JSON to a file and passes the path via
-//! `--bootstrap`.
+//! The orchestrator stores a [`Bootstrap`] in the database; `quire-ci`
+//! fetches it via `GET /api/run/bootstrap` using the per-run bearer
+//! token. Local runs receive bootstrap data directly via CLI flags
+//! (`--git-dir`, `--sha`, `--git-ref`) instead.
 
 use std::path::PathBuf;
 
