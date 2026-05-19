@@ -232,7 +232,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::Quire;
-    use crate::ci::{RunMeta, Runs, new_session};
+    use crate::ci::{ApiSession, RunMeta, Runs};
 
     struct TestEnv {
         _dir: tempfile::TempDir,
@@ -279,13 +279,13 @@ mod tests {
 
     async fn create_run_with_bootstrap(
         env: &TestEnv,
-        transport: &crate::ci::ApiSession,
+        session: &ApiSession,
         git_dir: &str,
         sentry_trace_id: Option<&str>,
     ) -> String {
         let run = env
             .runs()
-            .create(&TestEnv::meta(), Some(transport))
+            .create(&TestEnv::meta(), Some(session))
             .expect("create run");
         let run_id = run.id().to_string();
 
@@ -301,8 +301,8 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_returns_401_without_auth() {
         let env = TestEnv::new();
-        let transport = new_session(3000);
-        create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let session = ApiSession::new(3000);
+        create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
 
         let resp = get(env.app(), "/run/bootstrap", None).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -319,13 +319,13 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_returns_payload_on_first_fetch() {
         let env = TestEnv::new();
-        let transport = new_session(3000);
-        create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
+        let session = ApiSession::new(3000);
+        create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
 
         let resp = get(
             env.app(),
             "/run/bootstrap",
-            Some(&transport.run_token),
+            Some(&session.run_token),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -339,9 +339,9 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_returns_410_on_second_fetch() {
         let env = TestEnv::new();
-        let transport = new_session(3000);
-        create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
-        let token = &transport.run_token;
+        let session = ApiSession::new(3000);
+        create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
+        let token = &session.run_token;
 
         let first = get(env.app(), "/run/bootstrap", Some(token)).await;
         assert_eq!(first.status(), StatusCode::OK);
@@ -353,9 +353,9 @@ mod tests {
     #[tokio::test]
     async fn secret_returns_401_without_auth() {
         let env = TestEnv::new();
-        let transport = new_session(3000);
+        let session = ApiSession::new(3000);
         env.runs()
-            .create(&TestEnv::meta(), Some(&transport))
+            .create(&TestEnv::meta(), Some(&session))
             .expect("create");
 
         let resp = get(env.app(), "/run/secrets/my_secret", None).await;
@@ -370,15 +370,15 @@ mod tests {
             r#"{:secrets {:my_token "hunter2"}}"#,
         )
         .expect("write config");
-        let transport = new_session(3000);
+        let session = ApiSession::new(3000);
         env.runs()
-            .create(&TestEnv::meta(), Some(&transport))
+            .create(&TestEnv::meta(), Some(&session))
             .expect("create");
 
         let resp = get(
             env.app(),
             "/run/secrets/my_token",
-            Some(&transport.run_token),
+            Some(&session.run_token),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
