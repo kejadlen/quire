@@ -134,7 +134,7 @@ async fn get_bootstrap(
             let db = crate::db::open(&quire.db_path())?;
 
             let row = crate::db::runs::get_run_bootstrap_data(&db, &run_id)?
-                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+                .ok_or(ApiError::NotFound)?;
 
             if row.dispatched_at.is_some() {
                 return Err(ApiError::Gone);

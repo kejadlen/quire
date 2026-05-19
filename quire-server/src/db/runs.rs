@@ -453,3 +453,4 @@ pub fn count_unresolved_runs(conn: &Connection) -> rusqlite::Result<i64> {
         |row| row.get(0),
     )
 }
+

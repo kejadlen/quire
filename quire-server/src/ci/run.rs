@@ -667,13 +667,7 @@ mod tests {
         assert!(uuid::Uuid::parse_str(run.id()).is_ok());
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT run_token FROM runs WHERE id = ?1",
-                rusqlite::params![run.id()],
-                |row| row.get(0),
-            )
-            .expect("row");
+        let stored = crate::db::runs::get_run_token(&conn, run.id()).expect("row");
         assert_eq!(stored.as_deref(), Some(session.run_token.as_str()));
     }
 

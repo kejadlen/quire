@@ -94,11 +94,19 @@ mod tests {
             resolved: Option<i64>,
         ) {
             let db = self.quire.db_pool();
-            db.execute(
-                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
-                                  created_at, dispatched_at, resolved_at, outcome)
-                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
-                rusqlite::params![id, ref_name, sha, created, dispatched, resolved, outcome],
+            crate::db::runs::insert_seeded_run(
+                &db,
+                &crate::db::runs::SeededRun {
+                    id,
+                    repo: "example.git",
+                    ref_name,
+                    sha,
+                    pushed_at_ms: created,
+                    created_at: created,
+                    dispatched_at: dispatched,
+                    resolved_at: resolved,
+                    outcome,
+                },
             )
             .expect("insert run");
         }
@@ -113,10 +121,14 @@ mod tests {
             finished: Option<i64>,
         ) {
             let db = self.quire.db_pool();
-            db.execute(
-                "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![run_id, job_id, state, exit_code, started, finished],
+            crate::db::runs::insert_job(
+                &db,
+                run_id,
+                job_id,
+                state,
+                exit_code,
+                started.unwrap_or(0),
+                finished.unwrap_or(0),
             )
             .expect("insert job");
         }

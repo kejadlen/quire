@@ -498,12 +498,7 @@ exit 0
 
         // The run should have reached succeeded.
         let conn = crate::db::open(&quire.db_path()).expect("db");
-        let outcome: Option<String> = conn
-            .query_row(
-                "SELECT outcome FROM runs WHERE sha = ?1",
-                rusqlite::params![&sha],
-                |row| row.get(0),
-            )
+        let outcome = crate::db::runs::get_run_outcome_by_sha(&conn, &sha)
             .expect("should have a run");
         assert_eq!(
             outcome.as_deref(),
@@ -512,13 +507,7 @@ exit 0
         );
 
         // No unresolved rows left behind.
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM runs WHERE outcome IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count");
+        let count = crate::db::runs::count_unresolved_runs(&conn).expect("count");
         assert_eq!(count, 0, "run should be succeeded, not orphaned");
     }
 
@@ -557,12 +546,7 @@ exit 0
         );
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
-        let outcome: Option<String> = conn
-            .query_row(
-                "SELECT outcome FROM runs WHERE sha = ?1",
-                rusqlite::params![&sha],
-                |row| row.get(0),
-            )
+        let outcome = crate::db::runs::get_run_outcome_by_sha(&conn, &sha)
             .expect("should have a run");
         assert!(
             outcome
