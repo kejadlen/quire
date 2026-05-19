@@ -1,7 +1,7 @@
 //! Shared transport types for CI ↔ server communication.
 //!
 //! The on-the-wire pairing both sides agree on. The orchestrator
-//! constructs a `Transport` per run (minting the auth token);
+//! constructs an `ApiSession` per run (minting the auth token);
 //! quire-ci reconstructs it from the `QUIRE__*` environment variables.
 
 /// Credentials and endpoint coordinates for a single CI run's API
@@ -16,11 +16,4 @@ pub struct ApiSession {
     /// `runs.run_token` server-side. Also serves as the run
     /// identifier — the server looks up the run by this token.
     pub run_token: String,
-}
-
-/// Runtime transport for a single CI run.
-/// Use `None` for local runs where no server is involved.
-#[derive(Clone, Debug)]
-pub struct Transport {
-    pub session: ApiSession,
 }
