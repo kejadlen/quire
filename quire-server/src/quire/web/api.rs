@@ -155,19 +155,25 @@ async fn get_bootstrap(
                 pushed_at_ms: i64,
                 git_dir: Option<String>,
                 sentry_trace_id: Option<String>,
-                state: String,
             }
 
             let row: RunRow = db
                 .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
+                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id
                      FROM runs WHERE id = ?1",
                 )?
                 .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
                 .next()
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
 
-            if row.state != "pending" {
+            // Check current state from run_transitions
+            let current_state: String = db.query_row(
+                "SELECT state FROM run_transitions WHERE run_id = ?1 ORDER BY at_ms DESC LIMIT 1",
+                rusqlite::params![run_id],
+                |r| r.get(0),
+            )?;
+
+            if current_state != "pending" {
                 return Err(ApiError::Gone);
             }
 
@@ -182,8 +188,8 @@ async fn get_bootstrap(
 
             let started_at_ms = jiff::Timestamp::now().as_millisecond();
             db.execute(
-                "UPDATE runs SET state = 'active', started_at_ms = ?1 WHERE id = ?2",
-                rusqlite::params![started_at_ms, run_id],
+                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'active', ?2)",
+                rusqlite::params![run_id, started_at_ms],
             )?;
 
             Ok(Bootstrap {

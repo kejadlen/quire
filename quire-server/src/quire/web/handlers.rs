@@ -325,13 +325,37 @@ mod tests {
             let pool = self.quire.db_pool();
             let db = pool.lock().expect("lock");
             db.execute(
-                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                                  queued_at_ms, started_at_ms, finished_at_ms,
+                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms,
                                   container_id, image_tag, build_started_at_ms, build_finished_at_ms,
                                   container_started_at_ms, container_stopped_at_ms, workspace_path)
-                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?5, NULL, ?4, ?6, ?7, NULL, NULL, NULL, NULL, NULL, NULL, '/tmp/ws')",
-                rusqlite::params![id, ref_name, sha, queued, state, started, finished],
+                 VALUES (?1, 'example.git', ?2, ?3, ?4, 'pending', ?4, NULL, NULL, NULL, NULL, NULL, NULL, '/tmp/ws')",
+                rusqlite::params![id, ref_name, sha, queued],
             ).expect("insert run");
+            // pending transition
+            db.execute(
+                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'pending', ?2)",
+                rusqlite::params![id, queued],
+            ).expect("insert pending transition");
+            // active transition
+            if let Some(s) = started {
+                db.execute(
+                    "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'active', ?2)",
+                    rusqlite::params![id, s],
+                ).expect("insert active transition");
+            }
+            // terminal transition
+            if let Some(f) = finished {
+                db.execute(
+                    "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, state, f],
+                ).expect("insert terminal transition");
+            } else if state != "pending" && state != "active" {
+                // state is terminal but no finished timestamp provided — use queued
+                db.execute(
+                    "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, state, queued],
+                ).expect("insert terminal transition (no timestamp)");
+            }
         }
 
         fn insert_job(

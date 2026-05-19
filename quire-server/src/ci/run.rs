@@ -1,7 +1,8 @@
 //! SQLite-backed storage for CI runs.
 //!
 //! A run is a row in the `runs` table identified by UUID. State
-//! transitions are single `UPDATE` statements inside a transaction.
+//! transitions are recorded in the `run_transitions` log table; the
+//! current state is the latest row (ordered by at_ms DESC).
 //! Run directories on disk hold the materialized workspace and per-job
 //! log files, but state lives in the database.
 
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use super::error::{Error, Result};
 use jiff::Timestamp;
 use quire_core::ci::run::ApiSession;
+use rusqlite::OptionalExtension;
 
 pub use quire_core::ci::run::RunMeta;
 
@@ -117,6 +119,7 @@ impl Runs {
         // caught by its own supersede query.
         self.supersede_existing(&db, &meta.r#ref)?;
 
+        let queued_at_ms = Timestamp::now().as_millisecond();
         db.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path, run_token)
              VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
@@ -126,13 +129,17 @@ impl Runs {
                 &meta.r#ref,
                 &meta.sha,
                 meta.pushed_at.as_millisecond(),
-                Timestamp::now().as_millisecond(),
+                queued_at_ms,
                 workspace_path.to_str().ok_or_else(|| std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "workspace path is not valid UTF-8",
                 ))?,
                 run_token_str,
             ],
+        )?;
+        db.execute(
+            "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'pending', ?2)",
+            rusqlite::params![&id, queued_at_ms],
         )?;
 
         // Create run directory for workspace and logs.
@@ -158,8 +165,9 @@ impl Runs {
         // Handle active runs first: kill the container, then mark superseded.
         let active_rows: Vec<(String, Option<String>)> = db
             .prepare(
-                "SELECT id, container_id FROM runs
-                 WHERE repo = ?1 AND ref_name = ?2 AND state = 'active'",
+                "SELECT r.id, r.container_id FROM runs r
+                 WHERE r.repo = ?1 AND r.ref_name = ?2
+                   AND (SELECT state FROM run_transitions WHERE run_id = r.id ORDER BY at_ms DESC LIMIT 1) = 'active'",
             )?
             .query_map(rusqlite::params![&self.repo, ref_name], |row| {
                 Ok((row.get(0)?, row.get(1)?))
@@ -177,6 +185,10 @@ impl Runs {
                 }
             }
             db.execute(
+                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'superseded', ?2)",
+                rusqlite::params![run_id, now],
+            )?;
+            db.execute(
                 "UPDATE runs SET state = 'superseded', finished_at_ms = ?1, container_id = NULL
                  WHERE id = ?2",
                 rusqlite::params![now, run_id],
@@ -184,12 +196,27 @@ impl Runs {
             tracing::info!(run_id = %run_id, "superseded active run");
         }
 
-        // Handle pending runs: just mark superseded.
-        let pending_count = db.execute(
-            "UPDATE runs SET state = 'superseded', finished_at_ms = ?1
-             WHERE repo = ?2 AND ref_name = ?3 AND state = 'pending'",
-            rusqlite::params![now, &self.repo, ref_name],
-        )?;
+        // Handle pending runs: find them, insert superseded transitions.
+        let pending_ids: Vec<String> = db
+            .prepare(
+                "SELECT r.id FROM runs r
+                 WHERE r.repo = ?1 AND r.ref_name = ?2
+                   AND (SELECT state FROM run_transitions WHERE run_id = r.id ORDER BY at_ms DESC LIMIT 1) = 'pending'",
+            )?
+            .query_map(rusqlite::params![&self.repo, ref_name], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+
+        let pending_count = pending_ids.len();
+        for run_id in &pending_ids {
+            db.execute(
+                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'superseded', ?2)",
+                rusqlite::params![run_id, now],
+            )?;
+            db.execute(
+                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1 WHERE id = ?2",
+                rusqlite::params![now, run_id],
+            )?;
+        }
         if pending_count > 0 {
             tracing::info!(count = pending_count, "superseded pending run(s)");
         }
@@ -205,12 +232,31 @@ impl Runs {
 pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
     let now = Timestamp::now().as_millisecond();
     let db = crate::db::open(db_path)?;
-    let count = db.execute(
-        "UPDATE runs SET state = 'failed', finished_at_ms = ?1,
-         container_id = NULL, failure_kind = 'orphaned'
-         WHERE state IN ('pending', 'active')",
-        rusqlite::params![now],
-    )?;
+
+    // Find all runs whose latest transition is pending or active.
+    let orphan_ids: Vec<String> = db
+        .prepare(
+            "SELECT run_id FROM run_transitions t
+             WHERE t.at_ms = (SELECT MAX(at_ms) FROM run_transitions WHERE run_id = t.run_id)
+               AND t.state IN ('pending', 'active')",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
+
+    let count = orphan_ids.len();
+    for run_id in &orphan_ids {
+        db.execute(
+            "INSERT INTO run_transitions (run_id, state, at_ms, failure_kind) VALUES (?1, 'failed', ?2, 'orphaned')",
+            rusqlite::params![run_id, now],
+        )?;
+        db.execute(
+            "UPDATE runs SET state = 'failed', finished_at_ms = ?1,
+             container_id = NULL, failure_kind = COALESCE(failure_kind, 'orphaned')
+             WHERE id = ?2",
+            rusqlite::params![now, run_id],
+        )?;
+    }
+
     if count > 0 {
         tracing::warn!(count, "reconciled orphaned runs");
     }
@@ -249,7 +295,7 @@ impl Run {
     pub fn open(db_path: PathBuf, id: String, base_dir: PathBuf) -> Result<Self> {
         let db = crate::db::open(&db_path)?;
         let state_str: String = db.query_row(
-            "SELECT state FROM runs WHERE id = ?1",
+            "SELECT state FROM run_transitions WHERE run_id = ?1 ORDER BY at_ms DESC LIMIT 1",
             rusqlite::params![&id],
             |row| row.get(0),
         )?;
@@ -529,6 +575,13 @@ impl Run {
         let now = Timestamp::now().as_millisecond();
         let db = crate::db::open(&self.db_path)?;
 
+        db.execute(
+            "INSERT INTO run_transitions (run_id, state, at_ms, failure_kind) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![&self.id, to.as_str(), now, failure_kind],
+        )?;
+
+        // Also keep the legacy runs columns current so their NOT NULL / CHECK
+        // constraints remain satisfied.
         match to {
             Active => {
                 db.execute(
@@ -539,21 +592,21 @@ impl Run {
             }
             Complete | Superseded => {
                 db.execute(
-                    "UPDATE runs SET state = ?1, \
-                        started_at_ms = COALESCE(started_at_ms, ?2), \
-                        finished_at_ms = COALESCE(finished_at_ms, ?3), \
-                        container_id = NULL \
+                    "UPDATE runs SET state = ?1,
+                        started_at_ms = COALESCE(started_at_ms, ?2),
+                        finished_at_ms = COALESCE(finished_at_ms, ?3),
+                        container_id = NULL
                      WHERE id = ?4",
                     rusqlite::params![to.as_str(), now, now, &self.id],
                 )?;
             }
             Failed => {
                 db.execute(
-                    "UPDATE runs SET state = 'failed', \
-                        started_at_ms = COALESCE(started_at_ms, ?1), \
-                        finished_at_ms = COALESCE(finished_at_ms, ?2), \
-                        container_id = NULL, \
-                        failure_kind = COALESCE(failure_kind, ?3) \
+                    "UPDATE runs SET state = 'failed',
+                        started_at_ms = COALESCE(started_at_ms, ?1),
+                        finished_at_ms = COALESCE(finished_at_ms, ?2),
+                        container_id = NULL,
+                        failure_kind = COALESCE(failure_kind, ?3)
                      WHERE id = ?4",
                     rusqlite::params![now, now, failure_kind, &self.id],
                 )?;
@@ -590,10 +643,10 @@ impl Run {
     pub fn read_started_at(&self) -> Result<Option<Timestamp>> {
         let db = crate::db::open(&self.db_path)?;
         let ms: Option<i64> = db.query_row(
-            "SELECT started_at_ms FROM runs WHERE id = ?1",
+            "SELECT at_ms FROM run_transitions WHERE run_id = ?1 AND state = 'active' LIMIT 1",
             rusqlite::params![&self.id],
             |row| row.get(0),
-        )?;
+        ).optional()?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
@@ -601,10 +654,10 @@ impl Run {
     pub fn read_finished_at(&self) -> Result<Option<Timestamp>> {
         let db = crate::db::open(&self.db_path)?;
         let ms: Option<i64> = db.query_row(
-            "SELECT finished_at_ms FROM runs WHERE id = ?1",
+            "SELECT at_ms FROM run_transitions WHERE run_id = ?1 AND state IN ('complete', 'failed', 'superseded') LIMIT 1",
             rusqlite::params![&self.id],
             |row| row.get(0),
-        )?;
+        ).optional()?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 }
@@ -957,7 +1010,7 @@ mod tests {
         let db = crate::db::open(&quire.db_path()).expect("open db");
         let kind: Option<String> = db
             .query_row(
-                "SELECT failure_kind FROM runs WHERE id = ?1",
+                "SELECT failure_kind FROM run_transitions WHERE run_id = ?1 AND state = 'failed' LIMIT 1",
                 rusqlite::params![&id],
                 |row| row.get(0),
             )
@@ -980,7 +1033,7 @@ mod tests {
         let db = crate::db::open(&quire.db_path()).expect("open db");
         let kind: Option<String> = db
             .query_row(
-                "SELECT failure_kind FROM runs WHERE id = ?1",
+                "SELECT failure_kind FROM run_transitions WHERE run_id = ?1 AND state = 'failed' LIMIT 1",
                 rusqlite::params![&id],
                 |row| row.get(0),
             )

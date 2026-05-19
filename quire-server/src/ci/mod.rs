@@ -516,7 +516,10 @@ exit 0
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let state: String = conn
             .query_row(
-                "SELECT state FROM runs WHERE sha = ?1",
+                "SELECT rt.state FROM run_transitions rt
+                 JOIN runs r ON r.id = rt.run_id
+                 WHERE r.sha = ?1
+                 ORDER BY rt.at_ms DESC LIMIT 1",
                 rusqlite::params![&sha],
                 |row| row.get(0),
             )
@@ -529,7 +532,8 @@ exit 0
         // No pending or active rows left behind.
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM runs WHERE state IN ('pending', 'active')",
+                "SELECT COUNT(*) FROM runs r
+                 WHERE (SELECT state FROM run_transitions WHERE run_id = r.id ORDER BY at_ms DESC LIMIT 1) IN ('pending', 'active')",
                 [],
                 |row| row.get(0),
             )
@@ -574,7 +578,10 @@ exit 0
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let state: String = conn
             .query_row(
-                "SELECT state FROM runs WHERE sha = ?1",
+                "SELECT rt.state FROM run_transitions rt
+                 JOIN runs r ON r.id = rt.run_id
+                 WHERE r.sha = ?1
+                 ORDER BY rt.at_ms DESC LIMIT 1",
                 rusqlite::params![&sha],
                 |row| row.get(0),
             )

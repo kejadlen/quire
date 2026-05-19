@@ -37,9 +37,17 @@ pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
         .lock()
         .map_err(|_| crate::error::Error::Io(std::io::Error::other("db mutex poisoned")))?;
     let mut stmt = db.prepare(
-        "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
-         FROM runs WHERE repo = ?1
-         ORDER BY queued_at_ms DESC
+        "SELECT
+           r.id,
+           (SELECT state FROM run_transitions WHERE run_id = r.id ORDER BY at_ms DESC LIMIT 1) AS state,
+           r.sha,
+           r.ref_name,
+           (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state = 'pending' LIMIT 1) AS queued_at_ms,
+           (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state = 'active' LIMIT 1) AS started_at_ms,
+           (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state IN ('complete', 'failed', 'superseded') LIMIT 1) AS finished_at_ms
+         FROM runs r
+         WHERE r.repo = ?1
+         ORDER BY (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state = 'pending' LIMIT 1) DESC
          LIMIT 50",
     )?;
 
@@ -47,10 +55,10 @@ pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
         .query_map(rusqlite::params![repo], |row| {
             Ok(RunRow {
                 id: row.get(0)?,
-                state: row.get(1)?,
+                state: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 sha: row.get(2)?,
                 ref_name: row.get(3)?,
-                queued_at_ms: row.get(4)?,
+                queued_at_ms: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
                 started_at_ms: row.get(5)?,
                 finished_at_ms: row.get(6)?,
             })
@@ -74,16 +82,24 @@ pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDet
         .map_err(|_| crate::error::Error::Io(std::io::Error::other("db mutex poisoned")))?;
 
     let run = db.query_row(
-        "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
-         FROM runs WHERE id = ?1 AND repo = ?2",
+        "SELECT
+           r.id,
+           (SELECT state FROM run_transitions WHERE run_id = r.id ORDER BY at_ms DESC LIMIT 1) AS state,
+           r.sha,
+           r.ref_name,
+           (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state = 'pending' LIMIT 1) AS queued_at_ms,
+           (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state = 'active' LIMIT 1) AS started_at_ms,
+           (SELECT at_ms FROM run_transitions WHERE run_id = r.id AND state IN ('complete', 'failed', 'superseded') LIMIT 1) AS finished_at_ms
+         FROM runs r
+         WHERE r.id = ?1 AND r.repo = ?2",
         rusqlite::params![run_id, repo],
         |row| {
             Ok(RunRow {
                 id: row.get(0)?,
-                state: row.get(1)?,
+                state: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 sha: row.get(2)?,
                 ref_name: row.get(3)?,
-                queued_at_ms: row.get(4)?,
+                queued_at_ms: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
                 started_at_ms: row.get(5)?,
                 finished_at_ms: row.get(6)?,
             })
