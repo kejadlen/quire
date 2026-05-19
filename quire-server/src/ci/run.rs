@@ -51,19 +51,25 @@ impl RunState {
     }
 }
 
-impl std::str::FromStr for RunState {
-    type Err = ();
+impl rusqlite::types::ToSql for RunState {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "pending" => Some(RunState::Pending),
-            "active" => Some(RunState::Active),
-            "complete" => Some(RunState::Complete),
-            "failed" => Some(RunState::Failed),
-            "superseded" => Some(RunState::Superseded),
-            _ => None,
+impl rusqlite::types::FromSql for RunState {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let s = String::column_result(value)?;
+        match s.as_str() {
+            "pending" => Ok(RunState::Pending),
+            "active" => Ok(RunState::Active),
+            "complete" => Ok(RunState::Complete),
+            "failed" => Ok(RunState::Failed),
+            "superseded" => Ok(RunState::Superseded),
+            _ => Err(rusqlite::types::FromSqlError::Other(
+                format!("invalid run state: {s}").into(),
+            )),
         }
-        .ok_or(())
     }
 }
 
@@ -137,8 +143,8 @@ impl Runs {
             ],
         )?;
         db.execute(
-            "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'pending', ?2)",
-            rusqlite::params![&id, queued_at_ms],
+            "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
+            rusqlite::params![&id, RunState::Pending, queued_at_ms],
         )?;
 
         // Create run directory for workspace and logs.
@@ -184,8 +190,8 @@ impl Runs {
                 }
             }
             db.execute(
-                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'superseded', ?2)",
-                rusqlite::params![run_id, now],
+                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
+                rusqlite::params![run_id, RunState::Superseded, now],
             )?;
             db.execute(
                 "UPDATE runs SET container_id = NULL WHERE id = ?1",
@@ -207,8 +213,8 @@ impl Runs {
         let pending_count = pending_ids.len();
         for run_id in &pending_ids {
             db.execute(
-                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'superseded', ?2)",
-                rusqlite::params![run_id, now],
+                "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
+                rusqlite::params![run_id, RunState::Superseded, now],
             )?;
         }
         if pending_count > 0 {
@@ -240,8 +246,8 @@ pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
     let count = orphan_ids.len();
     for run_id in &orphan_ids {
         db.execute(
-            "INSERT INTO run_transitions (run_id, state, at_ms, failure_kind) VALUES (?1, 'failed', ?2, 'orphaned')",
-            rusqlite::params![run_id, now],
+            "INSERT INTO run_transitions (run_id, state, at_ms, failure_kind) VALUES (?1, ?2, ?3, 'orphaned')",
+            rusqlite::params![run_id, RunState::Failed, now],
         )?;
         db.execute(
             "UPDATE runs SET container_id = NULL WHERE id = ?1",
@@ -286,17 +292,11 @@ impl Run {
     /// Open an existing run from the database by ID.
     pub fn open(db_path: PathBuf, id: String, base_dir: PathBuf) -> Result<Self> {
         let db = crate::db::open(&db_path)?;
-        let state_str: String = db.query_row(
+        let state: RunState = db.query_row(
             "SELECT state FROM run_transitions WHERE run_id = ?1 ORDER BY at_ms DESC LIMIT 1",
             rusqlite::params![&id],
             |row| row.get(0),
         )?;
-        let state: RunState = state_str.parse().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid state in db: {state_str}"),
-            )
-        })?;
         Ok(Self {
             db_path,
             id,
@@ -569,7 +569,7 @@ impl Run {
 
         db.execute(
             "INSERT INTO run_transitions (run_id, state, at_ms, failure_kind) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![&self.id, to.as_str(), now, failure_kind],
+            rusqlite::params![&self.id, to, now, failure_kind],
         )?;
         if matches!(to, Complete | Failed | Superseded) {
             db.execute(
@@ -804,6 +804,7 @@ mod tests {
 
     #[test]
     fn run_state_round_trips() {
+        use rusqlite::types::{FromSql, ValueRef};
         for state in [
             RunState::Pending,
             RunState::Active,
@@ -811,9 +812,11 @@ mod tests {
             RunState::Failed,
             RunState::Superseded,
         ] {
-            assert!(state.as_str().parse::<RunState>().is_ok());
+            let s = state.as_str();
+            let roundtripped = RunState::column_result(ValueRef::Text(s.as_bytes())).unwrap();
+            assert_eq!(roundtripped, state);
         }
-        assert!("unknown".parse::<RunState>().is_err());
+        assert!(RunState::column_result(ValueRef::Text(b"unknown")).is_err());
     }
 
     #[test]
