@@ -84,18 +84,17 @@ impl Runs {
         // caught by its own cancel query.
         self.cancel_existing(&db, &meta.r#ref)?;
 
-        db.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, created_at, run_token)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                &id,
-                &self.repo,
-                &meta.r#ref,
-                &meta.sha,
-                meta.pushed_at.as_millisecond(),
-                Timestamp::now().as_millisecond(),
-                run_token_str,
-            ],
+        crate::db::runs::insert_run(
+            &db,
+            &crate::db::runs::NewRun {
+                id: &id,
+                repo: &self.repo,
+                ref_name: &meta.r#ref,
+                sha: &meta.sha,
+                pushed_at_ms: meta.pushed_at.as_millisecond(),
+                created_at: Timestamp::now().as_millisecond(),
+                run_token: run_token_str,
+            },
         )?;
 
         // Create run directory for workspace and logs.
@@ -116,35 +115,15 @@ impl Runs {
     fn cancel_existing(&self, db: &rusqlite::Connection, ref_name: &str) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
 
-        let active_ids: Vec<String> = db
-            .prepare(
-                "SELECT id FROM runs
-                 WHERE repo = ?1 AND ref_name = ?2
-                   AND dispatched_at IS NOT NULL AND resolved_at IS NULL",
-            )?
-            .query_map(rusqlite::params![&self.repo, ref_name], |row| row.get(0))?
-            .collect::<std::result::Result<_, _>>()?;
+        let active_ids = crate::db::runs::get_active_runs_for_ref(db, &self.repo, ref_name)?;
 
         for run_id in &active_ids {
-            db.execute(
-                "UPDATE runs SET \
-                    dispatched_at = COALESCE(dispatched_at, ?1), \
-                    resolved_at = COALESCE(resolved_at, ?2), \
-                    outcome = COALESCE(outcome, 'superseded') \
-                 WHERE id = ?3",
-                rusqlite::params![now, now, run_id],
-            )?;
+            crate::db::runs::cancel_active_run(db, run_id, now)?;
             tracing::info!(run_id = %run_id, "canceled active run");
         }
 
-        let queued_count = db.execute(
-            "UPDATE runs SET \
-                resolved_at = COALESCE(resolved_at, ?1), \
-                outcome = COALESCE(outcome, 'superseded') \
-             WHERE repo = ?2 AND ref_name = ?3
-               AND dispatched_at IS NULL AND resolved_at IS NULL",
-            rusqlite::params![now, &self.repo, ref_name],
-        )?;
+        let queued_count =
+            crate::db::runs::cancel_queued_runs_for_ref(db, &self.repo, ref_name, now)?;
         if queued_count > 0 {
             tracing::info!(count = queued_count, "canceled queued run(s)");
         }
@@ -159,14 +138,7 @@ impl Runs {
 pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
     let now = Timestamp::now().as_millisecond();
     let db = crate::db::open(db_path)?;
-    let count = db.execute(
-        "UPDATE runs SET \
-            dispatched_at = COALESCE(dispatched_at, ?1), \
-            resolved_at = COALESCE(resolved_at, ?2), \
-            outcome = COALESCE(outcome, 'failed-orphaned') \
-         WHERE resolved_at IS NULL",
-        rusqlite::params![now, now],
-    )?;
+    let count = crate::db::runs::fail_orphaned_runs(&db, now)?;
     if count > 0 {
         tracing::warn!(count, "reconciled orphaned runs");
     }
@@ -202,11 +174,7 @@ impl Run {
     /// Open an existing run from the database by ID.
     pub fn open(db_path: PathBuf, id: String, base_dir: PathBuf) -> Result<Self> {
         let db = crate::db::open(&db_path)?;
-        let (dispatched_at, resolved_at): (Option<i64>, Option<i64>) = db.query_row(
-            "SELECT dispatched_at, resolved_at FROM runs WHERE id = ?1",
-            rusqlite::params![&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let (dispatched_at, resolved_at) = crate::db::runs::get_run_lifecycle(&db, &id)?;
         Ok(Self {
             db_path,
             id,
@@ -379,10 +347,14 @@ impl Run {
                         JobOutcome::Succeeded => "succeeded",
                         JobOutcome::Failed => "failed",
                     };
-                    db.execute(
-                        "INSERT INTO jobs (run_id, job_id, state, started_at_ms, finished_at_ms) \
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![&self.id, job_id, state, started_at, event.at_ms],
+                    crate::db::runs::insert_job(
+                        &db,
+                        &self.id,
+                        job_id,
+                        state,
+                        None,
+                        started_at,
+                        event.at_ms,
                     )?;
                 }
                 EventKind::RunFinished { outcome } => {
@@ -405,10 +377,14 @@ impl Run {
                     let Some((started_at, cmd)) = inflight_sh.remove(job_id.as_str()) else {
                         continue;
                     };
-                    db.execute(
-                        "INSERT INTO sh (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        rusqlite::params![&self.id, job_id, started_at, event.at_ms, exit_code, cmd],
+                    crate::db::runs::insert_sh_event(
+                        &db,
+                        &self.id,
+                        job_id,
+                        started_at,
+                        event.at_ms,
+                        *exit_code,
+                        cmd,
                     )?;
                 }
                 EventKind::JobStarted { .. }
@@ -433,10 +409,7 @@ impl Run {
             )
         })?;
         let db = crate::db::open(&self.db_path)?;
-        db.execute(
-            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir_str, traceparent, &self.id],
-        )?;
+        crate::db::runs::set_run_bootstrap_data(&db, &self.id, git_dir_str, traceparent)?;
         Ok(())
     }
 
@@ -447,10 +420,7 @@ impl Run {
         }
         let now = Timestamp::now().as_millisecond();
         let db = crate::db::open(&self.db_path)?;
-        db.execute(
-            "UPDATE runs SET dispatched_at = COALESCE(dispatched_at, ?1) WHERE id = ?2",
-            rusqlite::params![now, &self.id],
-        )?;
+        crate::db::runs::set_run_dispatched(&db, &self.id, now)?;
         self.dispatched = true;
         Ok(())
     }
@@ -462,14 +432,7 @@ impl Run {
         }
         let now = Timestamp::now().as_millisecond();
         let db = crate::db::open(&self.db_path)?;
-        db.execute(
-            "UPDATE runs SET \
-                dispatched_at = COALESCE(dispatched_at, ?1), \
-                resolved_at = COALESCE(resolved_at, ?2), \
-                outcome = COALESCE(outcome, ?3) \
-             WHERE id = ?4",
-            rusqlite::params![now, now, outcome, &self.id],
-        )?;
+        crate::db::runs::resolve_run(&db, &self.id, now, outcome)?;
         self.dispatched = true;
         self.resolved = true;
         Ok(())
@@ -478,16 +441,7 @@ impl Run {
     /// Read the immutable metadata for this run.
     pub fn read_meta(&self) -> Result<RunMeta> {
         let db = crate::db::open(&self.db_path)?;
-        let (sha, ref_name, pushed_at_ms) = db.query_row(
-            "SELECT sha, ref_name, pushed_at_ms FROM runs WHERE id = ?1",
-            rusqlite::params![&self.id],
-            |row| {
-                let sha: String = row.get(0)?;
-                let ref_name: String = row.get(1)?;
-                let pushed_at_ms: i64 = row.get(2)?;
-                Ok((sha, ref_name, pushed_at_ms))
-            },
-        )?;
+        let (sha, ref_name, pushed_at_ms) = crate::db::runs::get_run_meta(&db, &self.id)?;
         Ok(RunMeta {
             sha,
             r#ref: ref_name,
@@ -499,34 +453,21 @@ impl Run {
     /// Read the `dispatched_at` timestamp for this run, if set.
     pub fn read_dispatched_at(&self) -> Result<Option<Timestamp>> {
         let db = crate::db::open(&self.db_path)?;
-        let ms: Option<i64> = db.query_row(
-            "SELECT dispatched_at FROM runs WHERE id = ?1",
-            rusqlite::params![&self.id],
-            |row| row.get(0),
-        )?;
+        let ms = crate::db::runs::get_run_dispatched_at(&db, &self.id)?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
     /// Read the `resolved_at` timestamp for this run, if set.
     pub fn read_resolved_at(&self) -> Result<Option<Timestamp>> {
         let db = crate::db::open(&self.db_path)?;
-        let ms: Option<i64> = db.query_row(
-            "SELECT resolved_at FROM runs WHERE id = ?1",
-            rusqlite::params![&self.id],
-            |row| row.get(0),
-        )?;
+        let ms = crate::db::runs::get_run_resolved_at(&db, &self.id)?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
     /// Read the `outcome` string for this run, if set.
     pub fn read_outcome(&self) -> Result<Option<String>> {
         let db = crate::db::open(&self.db_path)?;
-        let outcome: Option<String> = db.query_row(
-            "SELECT outcome FROM runs WHERE id = ?1",
-            rusqlite::params![&self.id],
-            |row| row.get(0),
-        )?;
-        Ok(outcome)
+        Ok(crate::db::runs::get_run_outcome(&db, &self.id)?)
     }
 }
 

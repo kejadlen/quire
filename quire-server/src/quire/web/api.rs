@@ -7,8 +7,6 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
-
 use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -67,16 +65,6 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
-impl From<serde_rusqlite::Error> for ApiError {
-    fn from(e: serde_rusqlite::Error) -> Self {
-        ApiError::Db(rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        ))
-    }
-}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
@@ -115,12 +103,7 @@ async fn verify_run_token(
 
     let run_id = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
         let db = quire.db_pool();
-        let result: rusqlite::Result<String> = db.query_row(
-            "SELECT id FROM runs WHERE run_token = ?1",
-            rusqlite::params![token],
-            |row| row.get(0),
-        );
-        match result {
+        match crate::db::runs::get_run_id_for_token(&db, &token) {
             Ok(id) => Ok(id),
             Err(rusqlite::Error::QueryReturnedNoRows) => Err(ApiError::Unauthorized),
             Err(e) => Err(ApiError::Db(e)),
@@ -150,25 +133,8 @@ async fn get_bootstrap(
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
             let db = crate::db::open(&quire.db_path())?;
 
-            #[derive(Deserialize)]
-            struct RunRow {
-                sha: String,
-                ref_name: String,
-                pushed_at_ms: i64,
-                git_dir: Option<String>,
-                traceparent: Option<String>,
-                dispatched_at: Option<i64>,
-                repo: String,
-            }
-
-            let row: RunRow = db
-                .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, dispatched_at, repo
-                     FROM runs WHERE id = ?1",
-                )?
-                .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
-                .next()
-                .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
+            let row = crate::db::runs::get_run_bootstrap_data(&db, &run_id)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
 
             if row.dispatched_at.is_some() {
                 return Err(ApiError::Gone);
@@ -183,11 +149,8 @@ async fn get_bootstrap(
                     .expect("db stores valid timestamps"),
             };
 
-            let dispatched_at_ms = jiff::Timestamp::now().as_millisecond();
-            db.execute(
-                "UPDATE runs SET dispatched_at = ?1 WHERE id = ?2",
-                rusqlite::params![dispatched_at_ms, run_id],
-            )?;
+            let now_ms = jiff::Timestamp::now().as_millisecond();
+            crate::db::runs::set_run_dispatched(&db, &run_id, now_ms)?;
 
             Ok(Bootstrap {
                 meta,
@@ -305,11 +268,8 @@ mod tests {
         let run_id = run.id().to_string();
 
         let db = crate::db::open(&env.quire.db_path()).expect("db open");
-        db.execute(
-            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir, traceparent, &run_id],
-        )
-        .expect("update bootstrap data");
+        crate::db::runs::set_run_bootstrap_data(&db, &run_id, git_dir, traceparent)
+            .expect("update bootstrap data");
         run_id
     }
 

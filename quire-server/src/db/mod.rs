@@ -2,6 +2,10 @@
 //!
 //! [`open`] creates a connection with WAL mode and foreign keys enabled.
 //! [`migrate`] runs pending migrations — call once at server startup.
+//!
+//! All SQL queries are in the [`runs`] submodule.
+
+pub mod runs;
 
 use std::path::Path;
 
@@ -12,16 +16,16 @@ use rusqlite_migration::{M, Migrations};
 /// a migration that has already shipped.
 static MIGRATIONS: std::sync::LazyLock<Migrations<'static>> = std::sync::LazyLock::new(|| {
     Migrations::new(vec![
-        M::up(include_str!("../migrations/0001_initial.sql")),
-        M::up(include_str!("../migrations/0002_sh_events.sql")),
-        M::up(include_str!("../migrations/0003_ci_api.sql")),
-        M::up(include_str!("../migrations/0004_bootstrap_api.sql")),
-        M::up(include_str!("../migrations/0005_rename_run_token.sql")),
-        M::up(include_str!("../migrations/0006_traceparent.sql")),
-        M::up(include_str!("../migrations/0007_schema_cleanup.sql")),
-        M::up(include_str!("../migrations/0008_rename_sh.sql")),
-        M::up(include_str!("../migrations/0009_rename_ci_vocab.sql")),
-        M::up(include_str!("../migrations/0010_outcome_schema.sql")),
+        M::up(include_str!("../../migrations/0001_initial.sql")),
+        M::up(include_str!("../../migrations/0002_sh_events.sql")),
+        M::up(include_str!("../../migrations/0003_ci_api.sql")),
+        M::up(include_str!("../../migrations/0004_bootstrap_api.sql")),
+        M::up(include_str!("../../migrations/0005_rename_run_token.sql")),
+        M::up(include_str!("../../migrations/0006_traceparent.sql")),
+        M::up(include_str!("../../migrations/0007_schema_cleanup.sql")),
+        M::up(include_str!("../../migrations/0008_rename_sh.sql")),
+        M::up(include_str!("../../migrations/0009_rename_ci_vocab.sql")),
+        M::up(include_str!("../../migrations/0010_outcome_schema.sql")),
     ])
 });
 

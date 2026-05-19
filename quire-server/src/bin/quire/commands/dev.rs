@@ -1,10 +1,10 @@
 //! Dev utilities: seed data for local development.
 
 use miette::{Context, IntoDiagnostic, Result};
-use rusqlite::params;
 use uuid::Uuid;
 
 use quire::Quire;
+use quire::db::runs::SeededRun;
 
 /// Seed a tempdir with realistic CI run data and return a `Quire` pointing at it.
 ///
@@ -107,10 +107,7 @@ impl Seeder {
             self.insert_run(run)?;
         }
 
-        let run_count: i64 = self
-            .db
-            .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
-            .into_diagnostic()?;
+        let run_count = quire::db::runs::count_runs(&self.db).into_diagnostic()?;
 
         tracing::info!(%run_count, "seeded database");
         Ok(self.quire)
@@ -125,24 +122,21 @@ impl Seeder {
         let dispatched_at = run.dispatched_delta_ms.map(|d| pushed_at + d);
         let resolved_at = dispatched_at.zip(run.duration_ms).map(|(s, d)| s + d);
 
-        self.db
-            .execute(
-                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
-                               created_at, dispatched_at, resolved_at, outcome)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    run_id,
-                    repo,
-                    run.ref_name,
-                    run.sha,
-                    pushed_at,
-                    pushed_at, // created_at = pushed_at_ms
-                    dispatched_at,
-                    resolved_at,
-                    run.outcome,
-                ],
-            )
-            .into_diagnostic()?;
+        quire::db::runs::insert_seeded_run(
+            &self.db,
+            &SeededRun {
+                id: &run_id,
+                repo,
+                ref_name: run.ref_name,
+                sha: run.sha,
+                pushed_at_ms: pushed_at,
+                created_at: pushed_at,
+                dispatched_at,
+                resolved_at,
+                outcome: run.outcome,
+            },
+        )
+        .into_diagnostic()?;
 
         let Some(run_dispatched_at) = dispatched_at else {
             return Ok(()); // queued run; no jobs to insert.
@@ -159,38 +153,30 @@ impl Seeder {
             let job_started_at = run_dispatched_at + job.started_delta_ms;
             let job_finished_at = job.duration_ms.map(|d| job_started_at + d);
 
-            self.db
-                .execute(
-                    "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        run_id,
-                        job.job_id,
-                        job.state,
-                        job.exit_code,
-                        job_started_at,
-                        job_finished_at,
-                    ],
-                )
-                .into_diagnostic()?;
+            quire::db::runs::insert_job(
+                &self.db,
+                &run_id,
+                job.job_id,
+                job.state,
+                job.exit_code,
+                job_started_at,
+                job_finished_at.unwrap_or(0),
+            )
+            .into_diagnostic()?;
 
             for (idx, event) in job.events.iter().enumerate() {
                 let started_at = job_started_at + event.started_delta_ms;
                 let finished_at = started_at + event.duration_ms;
-                self.db
-                    .execute(
-                        "INSERT INTO sh (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![
-                            run_id,
-                            job.job_id,
-                            started_at,
-                            finished_at,
-                            event.exit_code,
-                            event.cmd,
-                        ],
-                    )
-                    .into_diagnostic()?;
+                quire::db::runs::insert_sh_event(
+                    &self.db,
+                    &run_id,
+                    job.job_id,
+                    started_at,
+                    finished_at,
+                    event.exit_code,
+                    event.cmd,
+                )
+                .into_diagnostic()?;
 
                 if let Some(content) = event.log {
                     let dir = logs_base.join("jobs").join(job.job_id);
