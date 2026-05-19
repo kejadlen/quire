@@ -5,8 +5,8 @@
 //! metadata and session credentials the runtime needs at execute time.
 
 use jiff::Timestamp;
-use rand::distr::Alphanumeric;
 use rand::Rng as _;
+use rand::distr::Alphanumeric;
 
 /// Immutable metadata for a CI run. Passed to `Runs::create` at
 /// enqueue time; the fields are written to the `runs` row once.

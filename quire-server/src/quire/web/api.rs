@@ -322,12 +322,7 @@ mod tests {
         let session = ApiSession::new(3000);
         create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
 
-        let resp = get(
-            env.app(),
-            "/run/bootstrap",
-            Some(&session.run_token),
-        )
-        .await;
+        let resp = get(env.app(), "/run/bootstrap", Some(&session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         use http_body_util::BodyExt;
@@ -375,12 +370,7 @@ mod tests {
             .create(&TestEnv::meta(), Some(&session))
             .expect("create");
 
-        let resp = get(
-            env.app(),
-            "/run/secrets/my_token",
-            Some(&session.run_token),
-        )
-        .await;
+        let resp = get(env.app(), "/run/secrets/my_token", Some(&session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         use http_body_util::BodyExt;

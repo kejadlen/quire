@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::error::{Error, Result};
 use jiff::Timestamp;
 use quire_core::ci::run::ApiSession;
-use super::error::{Error, Result};
 
 pub use quire_core::ci::run::RunMeta;
 
@@ -826,10 +826,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("row");
-        assert_eq!(
-            stored.as_deref(),
-            Some(session.run_token.as_str())
-        );
+        assert_eq!(stored.as_deref(), Some(session.run_token.as_str()));
     }
 
     #[test]
@@ -838,7 +835,10 @@ mod tests {
         assert_eq!(session.server_url, "http://127.0.0.1:3000");
         assert_eq!(session.run_token.len(), 32);
         assert!(
-            session.run_token.chars().all(|c: char| c.is_ascii_alphanumeric()),
+            session
+                .run_token
+                .chars()
+                .all(|c: char| c.is_ascii_alphanumeric()),
             "token should be alphanumeric, got {:?}",
             session.run_token
         );

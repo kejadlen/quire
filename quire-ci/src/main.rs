@@ -12,9 +12,9 @@ use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
+use quire_core::ci::run::ApiSession;
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
-use quire_core::ci::run::ApiSession;
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
@@ -411,7 +411,10 @@ fn git_rev_parse(git_dir: &std::path::Path, rev: &str) -> Result<String> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         bail!("git rev-parse {rev} failed: {stderr}");
     }
-    Ok(String::from_utf8(out.stdout).into_diagnostic()?.trim().to_string())
+    Ok(String::from_utf8(out.stdout)
+        .into_diagnostic()?
+        .trim()
+        .to_string())
 }
 
 fn git_symbolic_ref(git_dir: &std::path::Path) -> Result<String> {
@@ -425,7 +428,10 @@ fn git_symbolic_ref(git_dir: &std::path::Path) -> Result<String> {
     if !out.status.success() {
         bail!("HEAD is detached");
     }
-    Ok(String::from_utf8(out.stdout).into_diagnostic()?.trim().to_string())
+    Ok(String::from_utf8(out.stdout)
+        .into_diagnostic()?
+        .trim()
+        .to_string())
 }
 
 fn validate(workspace: PathBuf) -> Result<()> {

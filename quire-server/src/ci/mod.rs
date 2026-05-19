@@ -8,8 +8,8 @@ pub use error::{Error, Result};
 pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
-pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::run::ApiSession;
+pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{pipeline, registration, runtime};
 pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
@@ -500,7 +500,14 @@ exit 0
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(&ctx, pushed_at, &push_ref, &ApiSession::new(3000), None, None)
+            run_ref_inner(
+                &ctx,
+                pushed_at,
+                &push_ref,
+                &ApiSession::new(3000),
+                None,
+                None,
+            )
         });
 
         trigger_result.expect("trigger_ref should succeed with fake quire-ci");
@@ -548,7 +555,14 @@ exit 0
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(&ctx, pushed_at, &push_ref, &ApiSession::new(3000), None, None)
+            run_ref_inner(
+                &ctx,
+                pushed_at,
+                &push_ref,
+                &ApiSession::new(3000),
+                None,
+                None,
+            )
         });
 
         let err = trigger_result.expect_err("should fail when quire-ci exits nonzero");
@@ -585,8 +599,15 @@ exit 0
 
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
-        run_ref_inner(&ctx, pushed_at, &push_ref, &ApiSession::new(3000), None, None)
-            .expect("should succeed without ci.fnl");
+        run_ref_inner(
+            &ctx,
+            pushed_at,
+            &push_ref,
+            &ApiSession::new(3000),
+            None,
+            None,
+        )
+        .expect("should succeed without ci.fnl");
     }
 
     fn push_event(repo: &str, sha: &str) -> PushEvent {
