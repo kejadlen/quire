@@ -11,9 +11,7 @@ pub use quire_core::ci::pipeline::{
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::transport::ApiSession;
 pub use quire_core::ci::{pipeline, registration, runtime};
-pub use run::{
-    Executor, Run, RunState, Runs, materialize_workspace, new_session, reconcile_orphans,
-};
+pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.
 ///
@@ -181,7 +179,7 @@ fn run_ref(
     trace_id: sentry::protocol::TraceId,
     span_id: sentry::protocol::SpanId,
 ) {
-    let transport = new_session(ctx.port);
+    let session = ApiSession::new(ctx.port);
     let sentry_trace_id = ctx.sentry_dsn.as_ref().map(|_| trace_id.to_string());
     sentry::with_scope(
         |scope| {
@@ -200,7 +198,7 @@ fn run_ref(
                 &ctx.run,
                 pushed_at,
                 push_ref,
-                &transport,
+                &session,
                 sentry_trace_id.as_deref(),
                 ctx.sentry_dsn.as_deref(),
             ) {
@@ -220,7 +218,7 @@ fn run_ref_inner(
     ctx: &RunContext<'_>,
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
-    transport: &ApiSession,
+    session: &ApiSession,
     sentry_trace_id: Option<&str>,
     sentry_dsn: Option<&str>,
 ) -> error::Result<()> {
@@ -236,7 +234,7 @@ fn run_ref_inner(
         pushed_at,
     };
 
-    let run = ctx.repo.runs(ctx.db_path).create(&meta, Some(transport))?;
+    let run = ctx.repo.runs(ctx.db_path).create(&meta, Some(session))?;
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
@@ -256,7 +254,7 @@ fn run_ref_inner(
                 &workspace,
                 sentry_trace_id,
                 sentry_dsn,
-                Some(transport),
+                Some(session),
             )?;
         }
     }
@@ -502,7 +500,7 @@ exit 0
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(&ctx, pushed_at, &push_ref, &new_session(3000), None, None)
+            run_ref_inner(&ctx, pushed_at, &push_ref, &ApiSession::new(3000), None, None)
         });
 
         trigger_result.expect("trigger_ref should succeed with fake quire-ci");
@@ -550,7 +548,7 @@ exit 0
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(&ctx, pushed_at, &push_ref, &new_session(3000), None, None)
+            run_ref_inner(&ctx, pushed_at, &push_ref, &ApiSession::new(3000), None, None)
         });
 
         let err = trigger_result.expect_err("should fail when quire-ci exits nonzero");
@@ -587,7 +585,7 @@ exit 0
 
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
-        run_ref_inner(&ctx, pushed_at, &push_ref, &new_session(3000), None, None)
+        run_ref_inner(&ctx, pushed_at, &push_ref, &ApiSession::new(3000), None, None)
             .expect("should succeed without ci.fnl");
     }
 

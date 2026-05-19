@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use quire_core::ci::transport::ApiSession;
-use rand::{Rng, distr::Alphanumeric};
-
 use super::error::{Error, Result};
 
 pub use quire_core::ci::run::RunMeta;
@@ -27,15 +25,6 @@ pub use quire_core::ci::run::RunMeta;
 pub enum Executor {
     #[default]
     Process,
-}
-
-/// Mint a fresh session for a new orchestrator-dispatched run. Generates
-/// a CSPRNG bearer token, deriving the loopback server URL from `port`.
-pub fn new_session(port: u16) -> ApiSession {
-    ApiSession {
-        server_url: format!("http://127.0.0.1:{port}"),
-        run_token: mint_run_token(),
-    }
 }
 
 /// The state of a CI run.
@@ -107,16 +96,16 @@ impl Runs {
     /// Inserts a row into `runs` and creates the run directory for
     /// workspace materialization and log storage.
     ///
-    /// `transport` is `Some` for orchestrator-dispatched runs — the run's id
+    /// `session` is `Some` for orchestrator-dispatched runs — the run's id
     /// and bearer token come from the session and are persisted so quire-ci
     /// and the DB agree. Pass `None` for local runs; a fresh UUID is minted
     /// and no auth token is stored.
-    pub fn create(&self, meta: &RunMeta, transport: Option<&ApiSession>) -> Result<Run> {
-        let (id, run_token_str) = match transport {
+    pub fn create(&self, meta: &RunMeta, session: Option<&ApiSession>) -> Result<Run> {
+        let (id, run_token_str) = match session {
             None => (uuid::Uuid::now_v7().to_string(), None),
-            Some(t) => {
+            Some(s) => {
                 let id = uuid::Uuid::now_v7().to_string();
-                (id, Some(t.run_token.as_str()))
+                (id, Some(s.run_token.as_str()))
             }
         };
         let workspace_path = self.base_dir.join(&id).join("workspace");
@@ -297,15 +286,15 @@ impl Run {
         workspace: &Path,
         sentry_trace_id: Option<&str>,
         sentry_dsn: Option<&str>,
-        transport: Option<&ApiSession>,
+        session: Option<&ApiSession>,
     ) -> Result<()> {
-        // For API transport the GET /api/run/bootstrap endpoint owns the
+        // For API runs the GET /api/run/bootstrap endpoint owns the
         // pending → active transition (it sets started_at_ms when quire-ci
         // fetches the payload). Calling transition() here would set state =
         // 'active' in the DB before quire-ci connects, causing the endpoint
         // to return 410 Gone. Update local state only so the later
         // transition(Complete/Failed) call passes the state-machine check.
-        if transport.is_some() {
+        if session.is_some() {
             self.state = RunState::Active;
         } else {
             self.transition(RunState::Active, None)?;
@@ -335,14 +324,14 @@ impl Run {
             .arg("--events")
             .arg(&events_path);
 
-        match transport {
+        match session {
             None => {
                 cmd.arg("--local").arg("--git-dir").arg(git_dir);
             }
-            Some(t) => {
+            Some(s) => {
                 self.store_bootstrap_data(git_dir, sentry_trace_id)?;
-                cmd.env("QUIRE__SERVER_URL", &t.server_url);
-                cmd.env("QUIRE__RUN_TOKEN", &t.run_token);
+                cmd.env("QUIRE__SERVER_URL", &s.server_url);
+                cmd.env("QUIRE__RUN_TOKEN", &s.run_token);
             }
         }
         if let Some(dsn) = sentry_dsn {
@@ -658,19 +647,6 @@ pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Res
     Ok(())
 }
 
-/// Mint a 32-character alphanumeric bearer token from the OS CSPRNG.
-///
-/// ~190 bits of entropy, opaque to the holder. Used as the per-run
-/// auth secret for the API transport; stored in the `runs.run_token`
-/// column and passed to quire-ci via `QUIRE__RUN_TOKEN`.
-fn mint_run_token() -> String {
-    rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,7 +668,7 @@ mod tests {
     }
 
     fn test_session() -> ApiSession {
-        new_session(3000)
+        ApiSession::new(3000)
     }
 
     fn test_meta() -> RunMeta {
@@ -836,10 +812,10 @@ mod tests {
     fn create_persists_minted_run_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let transport = new_session(3000);
-        let run = runs.create(&test_meta(), Some(&transport)).expect("create");
+        let session = ApiSession::new(3000);
+        let run = runs.create(&test_meta(), Some(&session)).expect("create");
 
-        // Run ID is minted by the server, not taken from the transport.
+        // Run ID is minted by the server, not taken from the session.
         assert!(uuid::Uuid::parse_str(run.id()).is_ok());
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
@@ -852,13 +828,13 @@ mod tests {
             .expect("row");
         assert_eq!(
             stored.as_deref(),
-            Some(transport.run_token.as_str())
+            Some(session.run_token.as_str())
         );
     }
 
     #[test]
     fn new_session_mints_alphanumeric_token() {
-        let session = new_session(3000);
+        let session = ApiSession::new(3000);
         assert_eq!(session.server_url, "http://127.0.0.1:3000");
         assert_eq!(session.run_token.len(), 32);
         assert!(
@@ -869,9 +845,9 @@ mod tests {
     }
 
     #[test]
-    fn mint_run_token_returns_unique_values() {
-        let a = mint_run_token();
-        let b = mint_run_token();
+    fn new_session_tokens_are_unique() {
+        let a = ApiSession::new(3000).run_token;
+        let b = ApiSession::new(3000).run_token;
         assert_ne!(a, b, "two mints should not collide");
     }
 

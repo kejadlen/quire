@@ -10,6 +10,7 @@ jiff = { workspace = true }
 miette = { workspace = true }
 mlua = { workspace = true }
 petgraph = { workspace = true }
+rand = "*"
 regex = { workspace = true }
 sentry = { workspace = true }
 sentry-tracing = { workspace = true }
