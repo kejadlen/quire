@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
-use quire_core::ci::session::ApiSession;
+use quire_core::ci::run::ApiSession;
 use super::error::{Error, Result};
 
 pub use quire_core::ci::run::RunMeta;
