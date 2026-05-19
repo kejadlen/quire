@@ -335,26 +335,30 @@ mod tests {
             db.execute(
                 "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'pending', ?2)",
                 rusqlite::params![id, queued],
-            ).expect("insert pending transition");
+            )
+            .expect("insert pending transition");
             // active transition
             if let Some(s) = started {
                 db.execute(
                     "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'active', ?2)",
                     rusqlite::params![id, s],
-                ).expect("insert active transition");
+                )
+                .expect("insert active transition");
             }
             // terminal transition
             if let Some(f) = finished {
                 db.execute(
                     "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
                     rusqlite::params![id, state, f],
-                ).expect("insert terminal transition");
+                )
+                .expect("insert terminal transition");
             } else if state != "pending" && state != "active" {
                 // state is terminal but no finished timestamp provided — use queued
                 db.execute(
                     "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)",
                     rusqlite::params![id, state, queued],
-                ).expect("insert terminal transition (no timestamp)");
+                )
+                .expect("insert terminal transition (no timestamp)");
             }
         }
 

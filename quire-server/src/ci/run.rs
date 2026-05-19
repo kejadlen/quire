@@ -606,11 +606,13 @@ impl Run {
     /// Read the `started_at` timestamp for this run, if set.
     pub fn read_started_at(&self) -> Result<Option<Timestamp>> {
         let db = crate::db::open(&self.db_path)?;
-        let ms: Option<i64> = db.query_row(
-            "SELECT at_ms FROM run_transitions WHERE run_id = ?1 AND state = 'active' LIMIT 1",
-            rusqlite::params![&self.id],
-            |row| row.get(0),
-        ).optional()?;
+        let ms: Option<i64> = db
+            .query_row(
+                "SELECT at_ms FROM run_transitions WHERE run_id = ?1 AND state = 'active' LIMIT 1",
+                rusqlite::params![&self.id],
+                |row| row.get(0),
+            )
+            .optional()?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
