@@ -1,8 +1,8 @@
-//! Shared transport types for CI ↔ server communication.
+//! API session credentials for CI ↔ server communication.
 //!
-//! The on-the-wire pairing both sides agree on. The orchestrator
-//! constructs an `ApiSession` per run (minting the auth token);
-//! quire-ci reconstructs it from the `QUIRE__*` environment variables.
+//! The orchestrator constructs an `ApiSession` per run (minting the
+//! auth token); quire-ci reconstructs it from the `QUIRE__*` environment
+//! variables.
 
 use rand::distr::Alphanumeric;
 use rand::Rng as _;

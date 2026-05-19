@@ -9,7 +9,7 @@ pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
 pub use quire_core::ci::run::RunMeta;
-pub use quire_core::ci::transport::ApiSession;
+pub use quire_core::ci::session::ApiSession;
 pub use quire_core::ci::{pipeline, registration, runtime};
 pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
