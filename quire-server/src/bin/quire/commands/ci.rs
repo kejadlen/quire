@@ -85,7 +85,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let workspace = tmp.path().join("workspace");
     quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
         .into_diagnostic()?;
-    let exec_result = run.execute(&repo_path.join(".git"), &workspace, &meta, None, None, None);
+    let exec_result = run.execute(&repo_path.join(".git"), &workspace, None, None, None);
 
     // Print the combined quire-ci log regardless of outcome.
     let log_path = tmp.path().join(&run_id).join("quire-ci.log");

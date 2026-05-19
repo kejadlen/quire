@@ -254,7 +254,6 @@ fn run_ref_inner(
             run.execute(
                 &ctx.repo.path(),
                 &workspace,
-                &meta,
                 sentry_trace_id,
                 sentry_dsn,
                 Some(transport),
