@@ -156,11 +156,12 @@ async fn get_bootstrap(
                 git_dir: Option<String>,
                 sentry_trace_id: Option<String>,
                 state: String,
+                repo: String,
             }
 
             let row: RunRow = db
                 .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state
+                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state, repo
                      FROM runs WHERE id = ?1",
                 )?
                 .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
@@ -189,6 +190,8 @@ async fn get_bootstrap(
             Ok(Bootstrap {
                 meta,
                 git_dir,
+                repo: row.repo,
+                run_id,
                 sentry_trace_id: row.sentry_trace_id,
             })
         })
@@ -320,7 +323,7 @@ mod tests {
     async fn bootstrap_returns_payload_on_first_fetch() {
         let env = TestEnv::new();
         let session = ApiSession::new(3000);
-        create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
+        let run_id = create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
 
         let resp = get(env.app(), "/run/bootstrap", Some(&session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -329,6 +332,8 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(parsed["git_dir"], "/repos/test.git");
+        assert_eq!(parsed["repo"], "test.git");
+        assert_eq!(parsed["run_id"], run_id);
     }
 
     #[tokio::test]

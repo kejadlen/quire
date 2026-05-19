@@ -238,11 +238,19 @@ impl RunClient {
     ///
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
-    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, Option<String>)> {
+    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, SentryContext)> {
         let bootstrap: Bootstrap =
             (|| -> reqwest::Result<_> { self.get("bootstrap")?.error_for_status()?.json() })()
                 .into_diagnostic()?;
-        Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
+        Ok((
+            bootstrap.git_dir,
+            bootstrap.meta,
+            SentryContext {
+                trace_id: bootstrap.sentry_trace_id,
+                repo: Some(bootstrap.repo),
+                run_id: Some(bootstrap.run_id),
+            },
+        ))
     }
 
     /// Fetch a single secret by name from the server.
@@ -321,7 +329,7 @@ fn main() -> Result<()> {
             };
             let client = RunClient::new(session.clone());
 
-            let (git_dir, meta, sentry_trace_id) = if local {
+            let (git_dir, meta, sentry_ctx) = if local {
                 let Some(git_dir) = git_dir else {
                     bail!("--git-dir is required for local runs");
                 };
@@ -332,7 +340,7 @@ fn main() -> Result<()> {
                     r#ref: git_ref,
                     pushed_at: jiff::Timestamp::now(),
                 };
-                (git_dir, meta, None)
+                (git_dir, meta, SentryContext::default())
             } else {
                 client.fetch_bootstrap()?
             };
@@ -343,7 +351,7 @@ fn main() -> Result<()> {
                 .quire
                 .sentry_dsn
                 .as_deref()
-                .map(|dsn| init_sentry(dsn, sentry_trace_id.as_deref(), &meta));
+                .map(|dsn| init_sentry(dsn, &meta, &sentry_ctx));
 
             // No type registrations: quire-ci's user-level errors
             // (CompileError, JobError, FennelError) are no longer logged
@@ -360,18 +368,37 @@ fn main() -> Result<()> {
     }
 }
 
+/// Sentry-only run context from the bootstrap handoff. Every field is
+/// present together (orchestrator-dispatched with a DSN configured) or
+/// absent together (local run, which has no orchestrator). Kept apart
+/// from [`RunMeta`]: `meta` carries push facts the pipeline needs,
+/// these tag observability only.
+#[derive(Default)]
+struct SentryContext {
+    trace_id: Option<String>,
+    repo: Option<String>,
+    run_id: Option<String>,
+}
+
 /// Initialize Sentry. Tags the scope with `service=quire-ci` plus the
 /// run's sha and ref so events from this binary are distinguishable
-/// from quire-server's in the same project. When a trace id is also
-/// available (from the bootstrap handoff), attaches it so both sides'
-/// events group on the same trace.
-fn init_sentry(dsn: &str, trace_id: Option<&str>, meta: &RunMeta) -> sentry::ClientInitGuard {
+/// from quire-server's in the same project. `repo`, `run_id`, and the
+/// trace context come from the bootstrap handoff and are attached only
+/// when present (absent for local runs); the trace id links both
+/// sides' events onto the same trace.
+fn init_sentry(dsn: &str, meta: &RunMeta, ctx: &SentryContext) -> sentry::ClientInitGuard {
     let guard = sentry::init((dsn, telemetry::sentry_client_options(VERSION)));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");
         scope.set_tag("sha", &meta.sha);
         scope.set_tag("ref", &meta.r#ref);
-        if let Some(tid) = trace_id {
+        if let Some(repo) = &ctx.repo {
+            scope.set_tag("repo", repo);
+        }
+        if let Some(run_id) = &ctx.run_id {
+            scope.set_tag("run_id", run_id);
+        }
+        if let Some(tid) = ctx.trace_id.as_deref() {
             match tid.parse::<sentry::protocol::TraceId>() {
                 Ok(trace_id) => {
                     scope.set_context(

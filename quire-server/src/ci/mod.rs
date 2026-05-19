@@ -183,6 +183,7 @@ fn run_ref(
     let sentry_trace_id = ctx.sentry_dsn.as_ref().map(|_| trace_id.to_string());
     sentry::with_scope(
         |scope| {
+            scope.set_tag("repo", ctx.event_repo);
             scope.set_context(
                 "trace",
                 sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
@@ -235,6 +236,11 @@ fn run_ref_inner(
     };
 
     let run = ctx.repo.runs(ctx.db_path).create(&meta, Some(session))?;
+
+    // The run id only exists post-create, after run_ref already opened
+    // the scope; mutate that scope so the tag also covers the "CI
+    // trigger failed" event run_ref emits if this fn returns Err.
+    sentry::configure_scope(|scope| scope.set_tag("run_id", run.id()));
 
     tracing::info!(
         run_id = %run.id(), // cov-excl-line

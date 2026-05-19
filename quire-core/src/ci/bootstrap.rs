@@ -22,6 +22,12 @@ use crate::ci::run::RunMeta;
 pub struct Bootstrap {
     pub meta: RunMeta,
     pub git_dir: PathBuf,
+    /// The repo this run is scoped to (matches the `runs.repo`
+    /// column). quire-ci tags Sentry events with it.
+    pub repo: String,
+    /// The server-assigned run id (UUIDv7, the `runs.id` PK).
+    /// quire-ci tags Sentry events with it.
+    pub run_id: String,
     /// Sentry trace id for the orchestrator's span, present only when
     /// the global config sets a DSN. Allows quire-ci to attach its
     /// events to the same trace. The DSN itself travels via the
