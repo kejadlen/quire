@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
-use miette::{IntoDiagnostic, Result, bail};
+use miette::{IntoDiagnostic, Result};
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
@@ -106,11 +106,20 @@ enum Commands {
         #[facet(args::named, default)]
         out_dir: Option<PathBuf>,
 
-        /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Required for local runs (no `QUIRE__SERVER_URL`); omitted for
-        /// server-dispatched runs, which fetch bootstrap via the API.
+        /// Path to the bare git repo for this run. Required for local
+        /// runs (no `QUIRE__SERVER_URL`); server-dispatched runs
+        /// receive this via the bootstrap API instead.
         #[facet(args::named, default)]
-        bootstrap: Option<PathBuf>,
+        git_dir: Option<PathBuf>,
+
+        /// Commit SHA for this run. Required for local runs.
+        #[facet(args::named, default)]
+        sha: Option<String>,
+
+        /// Git ref for this run (e.g. `refs/heads/main`). Required for
+        /// local runs.
+        #[facet(args::named, default)]
+        git_ref: Option<String>,
     },
 }
 
@@ -275,7 +284,9 @@ fn main() -> Result<()> {
         Commands::Run {
             events,
             out_dir,
-            bootstrap,
+            git_dir,
+            sha,
+            git_ref,
         } => {
             let sink: Box<dyn EventSink> = match events.parse::<EventsTarget>().unwrap() {
                 EventsTarget::Null => Box::new(NullSink),
@@ -315,10 +326,17 @@ fn main() -> Result<()> {
             let client = RunClient::new(session.clone());
 
             let (git_dir, meta, sentry_trace_id) = if session.server_url.is_empty() {
-                let Some(path) = bootstrap else {
-                    bail!("--bootstrap is required for local runs (no QUIRE__SERVER_URL set)");
+                let git_dir = git_dir
+                    .ok_or_else(|| miette::miette!("--git-dir is required for local runs"))?;
+                let sha = sha.ok_or_else(|| miette::miette!("--sha is required for local runs"))?;
+                let git_ref = git_ref
+                    .ok_or_else(|| miette::miette!("--git-ref is required for local runs"))?;
+                let meta = RunMeta {
+                    sha,
+                    r#ref: git_ref,
+                    pushed_at: jiff::Timestamp::now(),
                 };
-                load_bootstrap(&path)?
+                (git_dir, meta, None)
             } else {
                 client.fetch_bootstrap()?
             };
@@ -405,27 +423,6 @@ fn validate(workspace: PathBuf) -> Result<()> {
 
     println!("\nAll validations passed.");
     Ok(())
-}
-
-/// Read and parse the bootstrap file the orchestrator wrote before
-/// spawning.
-///
-/// Unlinks the file as soon as the bytes are in memory — getting it off
-/// disk early limits the blast radius of a later panic or crash leaving
-/// a 0600 file behind.
-fn load_bootstrap(path: &std::path::Path) -> Result<(PathBuf, RunMeta, Option<String>)> {
-    let bytes = fs_err::read(path).into_diagnostic()?;
-    if let Err(e) = fs_err::remove_file(path) {
-        // Don't abort — the bytes are already loaded and the server
-        // will best-effort unlink after we exit. But this is a
-        // security-relevant cleanup, so it's worth surfacing.
-        eprintln!(
-            "warning: failed to remove bootstrap file {}: {e}",
-            path.display()
-        );
-    }
-    let bootstrap: Bootstrap = serde_json::from_slice(&bytes).into_diagnostic()?;
-    Ok((bootstrap.git_dir, bootstrap.meta, bootstrap.sentry_trace_id))
 }
 
 fn run_pipeline(
@@ -615,30 +612,5 @@ mod tests {
             panic!("expected File target");
         };
         assert_eq!(path, PathBuf::from("/tmp/run.jsonl"));
-    }
-
-    #[test]
-    fn load_bootstrap_unlinks_after_read() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("bootstrap.json");
-        let bootstrap = Bootstrap {
-            meta: RunMeta {
-                sha: "0".repeat(40),
-                r#ref: "HEAD".to_string(),
-                pushed_at: jiff::Timestamp::now(),
-            },
-            git_dir: PathBuf::from("/tmp/repo.git"),
-            sentry_trace_id: None,
-        };
-        fs_err::write(&path, serde_json::to_vec(&bootstrap).unwrap()).expect("write");
-
-        let (git_dir, meta, sentry_trace_id) = load_bootstrap(&path).expect("load");
-        assert!(
-            !path.exists(),
-            "bootstrap file should be removed after read"
-        );
-        assert_eq!(git_dir, PathBuf::from("/tmp/repo.git"));
-        assert_eq!(meta.r#ref, "HEAD");
-        assert!(sentry_trace_id.is_none());
     }
 }

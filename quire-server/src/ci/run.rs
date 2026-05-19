@@ -318,7 +318,6 @@ impl Run {
         let run_dir = self.path();
         let log_path = run_dir.join("quire-ci.log");
         let events_path = run_dir.join("events.jsonl");
-        let bootstrap_path = run_dir.join("bootstrap.json");
         // fs_err for the path-bearing IO error; unwrap to std::fs::File so
         // it's convertible into Stdio.
         let log = fs_err::File::create(&log_path)?.into_parts().0;
@@ -342,8 +341,12 @@ impl Run {
 
         match transport {
             None => {
-                write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
-                cmd.arg("--bootstrap").arg(&bootstrap_path);
+                cmd.arg("--git-dir")
+                    .arg(git_dir)
+                    .arg("--sha")
+                    .arg(&meta.sha)
+                    .arg("--git-ref")
+                    .arg(&meta.r#ref);
             }
             Some(t) => {
                 self.store_bootstrap_data(git_dir, sentry_trace_id)?;
@@ -364,21 +367,6 @@ impl Run {
                 cwd: workspace.to_path_buf(),
                 source,
             })?;
-
-        // For local runs (None transport), quire-ci unlinks the bootstrap
-        // file after reading it. This is a best-effort safety net for
-        // paths where it didn't get that far. `NotFound` is expected.
-        if transport.is_none()
-            && let Err(e) = fs_err::remove_file(&bootstrap_path)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(
-                run_id = %self.id,
-                path = %bootstrap_path.display(),
-                error = %e,
-                "failed to remove bootstrap file after run"
-            );
-        }
 
         // Ingest events before checking outcome — partial results from a
         // crashed run are still useful in the UI. A parse failure is
@@ -641,37 +629,6 @@ impl Run {
     }
 }
 
-/// Serialize the bootstrap payload as JSON and write it to `path` with
-/// owner-only permissions on Unix.
-fn write_bootstrap(
-    path: &Path,
-    git_dir: &Path,
-    meta: &RunMeta,
-    sentry_trace_id: Option<&str>,
-) -> Result<()> {
-    use quire_core::ci::bootstrap::Bootstrap;
-
-    let bootstrap = Bootstrap {
-        meta: meta.clone(),
-        git_dir: git_dir.to_path_buf(),
-        sentry_trace_id: sentry_trace_id.map(Into::into),
-    };
-    let json = serde_json::to_vec_pretty(&bootstrap).map_err(std::io::Error::other)?;
-
-    // Open with mode 0600 from the start so there's no window where
-    // the file is world-readable.
-    use fs_err::os::unix::fs::OpenOptionsExt;
-    use std::io::Write;
-    let mut file = fs_err::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(&json)?;
-    Ok(())
-}
-
 /// Take the final path component of a runs base (`runs/<repo>/`) and
 /// sanitize it for use as the tag segment in `quire-ci/<segment>:<id>`.
 /// Materialize a working tree at `sha` into `workspace` via
@@ -856,24 +813,6 @@ mod tests {
         assert!(
             matches!(err, Error::WorkspaceMaterializationFailed { .. }),
             "expected WorkspaceMaterializationFailed, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn write_bootstrap_records_git_dir_for_quire_ci() {
-        use quire_core::ci::bootstrap::Bootstrap;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let bootstrap_path = dir.path().join("bootstrap.json");
-        let git_dir = dir.path().join("repos").join("test.git");
-
-        write_bootstrap(&bootstrap_path, &git_dir, &test_meta(), None).expect("write_bootstrap");
-
-        let bytes = fs_err::read(&bootstrap_path).expect("read bootstrap");
-        let bootstrap: Bootstrap = serde_json::from_slice(&bytes).expect("parse bootstrap");
-        assert_eq!(
-            bootstrap.git_dir, git_dir,
-            "quire-ci needs the bare repo path to set GIT_DIR for the mirror job"
         );
     }
 
