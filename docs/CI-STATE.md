@@ -17,12 +17,13 @@ A run owns its jobs; jobs FK on `(run_id, job_id)` and cascade delete.
 stateDiagram-v2
     [*] --> pending : Runs::create
 
-    pending  --> active     : transition(Active, None)
+    pending  --> active     : GET /api/run/bootstrap (quire-ci fetches payload)
     pending  --> superseded : Runs::create (same repo/ref) — supersede_existing
     pending  --> failed     : reconcile_orphans\nfailure_kind='orphaned'
 
     active   --> complete   : transition(Complete, None)
-    active   --> failed     : transition(Failed, 'quire-ci-exit')
+    active   --> failed     : transition(Failed, 'pipeline-failure')
+    active   --> failed     : transition(Failed, 'process-crashed')
     active   --> superseded : Runs::create (same repo/ref) — docker kill + supersede_existing
     active   --> failed     : reconcile_orphans\nfailure_kind='orphaned'
 
@@ -51,12 +52,13 @@ stateDiagram-v2
 
 | From → To | Where | When | `failure_kind` |
 | --- | --- | --- | --- |
-| `[*] → pending` | `Runs::create` (`quire-server/src/ci/run.rs:99`) | A push event arrives and a `runs` row is inserted. | — |
-| `pending → active` | `Run::transition`, called from `Run::execute_via_quire_ci` | The executor begins evaluating the pipeline. Stamps `started_at_ms`. | — |
-| `active → complete` | `Run::transition` | `quire-ci` subprocess exited 0. Stamps `finished_at_ms`, clears `container_id`. | — |
-| `active → failed` | `Run::execute_via_quire_ci` | `quire-ci` subprocess exited non-zero (compile error in `.quire/ci.fnl`, failing job, or panic). | `"quire-ci-exit"` |
-| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs:144`) via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Pending rows are flipped directly; active rows have their container killed (`docker kill`) first. | — |
-| `{pending, active} → failed` | `reconcile_orphans` (`run.rs:194`) via raw SQL, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
+| `[*] → pending` | `Runs::create` (`quire-server/src/ci/run.rs:103`) | A push event arrives and a `runs` row is inserted. | — |
+| `pending → active` | Bootstrap endpoint (`api.rs`), called when `quire-ci` fetches bootstrap data | `quire-ci` connects to the server and marks the run active. Stamps `started_at_ms`. | — |
+| `active → complete` | `Run::transition`, called from `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: Success }` was ingested. Stamps `finished_at_ms`, clears `container_id`. | — |
+| `active → failed` | `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: PipelineFailure }` was ingested — a job's run-fn returned an error. | `"pipeline-failure"` |
+| `active → failed` | `Run::execute` | `quire-ci` exited non-zero, or exited 0 but emitted no `RunFinished` event (process crash or panic). | `"process-crashed"` |
+| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs:155`) via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Pending rows are flipped directly; active rows have their container killed (`docker kill`) first. | — |
+| `{pending, active} → failed` | `reconcile_orphans` (`run.rs:205`) via raw SQL, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
 
 `Run::transition(to, failure_kind)`'s allowed-transition match:
 
@@ -65,7 +67,7 @@ stateDiagram-v2
 (Active,  Complete) | (Active,  Failed) | (Active,  Superseded)
 ```
 
-In practice only `(Pending, Active)`, `(Active, Complete)`, and `(Active, Failed)` are exercised — the supersede edges go through raw SQL (`supersede_existing`), not `transition`. The other edges are gated for defensive consistency, in case a future caller routes supersede through the typed API. Anything else — `Pending → Failed`, `Active → Pending`, or any transition out of a terminal state — returns `InvalidTransition`.
+In practice only `(Active, Complete)` and `(Active, Failed)` are exercised via `transition` — the `Pending → Active` edge is owned by the bootstrap endpoint (api.rs), and the supersede edges go through raw SQL (`supersede_existing`), not `transition`. The other edges are gated for defensive consistency, in case a future caller routes supersede through the typed API. Anything else — `Pending → Failed`, `Active → Pending`, or any transition out of a terminal state — returns `InvalidTransition`.
 
 `failure_kind` is recorded only when `to == Failed`; it's ignored for `Active`, `Complete`, and `Superseded`.
 
@@ -73,7 +75,7 @@ In practice only `(Pending, Active)`, `(Active, Complete)`, and `(Active, Failed
 
 The DB enforces shape per state via a `CHECK` constraint in `migrations/0001_initial.sql`:
 
-| State | started_at | finished_at | container_id |
+| State | `started_at_ms` | `finished_at_ms` | `container_id` |
 | --- | --- | --- | --- |
 | `pending` | NULL | NULL | NULL |
 | `active` | set | NULL | (any) |
@@ -81,7 +83,7 @@ The DB enforces shape per state via a `CHECK` constraint in `migrations/0001_ini
 | `failed` | (any) | set | NULL |
 | `superseded` | (any) | set | NULL |
 
-Plus monotonicity: `started_at >= queued_at`, `finished_at >= started_at`. `started_at_ms`, `finished_at_ms`, and `failure_kind` are stamped at most once each, via `COALESCE` in the `UPDATE`.
+Plus monotonicity: `started_at_ms >= queued_at_ms`, `finished_at_ms >= started_at_ms`. `started_at_ms`, `finished_at_ms`, and `failure_kind` are stamped at most once each, via `COALESCE` in the `UPDATE`.
 
 ### `failure_kind`
 
@@ -89,7 +91,8 @@ Nullable column populated by `Run::transition` when entering `Failed`, plus `rec
 
 | Value | Producer |
 | --- | --- |
-| `"quire-ci-exit"` | `Run::execute_via_quire_ci`: subprocess exited non-zero. Covers both compile errors in `ci.fnl` (caught inside `quire-ci`) and failing user jobs. |
+| `"pipeline-failure"` | `Run::execute`: `quire-ci` exited 0 and reported `RunFinished { outcome: PipelineFailure }` — a job's run-fn returned an error. Compile errors in `ci.fnl` also produce this outcome (quire-ci emits `RunFinished(PipelineFailure)` and exits 0). |
+| `"process-crashed"` | `Run::execute`: `quire-ci` exited non-zero, or exited 0 but never emitted a `RunFinished` event (panic or unexpected termination). |
 | `"orphaned"` | `reconcile_orphans` on startup. |
 
 Successful and superseded runs leave `failure_kind` NULL. The set is open — UI consumers should not assume it's exhaustive.
@@ -114,11 +117,11 @@ stateDiagram-v2
 
 ### Transitions in code
 
-There is only one writer of `jobs` rows: `Run::ingest_events` (`run.rs:354`). It reads `events.jsonl` after the `quire-ci` subprocess exits and, for each `JobStarted`/`JobFinished` pair, inserts **one row directly in the terminal state**. The intermediate `active` state is held in an in-memory `pending_jobs` map during ingest and never persisted.
+There is only one writer of `jobs` rows: `Run::ingest_events` (`run.rs:399`). It reads `events.jsonl` after the `quire-ci` subprocess exits and, for each `JobStarted`/`JobFinished` pair, inserts **one row directly in the terminal state**. The intermediate `active` state is held in an in-memory `pending_jobs` map during ingest and never persisted.
 
 | From → To | Where | When |
 | --- | --- | --- |
-| `[*] → complete` | `Run::ingest_events` (`run.rs:354`) | `JobFinished { outcome: complete }` paired with a buffered `JobStarted`. |
+| `[*] → complete` | `Run::ingest_events` (`run.rs:399`) | `JobFinished { outcome: complete }` paired with a buffered `JobStarted`. |
 | `[*] → failed` | `Run::ingest_events` | `JobFinished { outcome: failed }` paired with a buffered `JobStarted`. |
 
 Consequence: while `quire-ci` is running, **no `jobs` rows exist for this run**. They all materialize at ingest time. Live progress is visible via `events.jsonl` or per-`sh` log files on disk, not via SQL.
@@ -127,7 +130,7 @@ Consequence: while `quire-ci` is running, **no `jobs` rows exist for this run**.
 
 `migrations/0001_initial.sql` allows six job states (`pending`, `active`, `complete`, `failed`, `skipped`, `aborted`) with these shape rules:
 
-| State | started_at | finished_at |
+| State | `started_at_ms` | `finished_at_ms` |
 | --- | --- | --- |
 | `pending` | NULL | NULL |
 | `active` | set | NULL |
@@ -136,7 +139,7 @@ Consequence: while `quire-ci` is running, **no `jobs` rows exist for this run**.
 | `skipped` | NULL | set |
 | `aborted` | (any) | set |
 
-`skipped` carries `finished_at` but not `started_at` — the row exists to record "this job never ran" with a timestamp anchoring it to the run.
+`skipped` carries `finished_at_ms` but not `started_at_ms` — the row exists to record "this job never ran" with a timestamp anchoring it to the run.
 
 ### Stop-on-first-failure inside `quire-ci`
 
@@ -151,20 +154,23 @@ if let Err(e) = result {
 
 `JobStarted`/`JobFinished` are only emitted for jobs that actually ran. **Jobs downstream of the failure produce no events, so no `jobs` row at all** — not `skipped`, not anything. See Gaps below.
 
-## Event flow: QuireCi executor
+## Event flow: Process executor
 
-`Executor::QuireCi` is the only executor today. The orchestrator shells out to the `quire-ci` binary and ingests events afterward, rather than driving the runtime in-process:
+`Executor::Process` is the only executor today. The orchestrator shells out to the `quire-ci` binary and ingests events afterward, rather than driving the runtime in-process:
 
 ```mermaid
 sequenceDiagram
     participant Trigger as ci::trigger_ref
     participant Run as Run (server)
+    participant Bootstrap as GET /api/run/bootstrap
     participant CI as quire-ci subprocess
     participant DB as SQLite
 
-    Trigger->>Run: execute_via_quire_ci()
-    Run->>DB: UPDATE runs SET state='active'
-    Run->>CI: spawn (--bootstrap, --events, --out-dir)
+    Trigger->>Run: execute()
+    Run->>CI: spawn (QUIRE__SERVER_URL, QUIRE__RUN_TOKEN, --events, --out-dir)
+    CI->>Bootstrap: GET /api/run/bootstrap (bearer token)
+    Bootstrap->>DB: UPDATE runs SET state='active', started_at_ms=now
+    Bootstrap-->>CI: git_dir, meta, sentry_trace_id
     CI->>CI: compile .quire/ci.fnl
     loop per job in topo order
       CI->>CI: enter_job / run-fn / leave_job
@@ -174,10 +180,12 @@ sequenceDiagram
     Run->>Run: ingest_events(events.jsonl)
     Run->>DB: INSERT jobs (pass 1)
     Run->>DB: INSERT sh_events (pass 2)
-    alt exit 0
+    alt RunFinished(Success) + exit 0
         Run->>DB: UPDATE runs SET state='complete'
-    else exit nonzero
-        Run->>DB: UPDATE runs SET state='failed' (failure_kind='quire-ci-exit')
+    else RunFinished(PipelineFailure) + exit 0
+        Run->>DB: UPDATE runs SET state='failed' (failure_kind='pipeline-failure')
+    else exit nonzero or no RunFinished
+        Run->>DB: UPDATE runs SET state='failed' (failure_kind='process-crashed')
     end
 ```
 
@@ -198,7 +206,7 @@ sequenceDiagram
     participant Hook as post-receive
     participant Listener as event_listener (tokio)
     participant Trigger as ci::trigger
-    participant Exec as Run::execute_via_quire_ci
+    participant Exec as Run::execute
     participant FS as filesystem
     participant DB as SQLite
 
@@ -209,15 +217,15 @@ sequenceDiagram
       Trigger->>DB: INSERT runs (state=pending)
       Trigger->>FS: create run dir + workspace
       Trigger->>FS: git archive | tar -x  (materialize workspace)
-      Trigger->>Exec: execute_via_quire_ci
-      Exec->>DB: pending → active → complete|failed
+      Trigger->>Exec: execute()
+      Exec->>DB: active → complete|failed (via bootstrap endpoint + ingest_events)
     end
 ```
 
 Two things in `CI.md` that the code does *not* yet implement at this layer:
 
 * **Queue + Notify wakeup.** `CI.md` describes a separate runner task pulled from a SQLite queue via `tokio::sync::Notify`. Today `ci::trigger` is called **synchronously** on the listener's tokio task — one push at a time, no queue, no separate runner. Max-concurrency-1 falls out of this trivially, but it isn't the architecture in `CI.md`.
-* **Per-run container.** `CI.md` says `docker run` at run start, `docker exec` per `(sh …)`, `docker stop` at end. `quire-ci` invokes `(sh …)` directly on the host process; the `container_id` / `container_started_at_ms` columns are populated only by the dev fixture and read by `supersede_existing` (which already calls `docker kill` against whatever's there).
+* **Per-run container.** `CI.md` says `docker run` at run start, `docker exec` per `(sh …)`, `docker stop` at end. `quire-ci` invokes `(sh …)` directly on the host process; the `container_id` column is unused by the current executor and read only by `supersede_existing` (which calls `docker kill` if it's set).
 
 ## Gaps
 
