@@ -1,9 +1,8 @@
 //! Shared transport types for CI ↔ server communication.
 //!
 //! The on-the-wire pairing both sides agree on. The orchestrator
-//! constructs a `Transport` per run (minting the auth token and
-//! using the run's UUID); quire-ci reconstructs it from the
-//! `QUIRE__*` environment variables.
+//! constructs a `Transport` per run (minting the auth token);
+//! quire-ci reconstructs it from the `QUIRE__*` environment variables.
 
 /// Credentials and endpoint coordinates for a single CI run's API
 /// channel. Holds everything quire-ci needs to call back to the
@@ -19,33 +18,9 @@ pub struct ApiSession {
     pub run_token: String,
 }
 
-/// Transport mode for CI ↔ server communication.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, facet::Facet, serde::Deserialize)]
-#[facet(rename_all = "kebab-case")]
-#[serde(rename_all = "kebab-case")]
-#[repr(u8)]
-pub enum TransportMode {
-    #[default]
-    Filesystem,
-    Api,
-}
-
-impl std::str::FromStr for TransportMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "filesystem" => Ok(Self::Filesystem),
-            "api" => Ok(Self::Api),
-            other => Err(format!("unknown transport mode: {other}")),
-        }
-    }
-}
-
 /// Runtime transport for a single CI run.
 /// Use `None` for local runs where no server is involved.
 #[derive(Clone, Debug)]
 pub struct Transport {
     pub session: ApiSession,
-    pub mode: TransportMode,
 }

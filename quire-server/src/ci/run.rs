@@ -15,7 +15,7 @@ use rand::{Rng, distr::Alphanumeric};
 use super::error::{Error, Result};
 
 pub use quire_core::ci::run::RunMeta;
-pub use quire_core::ci::transport::{Transport, TransportMode};
+pub use quire_core::ci::transport::Transport;
 
 /// How a run dispatches its pipeline.
 ///
@@ -31,15 +31,13 @@ pub enum Executor {
 }
 
 /// Mint a fresh transport for a new orchestrator-dispatched run. Generates
-/// a UUIDv7 run ID and CSPRNG bearer token, deriving the loopback server
-/// URL from `port`.
-pub fn new_transport(mode: TransportMode, port: u16) -> Transport {
+/// a CSPRNG bearer token, deriving the loopback server URL from `port`.
+pub fn new_transport(port: u16) -> Transport {
     Transport {
         session: ApiSession {
             server_url: format!("http://127.0.0.1:{port}"),
             run_token: mint_run_token(),
         },
-        mode,
     }
 }
 
@@ -293,10 +291,6 @@ impl Run {
     /// * `jobs/<job>/sh-<n>.log` — per-sh CRI logs, written by quire-ci
     ///   via `--out-dir`.
     ///
-    /// When `transport` is `Api`, passes `--run-id`, `--server-url`,
-    /// and `QUIRE_CI_TOKEN` to the subprocess instead of the
-    /// filesystem-based flags.
-    ///
     /// Run finishes `Complete` on exit 0, `Failed` otherwise. The DB
     /// rows are written even on failure so the web UI can render
     /// partial progress.
@@ -315,10 +309,7 @@ impl Run {
         // 'active' in the DB before quire-ci connects, causing the endpoint
         // to return 410 Gone. Update local state only so the later
         // transition(Complete/Failed) call passes the state-machine check.
-        let uses_api_transport = transport
-            .map(|t| t.mode == TransportMode::Api)
-            .unwrap_or(false);
-        if uses_api_transport {
+        if transport.is_some() {
             self.state = RunState::Active;
         } else {
             self.transition(RunState::Active, None)?;
@@ -355,15 +346,9 @@ impl Run {
                 cmd.arg("--bootstrap").arg(&bootstrap_path);
             }
             Some(t) => {
+                self.store_bootstrap_data(git_dir, sentry_trace_id)?;
                 cmd.env("QUIRE__SERVER_URL", &t.session.server_url);
                 cmd.env("QUIRE__RUN_TOKEN", &t.session.run_token);
-                if t.mode == TransportMode::Api {
-                    self.store_bootstrap_data(git_dir, sentry_trace_id)?;
-                    cmd.env("QUIRE__TRANSPORT", "api");
-                } else {
-                    write_bootstrap(&bootstrap_path, git_dir, meta, sentry_trace_id)?;
-                    cmd.arg("--bootstrap").arg(&bootstrap_path);
-                }
             }
         }
         if let Some(dsn) = sentry_dsn {
@@ -380,11 +365,11 @@ impl Run {
                 source,
             })?;
 
-        // quire-ci unlinks the bootstrap file after `load_bootstrap`;
-        // this is a best-effort safety net for paths where it didn't
-        // get that far (spawn failed mid-exec, arg parsing rejected
-        // input, panic before read). `NotFound` is the expected case.
-        if let Err(e) = fs_err::remove_file(&bootstrap_path)
+        // For local runs (None transport), quire-ci unlinks the bootstrap
+        // file after reading it. This is a best-effort safety net for
+        // paths where it didn't get that far. `NotFound` is expected.
+        if transport.is_none()
+            && let Err(e) = fs_err::remove_file(&bootstrap_path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(
@@ -759,7 +744,7 @@ mod tests {
     }
 
     fn test_transport() -> Transport {
-        new_transport(TransportMode::Filesystem, 3000)
+        new_transport(3000)
     }
 
     fn test_meta() -> RunMeta {
@@ -918,35 +903,10 @@ mod tests {
     }
 
     #[test]
-    fn create_with_filesystem_persists_run_token() {
+    fn create_persists_minted_run_token() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
-        let transport = new_transport(TransportMode::Filesystem, 3000);
-        let run = runs.create(&test_meta(), Some(&transport)).expect("create");
-
-        // Run ID is minted by the server, not taken from the transport.
-        assert!(uuid::Uuid::parse_str(run.id()).is_ok());
-
-        let conn = crate::db::open(&quire.db_path()).expect("db");
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT run_token FROM runs WHERE id = ?1",
-                rusqlite::params![run.id()],
-                |row| row.get(0),
-            )
-            .expect("row");
-        assert_eq!(
-            stored.as_deref(),
-            Some(transport.session.run_token.as_str()),
-            "filesystem transport should persist its minted run token"
-        );
-    }
-
-    #[test]
-    fn create_with_api_persists_minted_run_token() {
-        let (_dir, quire) = tmp_quire();
-        let runs = test_runs(&quire);
-        let transport = new_transport(TransportMode::Api, 3000);
+        let transport = new_transport(3000);
         let run = runs.create(&test_meta(), Some(&transport)).expect("create");
 
         // Run ID is minted by the server, not taken from the transport.
@@ -967,32 +927,19 @@ mod tests {
     }
 
     #[test]
-    fn for_new_run_mints_alphanumeric_token() {
-        for (transport, expected_url) in [
-            (
-                new_transport(TransportMode::Filesystem, 3000),
-                "http://127.0.0.1:3000",
-            ),
-            (
-                new_transport(TransportMode::Api, 4000),
-                "http://127.0.0.1:4000",
-            ),
-        ] {
-            assert_eq!(transport.session.server_url, expected_url);
-            assert_eq!(transport.session.run_token.len(), 32);
-            assert!(
-                transport
-                    .session
-                    .run_token
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric()),
-                "token should be alphanumeric, got {:?}",
-                transport.session.run_token
-            );
-            // Transport no longer carries a run_id — the server mints
-            // the run ID at creation time and the token alone identifies
-            // the run.
-        }
+    fn new_transport_mints_alphanumeric_token() {
+        let transport = new_transport(3000);
+        assert_eq!(transport.session.server_url, "http://127.0.0.1:3000");
+        assert_eq!(transport.session.run_token.len(), 32);
+        assert!(
+            transport
+                .session
+                .run_token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric()),
+            "token should be alphanumeric, got {:?}",
+            transport.session.run_token
+        );
     }
 
     #[test]

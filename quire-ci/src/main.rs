@@ -14,7 +14,7 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
-use quire_core::ci::transport::{ApiSession, Transport, TransportMode};
+use quire_core::ci::transport::ApiSession;
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
@@ -49,8 +49,7 @@ struct Cli {
 
     /// Transport credentials and telemetry settings for
     /// orchestrator-dispatched runs, sourced from `QUIRE__*` env vars:
-    /// `QUIRE__SERVER_URL`, `QUIRE__RUN_TOKEN`, `QUIRE__TRANSPORT`,
-    /// `QUIRE__SENTRY_DSN`.
+    /// `QUIRE__SERVER_URL`, `QUIRE__RUN_TOKEN`, `QUIRE__SENTRY_DSN`.
     #[facet(args::config, args::env_prefix = "QUIRE")]
     quire: QuireConfig,
 
@@ -74,10 +73,6 @@ struct QuireConfig {
     /// Bearer token minted at run creation time (`QUIRE__RUN_TOKEN`).
     #[facet(sensitive, default)]
     run_token: String,
-
-    /// Transport mode (`QUIRE__TRANSPORT`).
-    #[facet(default)]
-    transport: TransportMode,
 
     /// Sentry DSN for error reporting (`QUIRE__SENTRY_DSN`).
     #[facet(default)]
@@ -112,8 +107,8 @@ enum Commands {
         out_dir: Option<PathBuf>,
 
         /// Path to a JSON bootstrap file produced by the orchestrator.
-        /// Required for `filesystem` transport; omitted for `api`
-        /// transport, which fetches bootstrap via the server API instead.
+        /// Required for local runs (no `QUIRE__SERVER_URL`); omitted for
+        /// server-dispatched runs, which fetch bootstrap via the API.
         #[facet(args::named, default)]
         bootstrap: Option<PathBuf>,
     },
@@ -317,20 +312,15 @@ fn main() -> Result<()> {
                 server_url: cli.quire.server_url,
                 run_token: cli.quire.run_token,
             };
-            let transport = Transport {
-                session: session.clone(),
-                mode: cli.quire.transport,
-            };
-            let client = RunClient::new(session);
+            let client = RunClient::new(session.clone());
 
-            let (git_dir, meta, sentry_trace_id) = match transport.mode {
-                TransportMode::Api => client.fetch_bootstrap()?,
-                TransportMode::Filesystem => {
-                    let Some(path) = bootstrap else {
-                        bail!("--bootstrap is required for filesystem transport");
-                    };
-                    load_bootstrap(&path)?
-                }
+            let (git_dir, meta, sentry_trace_id) = if session.server_url.is_empty() {
+                let Some(path) = bootstrap else {
+                    bail!("--bootstrap is required for local runs (no QUIRE__SERVER_URL set)");
+                };
+                load_bootstrap(&path)?
+            } else {
+                client.fetch_bootstrap()?
             };
 
             // Drop order: `_sentry` flushes first (still inside the
@@ -351,7 +341,7 @@ fn main() -> Result<()> {
 
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 
-            run_pipeline(workspace, sink, log_dir, git_dir, meta, registry, transport)
+            run_pipeline(workspace, sink, log_dir, git_dir, meta, registry)
         }
     }
 }
@@ -445,7 +435,6 @@ fn run_pipeline(
     git_dir: PathBuf,
     meta: RunMeta,
     registry: SecretRegistry,
-    _transport: Transport,
 ) -> Result<()> {
     let pipeline = match compile_at(&workspace) {
         Ok(p) => p,
