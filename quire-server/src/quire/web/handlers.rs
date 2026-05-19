@@ -208,7 +208,7 @@ pub async fn run_detail(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let job_dir = db::is_safe_path_segment(&job.job_id).then(|| job_dir_base.join(&job.job_id));
-        if job_dir.is_none() {
+        if job_dir.is_none() && !job_events.is_empty() {
             tracing::warn!(job_id = %job.job_id, "skipping CRI log reads for unsafe job_id");
         }
 
