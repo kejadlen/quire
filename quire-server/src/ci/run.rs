@@ -298,7 +298,6 @@ impl Run {
         mut self,
         git_dir: &Path,
         workspace: &Path,
-        meta: &RunMeta,
         sentry_trace_id: Option<&str>,
         sentry_dsn: Option<&str>,
         transport: Option<&Transport>,
@@ -341,12 +340,7 @@ impl Run {
 
         match transport {
             None => {
-                cmd.arg("--git-dir")
-                    .arg(git_dir)
-                    .arg("--sha")
-                    .arg(&meta.sha)
-                    .arg("--git-ref")
-                    .arg(&meta.r#ref);
+                cmd.arg("--local").arg("--git-dir").arg(git_dir);
             }
             Some(t) => {
                 self.store_bootstrap_data(git_dir, sentry_trace_id)?;

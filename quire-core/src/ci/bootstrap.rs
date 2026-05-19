@@ -2,8 +2,8 @@
 //!
 //! The orchestrator stores a [`Bootstrap`] in the database; `quire-ci`
 //! fetches it via `GET /api/run/bootstrap` using the per-run bearer
-//! token. Local runs receive bootstrap data directly via CLI flags
-//! (`--git-dir`, `--sha`, `--git-ref`) instead.
+//! token. Local runs pass `--local --git-dir <path>` and derive the
+//! commit SHA and ref directly from the git dir.
 
 use std::path::PathBuf;
 

@@ -106,20 +106,17 @@ enum Commands {
         #[facet(args::named, default)]
         out_dir: Option<PathBuf>,
 
-        /// Path to the bare git repo for this run. Required for local
-        /// runs (no `QUIRE__SERVER_URL`); server-dispatched runs
-        /// receive this via the bootstrap API instead.
+        /// Run in local mode. Derives commit SHA and ref from `--git-dir`
+        /// instead of fetching bootstrap data from the server. Pass
+        /// `QUIRE__SERVER_URL` to use the server API instead.
+        #[facet(args::named, default)]
+        local: bool,
+
+        /// Path to the bare git repo for this run. Required when
+        /// `--local` is set; server-dispatched runs receive this via the
+        /// bootstrap API instead.
         #[facet(args::named, default)]
         git_dir: Option<PathBuf>,
-
-        /// Commit SHA for this run. Required for local runs.
-        #[facet(args::named, default)]
-        sha: Option<String>,
-
-        /// Git ref for this run (e.g. `refs/heads/main`). Required for
-        /// local runs.
-        #[facet(args::named, default)]
-        git_ref: Option<String>,
     },
 }
 
@@ -284,9 +281,8 @@ fn main() -> Result<()> {
         Commands::Run {
             events,
             out_dir,
+            local,
             git_dir,
-            sha,
-            git_ref,
         } => {
             let sink: Box<dyn EventSink> = match events.parse::<EventsTarget>().unwrap() {
                 EventsTarget::Null => Box::new(NullSink),
@@ -325,12 +321,11 @@ fn main() -> Result<()> {
             };
             let client = RunClient::new(session.clone());
 
-            let (git_dir, meta, sentry_trace_id) = if session.server_url.is_empty() {
+            let (git_dir, meta, sentry_trace_id) = if local {
                 let git_dir = git_dir
                     .ok_or_else(|| miette::miette!("--git-dir is required for local runs"))?;
-                let sha = sha.ok_or_else(|| miette::miette!("--sha is required for local runs"))?;
-                let git_ref = git_ref
-                    .ok_or_else(|| miette::miette!("--git-ref is required for local runs"))?;
+                let sha = git_rev_parse(&git_dir, "HEAD")?;
+                let git_ref = git_symbolic_ref(&git_dir).unwrap_or_else(|_| "@".to_string());
                 let meta = RunMeta {
                     sha,
                     r#ref: git_ref,
@@ -401,6 +396,35 @@ fn init_sentry(dsn: &str, trace_id: Option<&str>, meta: &RunMeta) -> sentry::Cli
         }
     });
     guard
+}
+
+fn git_rev_parse(git_dir: &std::path::Path, rev: &str) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .arg("rev-parse")
+        .arg(rev)
+        .output()
+        .into_diagnostic()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        miette::bail!("git rev-parse {rev} failed: {stderr}");
+    }
+    Ok(String::from_utf8(out.stdout).into_diagnostic()?.trim().to_string())
+}
+
+fn git_symbolic_ref(git_dir: &std::path::Path) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .arg("symbolic-ref")
+        .arg("HEAD")
+        .output()
+        .into_diagnostic()?;
+    if !out.status.success() {
+        miette::bail!("HEAD is detached");
+    }
+    Ok(String::from_utf8(out.stdout).into_diagnostic()?.trim().to_string())
 }
 
 fn validate(workspace: PathBuf) -> Result<()> {
