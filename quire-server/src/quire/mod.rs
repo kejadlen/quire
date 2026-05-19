@@ -6,7 +6,7 @@ use miette::{Context, IntoDiagnostic, Result, ensure};
 
 pub mod web;
 
-use crate::ci::{Ci, Executor, Runs, TransportMode};
+use crate::ci::{Ci, Executor, Runs};
 use crate::{Error, Result as AppResult};
 use quire_core::fennel::Fennel;
 use quire_core::secret::SecretString;
@@ -43,13 +43,6 @@ pub struct CiConfig {
     /// out to the `quire-ci` binary via `Executor::Process`.
     #[serde(default)]
     pub executor: Executor,
-    /// Transport for CI ↔ server communication.
-    ///
-    /// `"filesystem"` (default) writes dispatch/events/logs to disk;
-    /// `"api"` uses the HTTP API with bearer-token auth (requires
-    /// the top-level `server-url`).
-    #[serde(default)]
-    pub transport: TransportMode,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -412,27 +405,15 @@ mod tests {
     }
 
     #[test]
-    fn global_config_ci_defaults_to_filesystem() {
+    fn global_config_ci_defaults() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
         let q = Quire::new(dir.path().to_path_buf());
         let config = q.global_config().expect("global_config should load");
-        assert_eq!(config.ci.transport, TransportMode::Filesystem);
         assert_eq!(config.ci.executor, Executor::Process);
         assert_eq!(config.port, 3000);
-    }
-
-    #[test]
-    fn global_config_parses_api_transport() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
-        fs_err::write(&config_path, r#"{:ci {:transport :api}}"#).expect("write");
-
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
-        assert_eq!(config.ci.transport, TransportMode::Api);
     }
 
     #[test]

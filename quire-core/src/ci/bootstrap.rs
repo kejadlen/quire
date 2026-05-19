@@ -1,15 +1,11 @@
 //! Wire format for handing off a run from the orchestrator to
 //! `quire-ci`.
 //!
-//! The orchestrator writes a [`Bootstrap`] as JSON to a file inside
-//! the run directory and passes the path via `--bootstrap`. `quire-ci`
-//! deserializes it on startup to recover push metadata. Standalone
-//! `quire-ci run` invocations skip the file entirely and fall back to
-//! placeholder values.
-//!
-//! The file is a one-shot handoff: `quire-ci` unlinks it as soon as
-//! it has read the bytes into memory, and the orchestrator
-//! best-effort unlinks after the subprocess exits as a safety net.
+//! For server-dispatched runs the orchestrator stores a [`Bootstrap`]
+//! in the database; `quire-ci` fetches it via `GET /api/run/bootstrap`
+//! using the per-run bearer token. For local dev runs without a server
+//! the orchestrator writes the JSON to a file and passes the path via
+//! `--bootstrap`.
 
 use std::path::PathBuf;
 

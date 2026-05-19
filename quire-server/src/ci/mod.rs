@@ -9,8 +9,7 @@ pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
 pub use quire_core::ci::run::RunMeta;
-pub use quire_core::ci::transport::ApiSession;
-pub use quire_core::ci::transport::{Transport, TransportMode};
+pub use quire_core::ci::transport::{ApiSession, Transport};
 pub use quire_core::ci::{pipeline, registration, runtime};
 pub use run::{
     Executor, Run, RunState, Runs, materialize_workspace, new_transport, reconcile_orphans,
@@ -103,7 +102,6 @@ impl Ci {
 struct TriggerContext<'a> {
     run: RunContext<'a>,
     event_repo: &'a str,
-    transport_mode: TransportMode,
     port: u16,
     sentry_dsn: Option<String>,
 }
@@ -157,7 +155,6 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
             executor: config.ci.executor,
         },
         event_repo: &event.repo,
-        transport_mode: config.ci.transport,
         port: config.port,
         sentry_dsn,
     };
@@ -184,7 +181,7 @@ fn run_ref(
     trace_id: sentry::protocol::TraceId,
     span_id: sentry::protocol::SpanId,
 ) {
-    let transport = new_transport(ctx.transport_mode, ctx.port);
+    let transport = new_transport(ctx.port);
     let sentry_trace_id = ctx.sentry_dsn.as_ref().map(|_| trace_id.to_string());
     sentry::with_scope(
         |scope| {
@@ -506,14 +503,7 @@ exit 0
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(
-                &ctx,
-                pushed_at,
-                &push_ref,
-                &new_transport(TransportMode::Filesystem, 3000),
-                None,
-                None,
-            )
+            run_ref_inner(&ctx, pushed_at, &push_ref, &new_transport(3000), None, None)
         });
 
         trigger_result.expect("trigger_ref should succeed with fake quire-ci");
@@ -561,14 +551,7 @@ exit 0
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
         let trigger_result = with_path(&fake_path, || {
-            run_ref_inner(
-                &ctx,
-                pushed_at,
-                &push_ref,
-                &new_transport(TransportMode::Filesystem, 3000),
-                None,
-                None,
-            )
+            run_ref_inner(&ctx, pushed_at, &push_ref, &new_transport(3000), None, None)
         });
 
         let err = trigger_result.expect_err("should fail when quire-ci exits nonzero");
@@ -605,15 +588,8 @@ exit 0
 
         let db_path = quire.db_path();
         let ctx = run_ctx(&repo, &db_path);
-        run_ref_inner(
-            &ctx,
-            pushed_at,
-            &push_ref,
-            &new_transport(TransportMode::Filesystem, 3000),
-            None,
-            None,
-        )
-        .expect("should succeed without ci.fnl");
+        run_ref_inner(&ctx, pushed_at, &push_ref, &new_transport(3000), None, None)
+            .expect("should succeed without ci.fnl");
     }
 
     fn push_event(repo: &str, sha: &str) -> PushEvent {

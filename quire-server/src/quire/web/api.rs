@@ -232,7 +232,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::Quire;
-    use crate::ci::{RunMeta, Runs, TransportMode, new_transport};
+    use crate::ci::{RunMeta, Runs, new_transport};
 
     struct TestEnv {
         _dir: tempfile::TempDir,
@@ -301,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_returns_401_without_auth() {
         let env = TestEnv::new();
-        let transport = new_transport(TransportMode::Api, 3000);
+        let transport = new_transport(3000);
         create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
 
         let resp = get(env.app(), "/run/bootstrap", None).await;
@@ -319,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_returns_payload_on_first_fetch() {
         let env = TestEnv::new();
-        let transport = new_transport(TransportMode::Api, 3000);
+        let transport = new_transport(3000);
         create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
 
         let resp = get(
@@ -339,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_returns_410_on_second_fetch() {
         let env = TestEnv::new();
-        let transport = new_transport(TransportMode::Api, 3000);
+        let transport = new_transport(3000);
         create_run_with_bootstrap(&env, &transport, "/repos/test.git", None).await;
         let token = &transport.session.run_token;
 
@@ -353,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn secret_returns_401_without_auth() {
         let env = TestEnv::new();
-        let transport = new_transport(TransportMode::Api, 3000);
+        let transport = new_transport(3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
@@ -370,7 +370,7 @@ mod tests {
             r#"{:secrets {:my_token "hunter2"}}"#,
         )
         .expect("write config");
-        let transport = new_transport(TransportMode::Api, 3000);
+        let transport = new_transport(3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&transport))
             .expect("create");
