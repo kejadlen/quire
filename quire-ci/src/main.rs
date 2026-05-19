@@ -14,7 +14,7 @@ use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::pipeline::{self, Pipeline, RunFn};
 use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
-use quire_core::ci::session::ApiSession;
+use quire_core::ci::run::ApiSession;
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
