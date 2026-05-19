@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, bail};
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
@@ -322,8 +322,9 @@ fn main() -> Result<()> {
             let client = RunClient::new(session.clone());
 
             let (git_dir, meta, sentry_trace_id) = if local {
-                let git_dir = git_dir
-                    .ok_or_else(|| miette::miette!("--git-dir is required for local runs"))?;
+                let Some(git_dir) = git_dir else {
+                    bail!("--git-dir is required for local runs");
+                };
                 let sha = git_rev_parse(&git_dir, "HEAD")?;
                 let git_ref = git_symbolic_ref(&git_dir).unwrap_or_else(|_| "@".to_string());
                 let meta = RunMeta {
@@ -408,7 +409,7 @@ fn git_rev_parse(git_dir: &std::path::Path, rev: &str) -> Result<String> {
         .into_diagnostic()?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        miette::bail!("git rev-parse {rev} failed: {stderr}");
+        bail!("git rev-parse {rev} failed: {stderr}");
     }
     Ok(String::from_utf8(out.stdout).into_diagnostic()?.trim().to_string())
 }
@@ -422,7 +423,7 @@ fn git_symbolic_ref(git_dir: &std::path::Path) -> Result<String> {
         .output()
         .into_diagnostic()?;
     if !out.status.success() {
-        miette::bail!("HEAD is detached");
+        bail!("HEAD is detached");
     }
     Ok(String::from_utf8(out.stdout).into_diagnostic()?.trim().to_string())
 }
