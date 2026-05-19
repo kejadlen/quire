@@ -15,17 +15,17 @@ A run owns its jobs; jobs FK on `(run_id, job_id)` and cascade delete.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending : Runs::create
+    [*] --> pending : Runs.create
 
-    pending  --> active     : GET /api/run/bootstrap (quire-ci fetches payload)
-    pending  --> superseded : Runs::create (same repo/ref) — supersede_existing
-    pending  --> failed     : reconcile_orphans\nfailure_kind='orphaned'
+    pending  --> active     : bootstrap endpoint
+    pending  --> superseded : supersede_existing
+    pending  --> failed     : reconcile_orphans
 
-    active   --> complete   : transition(Complete, None)
-    active   --> failed     : transition(Failed, 'pipeline-failure')
-    active   --> failed     : transition(Failed, 'process-crashed')
-    active   --> superseded : Runs::create (same repo/ref) — docker kill + supersede_existing
-    active   --> failed     : reconcile_orphans\nfailure_kind='orphaned'
+    active   --> complete   : transition Complete
+    active   --> failed     : pipeline-failure
+    active   --> failed     : process-crashed
+    active   --> superseded : supersede_existing
+    active   --> failed     : reconcile_orphans
 
     complete   --> [*]
     failed     --> [*]
@@ -103,16 +103,16 @@ Successful and superseded runs leave `failure_kind` NULL. The set is open — UI
 
 ```mermaid
 stateDiagram-v2
-    [*] --> complete : ingest JobFinished(outcome='complete')
-    [*] --> failed   : ingest JobFinished(outcome='failed')
+    [*] --> complete : JobFinished complete
+    [*] --> failed   : JobFinished failed
 
     complete --> [*]
     failed   --> [*]
 
-    pending --> [*] : no producer yet — see Gaps
-    active  --> [*] : no producer yet — see Gaps
-    skipped --> [*] : no producer yet — see Gaps
-    aborted --> [*] : no producer yet — see Gaps
+    pending --> [*] : no producer yet
+    active  --> [*] : no producer yet
+    skipped --> [*] : no producer yet
+    aborted --> [*] : no producer yet
 ```
 
 ### Transitions in code
