@@ -121,15 +121,14 @@ impl Runs {
 
         let queued_at_ms = Timestamp::now().as_millisecond();
         db.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path, run_token)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
+            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, workspace_path, run_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 &id,
                 &self.repo,
                 &meta.r#ref,
                 &meta.sha,
                 meta.pushed_at.as_millisecond(),
-                queued_at_ms,
                 workspace_path.to_str().ok_or_else(|| std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "workspace path is not valid UTF-8",
@@ -189,9 +188,8 @@ impl Runs {
                 rusqlite::params![run_id, now],
             )?;
             db.execute(
-                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1, container_id = NULL
-                 WHERE id = ?2",
-                rusqlite::params![now, run_id],
+                "UPDATE runs SET container_id = NULL WHERE id = ?1",
+                rusqlite::params![run_id],
             )?;
             tracing::info!(run_id = %run_id, "superseded active run");
         }
@@ -211,10 +209,6 @@ impl Runs {
             db.execute(
                 "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, 'superseded', ?2)",
                 rusqlite::params![run_id, now],
-            )?;
-            db.execute(
-                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1 WHERE id = ?2",
-                rusqlite::params![now, run_id],
             )?;
         }
         if pending_count > 0 {
@@ -250,10 +244,8 @@ pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
             rusqlite::params![run_id, now],
         )?;
         db.execute(
-            "UPDATE runs SET state = 'failed', finished_at_ms = ?1,
-             container_id = NULL, failure_kind = COALESCE(failure_kind, 'orphaned')
-             WHERE id = ?2",
-            rusqlite::params![now, run_id],
+            "UPDATE runs SET container_id = NULL WHERE id = ?1",
+            rusqlite::params![run_id],
         )?;
     }
 
@@ -579,39 +571,11 @@ impl Run {
             "INSERT INTO run_transitions (run_id, state, at_ms, failure_kind) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![&self.id, to.as_str(), now, failure_kind],
         )?;
-
-        // Also keep the legacy runs columns current so their NOT NULL / CHECK
-        // constraints remain satisfied.
-        match to {
-            Active => {
-                db.execute(
-                    "UPDATE runs SET state = 'active', started_at_ms = COALESCE(started_at_ms, ?1)
-                     WHERE id = ?2",
-                    rusqlite::params![now, &self.id],
-                )?;
-            }
-            Complete | Superseded => {
-                db.execute(
-                    "UPDATE runs SET state = ?1,
-                        started_at_ms = COALESCE(started_at_ms, ?2),
-                        finished_at_ms = COALESCE(finished_at_ms, ?3),
-                        container_id = NULL
-                     WHERE id = ?4",
-                    rusqlite::params![to.as_str(), now, now, &self.id],
-                )?;
-            }
-            Failed => {
-                db.execute(
-                    "UPDATE runs SET state = 'failed',
-                        started_at_ms = COALESCE(started_at_ms, ?1),
-                        finished_at_ms = COALESCE(finished_at_ms, ?2),
-                        container_id = NULL,
-                        failure_kind = COALESCE(failure_kind, ?3)
-                     WHERE id = ?4",
-                    rusqlite::params![now, now, failure_kind, &self.id],
-                )?;
-            }
-            Pending => unreachable!("transition to Pending is not valid"),
+        if matches!(to, Complete | Failed | Superseded) {
+            db.execute(
+                "UPDATE runs SET container_id = NULL WHERE id = ?1",
+                rusqlite::params![&self.id],
+            )?;
         }
 
         self.state = to;

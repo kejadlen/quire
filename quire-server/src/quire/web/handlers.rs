@@ -325,10 +325,10 @@ mod tests {
             let pool = self.quire.db_pool();
             let db = pool.lock().expect("lock");
             db.execute(
-                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms,
+                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
                                   container_id, image_tag, build_started_at_ms, build_finished_at_ms,
                                   container_started_at_ms, container_stopped_at_ms, workspace_path)
-                 VALUES (?1, 'example.git', ?2, ?3, ?4, 'pending', ?4, NULL, NULL, NULL, NULL, NULL, NULL, '/tmp/ws')",
+                 VALUES (?1, 'example.git', ?2, ?3, ?4, NULL, NULL, NULL, NULL, NULL, NULL, '/tmp/ws')",
                 rusqlite::params![id, ref_name, sha, queued],
             ).expect("insert run");
             // pending transition

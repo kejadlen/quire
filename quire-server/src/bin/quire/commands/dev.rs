@@ -135,11 +135,14 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
     ];
 
     let mut stmt = db.prepare(
-        "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                           queued_at_ms, started_at_ms, finished_at_ms,
+        "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
                            container_id, image_tag, build_started_at_ms, build_finished_at_ms,
                            container_started_at_ms, container_stopped_at_ms, workspace_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, NULL, NULL, NULL, NULL, NULL, ?10)"
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, ?6)"
+    ).into_diagnostic()?;
+
+    let mut trans_stmt = db.prepare(
+        "INSERT INTO run_transitions (run_id, state, at_ms) VALUES (?1, ?2, ?3)"
     ).into_diagnostic()?;
 
     for (id, state, sha, ref_name, pushed_at_ms, started_at_ms, finished_at_ms) in &runs {
@@ -149,13 +152,22 @@ fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
             ref_name,
             sha,
             pushed_at_ms,
-            state,
-            pushed_at_ms, // queued_at_ms = pushed_at_ms
-            started_at_ms,
-            finished_at_ms,
             workspace,
         ])
         .into_diagnostic()?;
+
+        // pending transition (queued_at_ms = pushed_at_ms for seed data)
+        trans_stmt.execute(params![id, "pending", pushed_at_ms]).into_diagnostic()?;
+
+        // active transition
+        if let Some(s) = started_at_ms {
+            trans_stmt.execute(params![id, "active", s]).into_diagnostic()?;
+        }
+
+        // terminal transition
+        if let Some(f) = finished_at_ms {
+            trans_stmt.execute(params![id, state, f]).into_diagnostic()?;
+        }
     }
 
     Ok(())
