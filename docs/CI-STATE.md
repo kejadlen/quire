@@ -4,7 +4,7 @@ A reader's guide to the two state machines that govern a CI run, paired with wha
 
 There are two machines:
 
-1. **Run state** — the row in `runs`. One per `(repo, ref, push)`.
+1. **Run state** — the `run_transitions` log for a row in `runs`. One per `(repo, ref, push)`.
 2. **Job state** — the row in `jobs`. One per job inside a run.
 
 A run owns its jobs; jobs FK on `(run_id, job_id)` and cascade delete.
@@ -30,35 +30,19 @@ stateDiagram-v2
     complete   --> [*]
     failed     --> [*]
     superseded --> [*]
-
-    note right of pending
-      started_at_ms  IS NULL
-      finished_at_ms IS NULL
-      container_id   IS NULL
-    end note
-
-    note right of active
-      started_at_ms stamped on entry
-      finished_at_ms still NULL
-    end note
-
-    note right of complete
-      started_at_ms, finished_at_ms set
-      container_id cleared
-    end note
 ```
 
 ### Transitions in code
 
 | From → To | Where | When | `failure_kind` |
 | --- | --- | --- | --- |
-| `[*] → pending` | `Runs::create` (`quire-server/src/ci/run.rs:103`) | A push event arrives and a `runs` row is inserted. | — |
-| `pending → active` | Bootstrap endpoint (`api.rs`), called when `quire-ci` fetches bootstrap data | `quire-ci` connects to the server and marks the run active. Stamps `started_at_ms`. | — |
-| `active → complete` | `Run::transition`, called from `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: Success }` was ingested. Stamps `finished_at_ms`, clears `container_id`. | — |
+| `[*] → pending` | `Runs::create` (`quire-server/src/ci/run.rs`) | A push event arrives: a `runs` row is inserted and the first `run_transitions` row is appended. | — |
+| `pending → active` | Bootstrap endpoint (`api.rs`), called when `quire-ci` fetches bootstrap data | `quire-ci` connects to the server, which appends an `active` transition — this is the **started** moment. | — |
+| `active → complete` | `Run::transition`, called from `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: Success }` was ingested. | — |
 | `active → failed` | `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: PipelineFailure }` was ingested — a job's run-fn returned an error. | `"pipeline-failure"` |
 | `active → failed` | `Run::execute` | `quire-ci` exited non-zero, or exited 0 but emitted no `RunFinished` event (process crash or panic). | `"process-crashed"` |
-| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs:155`) via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Pending rows are flipped directly; active rows have their container killed (`docker kill`) first. | — |
-| `{pending, active} → failed` | `reconcile_orphans` (`run.rs:205`) via raw SQL, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
+| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs`) via direct INSERT, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Active runs have their container killed (`docker kill`) first. | — |
+| `{pending, active} → failed` | `reconcile_orphans` (`run.rs`) via direct INSERT, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
 
 `Run::transition(to, failure_kind)`'s allowed-transition match:
 
@@ -67,27 +51,48 @@ stateDiagram-v2
 (Active,  Complete) | (Active,  Failed) | (Active,  Superseded)
 ```
 
-In practice only `(Active, Complete)` and `(Active, Failed)` are exercised via `transition` — the `Pending → Active` edge is owned by the bootstrap endpoint (api.rs), and the supersede edges go through raw SQL (`supersede_existing`), not `transition`. The other edges are gated for defensive consistency, in case a future caller routes supersede through the typed API. Anything else — `Pending → Failed`, `Active → Pending`, or any transition out of a terminal state — returns `InvalidTransition`.
+In practice only `(Active, Complete)` and `(Active, Failed)` are exercised via `transition` — the `Pending → Active` edge is owned by the bootstrap endpoint (api.rs), and the supersede edges go through direct INSERTs (`supersede_existing`), not `transition`. The other edges are gated for defensive consistency, in case a future caller routes supersede through the typed API. Anything else — `Pending → Failed`, `Active → Pending`, or any transition out of a terminal state — returns `InvalidTransition`.
 
 `failure_kind` is recorded only when `to == Failed`; it's ignored for `Active`, `Complete`, and `Superseded`.
 
-### Database invariants
+### Database representation
 
-The DB enforces shape per state via a `CHECK` constraint in `migrations/0001_initial.sql`:
+Run state is stored as a log in `run_transitions` (`migrations/0006_run_transitions.sql`), not as a column on `runs`. Each row records one state entry:
 
-| State | `started_at_ms` | `finished_at_ms` | `container_id` |
-| --- | --- | --- | --- |
-| `pending` | NULL | NULL | NULL |
-| `active` | set | NULL | (any) |
-| `complete` | set | set | NULL |
-| `failed` | (any) | set | NULL |
-| `superseded` | (any) | set | NULL |
+```sql
+CREATE TABLE run_transitions (
+  run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  state        TEXT NOT NULL CHECK (state IN ('pending', 'active', 'complete', 'failed', 'superseded')),
+  at_ms        INTEGER NOT NULL,
+  failure_kind TEXT
+);
+```
 
-Plus monotonicity: `started_at_ms >= queued_at_ms`, `finished_at_ms >= started_at_ms`. `started_at_ms`, `finished_at_ms`, and `failure_kind` are stamped at most once each, via `COALESCE` in the `UPDATE`.
+The current state is the latest row: `ORDER BY at_ms DESC LIMIT 1`.
+
+### Started and finished
+
+Two higher-level concepts span the specific states and are derived from the log when needed:
+
+| Concept | Meaning | Derived from |
+| --- | --- | --- |
+| **started** | The run has begun execution | `active` transition exists (`at_ms` = `started_at_ms`) |
+| **finished** | The run has reached a terminal state | `complete`, `failed`, or `superseded` transition exists (`at_ms` = `finished_at_ms`) |
+
+The state groupings:
+
+| Group | States |
+| --- | --- |
+| not started | `pending` |
+| started, not finished | `active` |
+| started and finished | `complete`, `failed` |
+| finished without starting | `superseded` (pending → superseded skips active) |
+
+These are used in the web DB queries (`web/db.rs`) to project `started_at_ms` and `finished_at_ms` back out as scalar timestamps for the UI.
 
 ### `failure_kind`
 
-Nullable column populated by `Run::transition` when entering `Failed`, plus `reconcile_orphans` (raw SQL). Each transition sets it at most once via `COALESCE`. The values written today:
+Column on `run_transitions`, populated only for `Failed` rows. The values written today:
 
 | Value | Producer |
 | --- | --- |
@@ -117,11 +122,11 @@ stateDiagram-v2
 
 ### Transitions in code
 
-There is only one writer of `jobs` rows: `Run::ingest_events` (`run.rs:399`). It reads `events.jsonl` after the `quire-ci` subprocess exits and, for each `JobStarted`/`JobFinished` pair, inserts **one row directly in the terminal state**. The intermediate `active` state is held in an in-memory `pending_jobs` map during ingest and never persisted.
+There is only one writer of `jobs` rows: `Run::ingest_events` (`run.rs`). It reads `events.jsonl` after the `quire-ci` subprocess exits and, for each `JobStarted`/`JobFinished` pair, inserts **one row directly in the terminal state**. The intermediate `active` state is held in an in-memory `pending_jobs` map during ingest and never persisted.
 
 | From → To | Where | When |
 | --- | --- | --- |
-| `[*] → complete` | `Run::ingest_events` (`run.rs:399`) | `JobFinished { outcome: complete }` paired with a buffered `JobStarted`. |
+| `[*] → complete` | `Run::ingest_events` | `JobFinished { outcome: complete }` paired with a buffered `JobStarted`. |
 | `[*] → failed` | `Run::ingest_events` | `JobFinished { outcome: failed }` paired with a buffered `JobStarted`. |
 
 Consequence: while `quire-ci` is running, **no `jobs` rows exist for this run**. They all materialize at ingest time. Live progress is visible via `events.jsonl` or per-`sh` log files on disk, not via SQL.
@@ -169,7 +174,7 @@ sequenceDiagram
     Trigger->>Run: execute()
     Run->>CI: spawn (QUIRE__SERVER_URL, QUIRE__RUN_TOKEN, --events, --out-dir)
     CI->>Bootstrap: GET /api/run/bootstrap (bearer token)
-    Bootstrap->>DB: UPDATE runs SET state='active', started_at_ms=now
+    Bootstrap->>DB: INSERT run_transitions (state=active) — started
     Bootstrap-->>CI: git_dir, meta, sentry_trace_id
     CI->>CI: compile .quire/ci.fnl
     loop per job in topo order
@@ -181,11 +186,11 @@ sequenceDiagram
     Run->>DB: INSERT jobs (pass 1)
     Run->>DB: INSERT sh_events (pass 2)
     alt RunFinished(Success) + exit 0
-        Run->>DB: UPDATE runs SET state='complete'
+        Run->>DB: INSERT run_transitions (state=complete) — finished
     else RunFinished(PipelineFailure) + exit 0
-        Run->>DB: UPDATE runs SET state='failed' (failure_kind='pipeline-failure')
+        Run->>DB: INSERT run_transitions (state=failed, failure_kind='pipeline-failure') — finished
     else exit nonzero or no RunFinished
-        Run->>DB: UPDATE runs SET state='failed' (failure_kind='process-crashed')
+        Run->>DB: INSERT run_transitions (state=failed, failure_kind='process-crashed') — finished
     end
 ```
 
@@ -214,7 +219,7 @@ sequenceDiagram
     Listener->>Trigger: trigger(quire, &event)
     loop per updated ref
       Trigger->>DB: supersede_existing (Pending|Active → Superseded for same repo/ref)
-      Trigger->>DB: INSERT runs (state=pending)
+      Trigger->>DB: INSERT runs + INSERT run_transitions (state=pending)
       Trigger->>FS: create run dir + workspace
       Trigger->>FS: git archive | tar -x  (materialize workspace)
       Trigger->>Exec: execute()
@@ -244,5 +249,6 @@ States the schema admits — or `CI.md` commits to — that no code path produce
 
 * Architecture and rationale: [`CI.md`](./CI.md).
 * Pipeline DSL: [`CI-FENNEL.md`](./CI-FENNEL.md).
-* DB shape: [`quire-server/migrations/0001_initial.sql`](../quire-server/migrations/0001_initial.sql).
+* Run state schema: [`quire-server/migrations/0006_run_transitions.sql`](../quire-server/migrations/0006_run_transitions.sql).
+* Job state schema: [`quire-server/migrations/0001_initial.sql`](../quire-server/migrations/0001_initial.sql).
 * Code: `quire-server/src/ci/run.rs`, `quire-server/src/ci/mod.rs`, `quire-core/src/ci/event.rs`, `quire-ci/src/main.rs`.
