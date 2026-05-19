@@ -7,9 +7,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
 
 use super::error::{Error, Result};
 use jiff::Timestamp;
+use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 use quire_core::ci::run::ApiSession;
 
 pub use quire_core::ci::run::RunMeta;
@@ -313,9 +316,7 @@ impl Run {
     /// `(run_id, job_id)` in `jobs`, and the wire format interleaves
     /// sh events with their owning job. Pass 1 inserts every job row
     /// (paired by `job_id`); pass 2 inserts sh events.
-    fn ingest_events(&self, path: &Path) -> Result<Option<quire_core::ci::event::RunOutcome>> {
-        use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
-
+    fn ingest_events(&self, path: &Path) -> Result<Option<RunOutcome>> {
         let bytes = match fs_err::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -476,8 +477,6 @@ impl Run {
 /// Materialize a working tree at `sha` into `workspace` via
 /// `git archive | tar -x`. Creates the workspace dir if needed.
 pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Result<()> {
-    use std::process::{Command, Stdio};
-
     fs_err::create_dir_all(workspace)?;
 
     let mut archive = Command::new("git")

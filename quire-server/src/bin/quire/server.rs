@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 use std::os::unix::net::UnixListener as StdUnixListener;
 use std::time::Duration;
 
+use tokio::io::AsyncBufReadExt;
+
 use axum::Router;
 use axum::extract::MatchedPath;
 use axum::http::Request;
@@ -114,8 +116,6 @@ async fn event_listener(listener: tokio::net::UnixListener, quire: Quire) {
 }
 
 async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quire) {
-    use tokio::io::AsyncBufReadExt;
-
     let (reader, _writer) = stream.split();
     let mut reader = tokio::io::BufReader::new(reader);
     let mut line = String::new();
