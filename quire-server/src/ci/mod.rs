@@ -5,7 +5,6 @@ mod run;
 pub(crate) mod error;
 
 pub use error::{Error, Result};
-use opentelemetry::propagation::TextMapPropagator as _;
 pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
