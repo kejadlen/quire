@@ -366,9 +366,12 @@ fn main() -> Result<()> {
 
             // Attach the remote trace context so quire-ci spans appear
             // as children of the orchestrator's span in Sentry.
-            let _cx_guard = sentry_ctx.traceparent.as_deref()
-                .map(|tp| telemetry::attach_traceparent(tp));
-            let _run_span = tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref).entered();
+            let _cx_guard = sentry_ctx
+                .traceparent
+                .as_deref()
+                .map(telemetry::attach_traceparent);
+            let _run_span =
+                tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref).entered();
 
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 

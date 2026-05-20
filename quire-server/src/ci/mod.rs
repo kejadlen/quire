@@ -164,17 +164,15 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
 }
 
 /// Set up Sentry trace scope and run CI for a single ref.
-fn run_ref(
-    ctx: &TriggerContext<'_>,
-    pushed_at: jiff::Timestamp,
-    push_ref: &PushRef,
-) {
+fn run_ref(ctx: &TriggerContext<'_>, pushed_at: jiff::Timestamp, push_ref: &PushRef) {
     let session = ApiSession::new(ctx.port);
 
     let span = tracing::info_span!("quire.ci.run", repo = %ctx.event_repo);
     let _guard = span.enter();
 
-    let traceparent = ctx.sentry_dsn.as_ref()
+    let traceparent = ctx
+        .sentry_dsn
+        .as_ref()
         .and_then(|_| telemetry::current_traceparent());
 
     sentry::with_scope(
