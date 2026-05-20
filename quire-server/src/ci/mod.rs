@@ -168,12 +168,11 @@ fn run_ref(ctx: &TriggerContext<'_>, pushed_at: jiff::Timestamp, push_ref: &Push
     let session = ApiSession::new(ctx.port);
 
     let span = tracing::info_span!("quire.ci.run", repo = %ctx.event_repo);
-    let _guard = span.enter();
-
     let traceparent = ctx
         .sentry_dsn
         .as_ref()
-        .and_then(|_| telemetry::current_traceparent());
+        .and_then(|_| telemetry::traceparent_from_span(&span));
+    let _guard = span.enter();
 
     sentry::with_scope(
         |scope| {
