@@ -11,7 +11,8 @@ pub use quire_core::ci::pipeline::{
 pub use quire_core::ci::run::ApiSession;
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{pipeline, registration, runtime};
-use quire_core::telemetry;
+use opentelemetry::propagation::TextMapPropagator as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.
@@ -168,10 +169,12 @@ fn run_ref(ctx: &TriggerContext<'_>, pushed_at: jiff::Timestamp, push_ref: &Push
     let session = ApiSession::new(ctx.port);
 
     let span = tracing::info_span!("quire.ci.run", repo = %ctx.event_repo);
-    let traceparent = ctx
-        .sentry_dsn
-        .as_ref()
-        .and_then(|_| telemetry::traceparent_from_span(&span));
+    let traceparent = {
+        let mut carrier = std::collections::HashMap::new();
+        opentelemetry_sdk::propagation::TraceContextPropagator::new()
+            .inject_context(&span.context(), &mut carrier);
+        carrier.remove("traceparent")
+    };
     let _guard = span.enter();
 
     sentry::with_scope(
