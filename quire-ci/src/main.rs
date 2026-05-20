@@ -239,14 +239,14 @@ impl RunClient {
     ///
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
-    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, SentryContext)> {
+    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, TelemetryContext)> {
         let bootstrap: Bootstrap =
             (|| -> reqwest::Result<_> { self.get("bootstrap")?.error_for_status()?.json() })()
                 .into_diagnostic()?;
         Ok((
             bootstrap.git_dir,
             bootstrap.meta,
-            SentryContext {
+            TelemetryContext {
                 traceparent: bootstrap.traceparent,
                 repo: Some(bootstrap.repo),
                 run_id: Some(bootstrap.run_id),
@@ -341,7 +341,7 @@ fn main() -> Result<()> {
                     r#ref: git_ref,
                     pushed_at: jiff::Timestamp::now(),
                 };
-                (git_dir, meta, SentryContext::default())
+                (git_dir, meta, TelemetryContext::default())
             } else {
                 client.fetch_bootstrap()?
             };
@@ -385,7 +385,7 @@ fn main() -> Result<()> {
 /// from [`RunMeta`]: `meta` carries push facts the pipeline needs,
 /// these tag observability only.
 #[derive(Default)]
-struct SentryContext {
+struct TelemetryContext {
     traceparent: Option<String>,
     repo: Option<String>,
     run_id: Option<String>,
@@ -397,7 +397,7 @@ struct SentryContext {
 /// trace context come from the bootstrap handoff and are attached only
 /// when present (absent for local runs); the trace id links both
 /// sides' events onto the same trace.
-fn init_sentry(dsn: &str, meta: &RunMeta, ctx: &SentryContext) -> sentry::ClientInitGuard {
+fn init_sentry(dsn: &str, meta: &RunMeta, ctx: &TelemetryContext) -> sentry::ClientInitGuard {
     let guard = sentry::init((dsn, telemetry::sentry_client_options(VERSION)));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");
