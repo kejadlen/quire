@@ -224,6 +224,9 @@ pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Res
         }
     };
 
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
     let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_span_processor(sentry_opentelemetry::SentrySpanProcessor::new())
         .build();
