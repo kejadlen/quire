@@ -18,6 +18,7 @@ use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::sync::Arc;
 
@@ -364,14 +365,12 @@ fn main() -> Result<()> {
             // before the Sentry client flushes to the server.
             let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
 
-            // Attach the remote trace context so quire-ci spans appear
-            // as children of the orchestrator's span in Sentry.
-            let _cx_guard = sentry_ctx
-                .traceparent
-                .as_deref()
-                .map(telemetry::attach_traceparent);
-            let _run_span =
-                tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref).entered();
+            let run_span =
+                tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref);
+            if let Some(tp) = sentry_ctx.traceparent.as_deref() {
+                run_span.set_parent(telemetry::context_from_traceparent(tp));
+            }
+            let _run_span = run_span.entered();
 
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 

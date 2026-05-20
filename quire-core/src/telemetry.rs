@@ -6,6 +6,7 @@ use std::sync::Arc;
 use miette::IntoDiagnostic;
 use opentelemetry::propagation::TextMapPropagator as _;
 use opentelemetry::trace::TracerProvider as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -200,10 +201,6 @@ impl Drop for TracingGuard {
     }
 }
 
-/// Opaque guard that restores the previous OTEL context on drop.
-#[allow(dead_code)]
-pub struct TraceparentGuard(opentelemetry::ContextGuard);
-
 /// Extract the W3C traceparent for the currently active tracing span.
 /// Returns None when no OTEL span is active (e.g. no DSN, not yet entered a span).
 pub fn current_traceparent() -> Option<String> {
@@ -214,14 +211,13 @@ pub fn current_traceparent() -> Option<String> {
     carrier.remove("traceparent")
 }
 
-/// Inject a W3C traceparent into the current thread's OTEL context.
-/// The returned guard restores the previous context on drop.
-pub fn attach_traceparent(traceparent: &str) -> TraceparentGuard {
+/// Decode a W3C traceparent string into an OTEL context suitable for
+/// passing to [`tracing_opentelemetry::OpenTelemetrySpanExt::set_parent`].
+pub fn context_from_traceparent(traceparent: &str) -> opentelemetry::Context {
     let propagator = opentelemetry_sdk::propagation::TraceContextPropagator::new();
     let mut carrier = std::collections::HashMap::new();
     carrier.insert("traceparent".to_string(), traceparent.to_string());
-    let cx = propagator.extract(&carrier);
-    TraceparentGuard(cx.attach())
+    propagator.extract(&carrier)
 }
 
 /// Initialize the global tracing subscriber with `QUIRE_LOG`-driven filtering,
