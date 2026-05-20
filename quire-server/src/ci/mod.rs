@@ -169,11 +169,11 @@ fn run_ref(ctx: &TriggerContext<'_>, pushed_at: jiff::Timestamp, push_ref: &Push
 
     let span = tracing::info_span!("quire.ci.run", repo = %ctx.event_repo);
     let traceparent = {
-        let mut carrier = std::collections::HashMap::new();
+        let mut injector = std::collections::HashMap::new();
         opentelemetry::global::get_text_map_propagator(|p| {
-            p.inject_context(&span.context(), &mut carrier)
+            p.inject_context(&span.context(), &mut injector)
         });
-        carrier.remove("traceparent")
+        injector.remove("traceparent")
     };
     let _guard = span.enter();
 
