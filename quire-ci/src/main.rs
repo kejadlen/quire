@@ -17,6 +17,7 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
+use opentelemetry::propagation::TextMapPropagator as _;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
@@ -368,7 +369,11 @@ fn main() -> Result<()> {
             let run_span =
                 tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref);
             if let Some(tp) = sentry_ctx.traceparent.as_deref() {
-                run_span.set_parent(telemetry::context_from_traceparent(tp));
+                let mut carrier = std::collections::HashMap::new();
+                carrier.insert("traceparent".to_string(), tp.to_string());
+                run_span.set_parent(
+                    opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(&carrier),
+                );
             }
             let _run_span = run_span.entered();
 
