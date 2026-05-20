@@ -2611,7 +2611,6 @@ dependencies = [
  "miette",
  "mlua",
  "opentelemetry",
- "opentelemetry_sdk",
  "petgraph",
  "predicates",
  "quire-core",
