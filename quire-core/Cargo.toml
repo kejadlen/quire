@@ -12,8 +12,12 @@ mlua = { workspace = true }
 petgraph = { workspace = true }
 rand = "*"
 regex = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 sentry = { workspace = true }
+sentry-opentelemetry = { workspace = true }
 sentry-tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

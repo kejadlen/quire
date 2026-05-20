@@ -187,14 +187,51 @@ pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
     }
 }
 
+/// Returned by `init_tracing`; shuts down the OTEL TracerProvider on drop.
+pub struct TracingGuard {
+    provider: opentelemetry_sdk::trace::SdkTracerProvider,
+}
+
+impl Drop for TracingGuard {
+    fn drop(&mut self) {
+        let _ = self.provider.shutdown();
+    }
+}
+
+/// Opaque guard that restores the previous OTEL context on drop.
+#[allow(dead_code)]
+pub struct TraceparentGuard(opentelemetry::ContextGuard);
+
+/// Extract the W3C traceparent for the currently active tracing span.
+/// Returns None when no OTEL span is active (e.g. no DSN, not yet entered a span).
+pub fn current_traceparent() -> Option<String> {
+    use opentelemetry::propagation::TextMapPropagator;
+    let propagator = opentelemetry_sdk::propagation::TraceContextPropagator::new();
+    let cx = opentelemetry::Context::current();
+    let mut carrier = std::collections::HashMap::new();
+    propagator.inject_context(&cx, &mut carrier);
+    carrier.remove("traceparent")
+}
+
+/// Inject a W3C traceparent into the current thread's OTEL context.
+/// The returned guard restores the previous context on drop.
+pub fn attach_traceparent(traceparent: &str) -> TraceparentGuard {
+    use opentelemetry::propagation::TextMapPropagator;
+    let propagator = opentelemetry_sdk::propagation::TraceContextPropagator::new();
+    let mut carrier = std::collections::HashMap::new();
+    carrier.insert("traceparent".to_string(), traceparent.to_string());
+    let cx = propagator.extract(&carrier);
+    TraceparentGuard(cx.attach())
+}
+
 /// Initialize the global tracing subscriber with `QUIRE_LOG`-driven filtering,
-/// a stderr fmt layer per `fmt_mode`, the `sentry-tracing` bridge, and the
-/// supplied [`MietteLayer`].
+/// a stderr fmt layer per `fmt_mode`, the `sentry-tracing` bridge, the
+/// supplied [`MietteLayer`], and an OTEL tracing layer wired to Sentry.
 ///
 /// Layer ordering is baked in: `miette_layer` registers before
 /// `sentry_tracing::layer()` so its thread-local is populated when
 /// sentry-tracing's `on_event` calls `capture_event`.
-pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Result<()> {
+pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Result<TracingGuard> {
     let filter = EnvFilter::builder()
         .with_env_var("QUIRE_LOG")
         .from_env()
@@ -212,14 +249,22 @@ pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Res
         }
     };
 
+    use opentelemetry::trace::TracerProvider as _;
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_span_processor(sentry_opentelemetry::SentrySpanProcessor::new())
+        .build();
+    opentelemetry::global::set_tracer_provider(provider.clone());
+    let tracer = provider.tracer("quire");
+
     tracing_subscriber::registry()
         .with(miette_layer)
         .with(sentry_tracing::layer())
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(fmt_layer)
         .with(filter)
         .init();
 
-    Ok(())
+    Ok(TracingGuard { provider })
 }
 
 #[cfg(test)]

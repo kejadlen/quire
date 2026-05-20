@@ -284,7 +284,7 @@ impl Run {
         mut self,
         git_dir: &Path,
         workspace: &Path,
-        sentry_trace_id: Option<&str>,
+        traceparent: Option<&str>,
         sentry_dsn: Option<&str>,
         session: Option<&ApiSession>,
     ) -> Result<()> {
@@ -329,7 +329,7 @@ impl Run {
                 cmd.arg("--local").arg("--git-dir").arg(git_dir);
             }
             Some(s) => {
-                self.store_bootstrap_data(git_dir, sentry_trace_id)?;
+                self.store_bootstrap_data(git_dir, traceparent)?;
                 cmd.env("QUIRE__SERVER_URL", &s.server_url);
                 cmd.env("QUIRE__RUN_TOKEN", &s.run_token);
             }
@@ -476,7 +476,7 @@ impl Run {
     /// Called by `execute` when the API transport is active, before spawning
     /// quire-ci. quire-ci fetches this via `GET /api/runs/:id/bootstrap`
     /// instead of reading a file.
-    fn store_bootstrap_data(&self, git_dir: &Path, sentry_trace_id: Option<&str>) -> Result<()> {
+    fn store_bootstrap_data(&self, git_dir: &Path, traceparent: Option<&str>) -> Result<()> {
         let git_dir_str = git_dir.to_str().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -485,8 +485,8 @@ impl Run {
         })?;
         let db = crate::db::open(&self.db_path)?;
         db.execute(
-            "UPDATE runs SET git_dir = ?1, sentry_trace_id = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir_str, sentry_trace_id, &self.id],
+            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
+            rusqlite::params![git_dir_str, traceparent, &self.id],
         )?;
         Ok(())
     }
