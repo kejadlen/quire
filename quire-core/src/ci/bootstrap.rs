@@ -28,10 +28,10 @@ pub struct Bootstrap {
     /// The server-assigned run id (UUIDv7, the `runs.id` PK).
     /// quire-ci tags Sentry events with it.
     pub run_id: String,
-    /// Sentry trace id for the orchestrator's span, present only when
+    /// W3C traceparent header value for the orchestrator's span, present only when
     /// the global config sets a DSN. Allows quire-ci to attach its
-    /// events to the same trace. The DSN itself travels via the
+    /// events to the same trace via OTEL context propagation. The DSN itself travels via the
     /// `QUIRE__SENTRY_DSN` environment variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sentry_trace_id: Option<String>,
+    pub traceparent: Option<String>,
 }

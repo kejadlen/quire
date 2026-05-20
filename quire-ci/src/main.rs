@@ -246,7 +246,7 @@ impl RunClient {
             bootstrap.git_dir,
             bootstrap.meta,
             SentryContext {
-                trace_id: bootstrap.sentry_trace_id,
+                traceparent: bootstrap.traceparent,
                 repo: Some(bootstrap.repo),
                 run_id: Some(bootstrap.run_id),
             },
@@ -359,7 +359,16 @@ fn main() -> Result<()> {
             // for them. The layer stays installed in case future ops
             // errors want to register types.
             let miette_layer = MietteLayer::new();
-            telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+            // _tracing_guard must be declared AFTER _sentry so it drops
+            // BEFORE _sentry — OTEL provider flushes spans to Sentry SDK
+            // before the Sentry client flushes to the server.
+            let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+
+            // Attach the remote trace context so quire-ci spans appear
+            // as children of the orchestrator's span in Sentry.
+            let _cx_guard = sentry_ctx.traceparent.as_deref()
+                .map(|tp| telemetry::attach_traceparent(tp));
+            let _run_span = tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref).entered();
 
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 
@@ -375,7 +384,7 @@ fn main() -> Result<()> {
 /// these tag observability only.
 #[derive(Default)]
 struct SentryContext {
-    trace_id: Option<String>,
+    traceparent: Option<String>,
     repo: Option<String>,
     run_id: Option<String>,
 }
@@ -397,30 +406,6 @@ fn init_sentry(dsn: &str, meta: &RunMeta, ctx: &SentryContext) -> sentry::Client
         }
         if let Some(run_id) = &ctx.run_id {
             scope.set_tag("run_id", run_id);
-        }
-        if let Some(tid) = ctx.trace_id.as_deref() {
-            match tid.parse::<sentry::protocol::TraceId>() {
-                Ok(trace_id) => {
-                    scope.set_context(
-                        "trace",
-                        sentry::protocol::Context::Trace(Box::new(
-                            sentry::protocol::TraceContext {
-                                trace_id,
-                                span_id: sentry::protocol::SpanId::default(),
-                                op: Some("quire.ci.run".into()),
-                                ..Default::default()
-                            },
-                        )),
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        trace_id = %tid,
-                        error = %e,
-                        "malformed trace_id in bootstrap; quire-ci events won't link to orchestrator",
-                    );
-                }
-            }
         }
     });
     guard

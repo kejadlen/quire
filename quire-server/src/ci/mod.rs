@@ -11,6 +11,7 @@ pub use quire_core::ci::pipeline::{
 pub use quire_core::ci::run::ApiSession;
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{pipeline, registration, runtime};
+use quire_core::telemetry;
 pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
 
 /// A resolved commit reference.
@@ -158,16 +159,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
     };
 
     for push_ref in event.updated_refs() {
-        // One trace per push_ref. The trace context is set on the
-        // orchestrator's scope for the duration of this iteration and
-        // propagated to quire-ci through the dispatch file, so a
-        // quire-ci panic and the orchestrator-side "CI trigger
-        // failed" event end up on the same trace in Sentry. DSN and
-        // trace_id travel together — no DSN, no handoff, no trace
-        // tagging is observable.
-        let trace_id = sentry::protocol::TraceId::default();
-        let span_id = sentry::protocol::SpanId::default();
-        run_ref(&ctx, event.pushed_at, push_ref, trace_id, span_id);
+        run_ref(&ctx, event.pushed_at, push_ref);
     }
 }
 
@@ -176,23 +168,19 @@ fn run_ref(
     ctx: &TriggerContext<'_>,
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
-    trace_id: sentry::protocol::TraceId,
-    span_id: sentry::protocol::SpanId,
 ) {
     let session = ApiSession::new(ctx.port);
-    let sentry_trace_id = ctx.sentry_dsn.as_ref().map(|_| trace_id.to_string());
+
+    let span = tracing::info_span!("quire.ci.run", repo = %ctx.event_repo);
+    let _guard = span.enter();
+
+    let traceparent = ctx.sentry_dsn.as_ref()
+        .and_then(|_| telemetry::current_traceparent());
+
     sentry::with_scope(
         |scope| {
             scope.set_tag("repo", ctx.event_repo);
-            scope.set_context(
-                "trace",
-                sentry::protocol::Context::Trace(Box::new(sentry::protocol::TraceContext {
-                    trace_id,
-                    span_id,
-                    op: Some("quire.ci.run".into()),
-                    ..Default::default()
-                })),
-            );
+            // TraceContext is now managed by sentry-opentelemetry
         },
         || {
             if let Err(e) = run_ref_inner(
@@ -200,7 +188,7 @@ fn run_ref(
                 pushed_at,
                 push_ref,
                 &session,
-                sentry_trace_id.as_deref(),
+                traceparent.as_deref(),
                 ctx.sentry_dsn.as_deref(),
             ) {
                 tracing::error!(
@@ -220,7 +208,7 @@ fn run_ref_inner(
     pushed_at: jiff::Timestamp,
     push_ref: &PushRef,
     session: &ApiSession,
-    sentry_trace_id: Option<&str>,
+    traceparent: Option<&str>,
     sentry_dsn: Option<&str>,
 ) -> error::Result<()> {
     let ci = ctx.repo.ci();
@@ -258,7 +246,7 @@ fn run_ref_inner(
             run.execute(
                 &ctx.repo.path(),
                 &workspace,
-                sentry_trace_id,
+                traceparent,
                 sentry_dsn,
                 Some(session),
             )?;

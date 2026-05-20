@@ -154,14 +154,14 @@ async fn get_bootstrap(
                 ref_name: String,
                 pushed_at_ms: i64,
                 git_dir: Option<String>,
-                sentry_trace_id: Option<String>,
+                traceparent: Option<String>,
                 state: String,
                 repo: String,
             }
 
             let row: RunRow = db
                 .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, sentry_trace_id, state, repo
+                    "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, state, repo
                      FROM runs WHERE id = ?1",
                 )?
                 .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
@@ -192,7 +192,7 @@ async fn get_bootstrap(
                 git_dir,
                 repo: row.repo,
                 run_id,
-                sentry_trace_id: row.sentry_trace_id,
+                traceparent: row.traceparent,
             })
         })
         .await
@@ -284,7 +284,7 @@ mod tests {
         env: &TestEnv,
         session: &ApiSession,
         git_dir: &str,
-        sentry_trace_id: Option<&str>,
+        traceparent: Option<&str>,
     ) -> String {
         let run = env
             .runs()
@@ -294,8 +294,8 @@ mod tests {
 
         let db = crate::db::open(&env.quire.db_path()).expect("db open");
         db.execute(
-            "UPDATE runs SET git_dir = ?1, sentry_trace_id = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir, sentry_trace_id, &run_id],
+            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
+            rusqlite::params![git_dir, traceparent, &run_id],
         )
         .expect("update bootstrap data");
         run_id
