@@ -1,7 +1,7 @@
 //! Database connection management and migration runner.
 //!
-//! [`open`] creates a connection with WAL mode and foreign keys enabled.
-//! [`migrate`] runs pending migrations — call once at server startup.
+//! [`Db::open`] creates a connection with WAL mode and foreign keys enabled.
+//! [`Db::migrate`] runs pending migrations — call once at server startup.
 //!
 //! All SQL queries are in the [`runs`] submodule.
 
@@ -38,33 +38,41 @@ pub enum MigrationError {
     Migration(#[from] rusqlite_migration::Error),
 }
 
-/// Open the database at `path`, enable WAL mode and foreign keys.
-/// Creates the file if it doesn't exist.
+/// A newtype wrapper around a SQLite connection.
 ///
-/// Does not run migrations. Call [`migrate`] once at server startup.
-pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
-    let conn = Connection::open(path)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;",
-    )?;
-    Ok(conn)
-}
+/// All SQL queries are exposed as methods on this type via `impl Db` blocks
+/// in the submodules. Callers never access the inner [`Connection`] directly.
+pub struct Db(Connection);
 
-/// Run any pending migrations on the given connection.
-///
-/// Call once at server startup, after [`open`].
-pub fn migrate(conn: &mut Connection) -> Result<(), MigrationError> {
-    MIGRATIONS.to_latest(conn)?;
-    Ok(())
-}
+impl Db {
+    /// Open the database at `path`, enable WAL mode and foreign keys.
+    /// Creates the file if it doesn't exist.
+    ///
+    /// Does not run migrations. Call [`Db::migrate`] once at server startup.
+    pub fn open(path: &Path) -> Result<Db, rusqlite::Error> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;",
+        )?;
+        Ok(Db(conn))
+    }
 
-/// Open an in-memory database with migrations applied (for tests).
-#[cfg(test)]
-pub fn open_in_memory() -> Result<Connection, MigrationError> {
-    let mut conn = Connection::open_in_memory()?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-    MIGRATIONS.to_latest(&mut conn)?;
-    Ok(conn)
+    /// Run any pending migrations on this connection.
+    ///
+    /// Call once at server startup, after [`Db::open`].
+    pub fn migrate(&mut self) -> Result<(), MigrationError> {
+        MIGRATIONS.to_latest(&mut self.0)?;
+        Ok(())
+    }
+
+    /// Open an in-memory database with migrations applied (for tests).
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Db, MigrationError> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        MIGRATIONS.to_latest(&mut conn)?;
+        Ok(Db(conn))
+    }
 }

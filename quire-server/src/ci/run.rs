@@ -80,25 +80,22 @@ impl Runs {
             }
         };
 
-        let db = crate::db::open(&self.db_path)?;
+        let db = crate::db::Db::open(&self.db_path)?;
 
         // Cancel any existing queued or active run for (repo, ref).
         // Do this before inserting the new run so the new run is never
         // caught by its own cancel query.
         self.cancel_existing(&db, &meta.r#ref)?;
 
-        crate::db::runs::insert_run(
-            &db,
-            &crate::db::runs::NewRun {
-                id: &id,
-                repo: &self.repo,
-                ref_name: &meta.r#ref,
-                sha: &meta.sha,
-                pushed_at_ms: meta.pushed_at.as_millisecond(),
-                created_at: Timestamp::now().as_millisecond(),
-                run_token: run_token_str,
-            },
-        )?;
+        db.insert_run(&crate::db::runs::NewRun {
+            id: &id,
+            repo: &self.repo,
+            ref_name: &meta.r#ref,
+            sha: &meta.sha,
+            pushed_at_ms: meta.pushed_at.as_millisecond(),
+            created_at: Timestamp::now().as_millisecond(),
+            run_token: run_token_str,
+        })?;
 
         // Create run directory for workspace and logs.
         let workspace_path = self.base_dir.join(&id).join("workspace");
@@ -115,18 +112,17 @@ impl Runs {
 
     /// Cancel any existing queued or active run for
     /// `(repo, ref)`. Different refs are unaffected.
-    fn cancel_existing(&self, db: &rusqlite::Connection, ref_name: &str) -> Result<()> {
+    fn cancel_existing(&self, db: &crate::db::Db, ref_name: &str) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
 
-        let active_ids = crate::db::runs::get_active_runs_for_ref(db, &self.repo, ref_name)?;
+        let active_ids = db.get_active_runs_for_ref(&self.repo, ref_name)?;
 
         for run_id in &active_ids {
-            crate::db::runs::cancel_active_run(db, run_id, now)?;
+            db.cancel_active_run(run_id, now)?;
             tracing::info!(run_id = %run_id, "canceled active run");
         }
 
-        let queued_count =
-            crate::db::runs::cancel_queued_runs_for_ref(db, &self.repo, ref_name, now)?;
+        let queued_count = db.cancel_queued_runs_for_ref(&self.repo, ref_name, now)?;
         if queued_count > 0 {
             tracing::info!(count = queued_count, "canceled queued run(s)");
         }
@@ -140,8 +136,8 @@ impl Runs {
 /// Operates across all repos — orphans aren't a per-repo concern.
 pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
     let now = Timestamp::now().as_millisecond();
-    let db = crate::db::open(db_path)?;
-    let count = crate::db::runs::fail_orphaned_runs(&db, now)?;
+    let db = crate::db::Db::open(db_path)?;
+    let count = db.fail_orphaned_runs(now)?;
     if count > 0 {
         tracing::warn!(count, "reconciled orphaned runs");
     }
@@ -176,8 +172,8 @@ impl Run {
 
     /// Open an existing run from the database by ID.
     pub fn open(db_path: PathBuf, id: String, base_dir: PathBuf) -> Result<Self> {
-        let db = crate::db::open(&db_path)?;
-        let (dispatched_at, resolved_at) = crate::db::runs::get_run_lifecycle(&db, &id)?;
+        let db = crate::db::Db::open(&db_path)?;
+        let (dispatched_at, resolved_at) = db.get_run_lifecycle(&id)?;
         Ok(Self {
             db_path,
             id,
@@ -332,7 +328,7 @@ impl Run {
                 source: e,
             })?;
 
-        let db = crate::db::open(&self.db_path)?;
+        let db = crate::db::Db::open(&self.db_path)?;
 
         // Pass 1: jobs rows. Pair JobStarted with JobFinished by job_id.
         let mut inflight_jobs: HashMap<&str, i64> = HashMap::new();
@@ -348,15 +344,7 @@ impl Run {
                         JobOutcome::Succeeded => "succeeded",
                         JobOutcome::Failed => "failed",
                     };
-                    crate::db::runs::insert_job(
-                        &db,
-                        &self.id,
-                        job_id,
-                        state,
-                        None,
-                        started_at,
-                        event.at_ms,
-                    )?;
+                    db.insert_job(&self.id, job_id, state, None, started_at, event.at_ms)?;
                 }
                 EventKind::RunFinished { outcome } => {
                     run_outcome = Some(*outcome);
@@ -378,15 +366,7 @@ impl Run {
                     let Some((started_at, cmd)) = inflight_sh.remove(job_id.as_str()) else {
                         continue;
                     };
-                    crate::db::runs::insert_sh_event(
-                        &db,
-                        &self.id,
-                        job_id,
-                        started_at,
-                        event.at_ms,
-                        *exit_code,
-                        cmd,
-                    )?;
+                    db.insert_sh_event(&self.id, job_id, started_at, event.at_ms, *exit_code, cmd)?;
                 }
                 EventKind::JobStarted { .. }
                 | EventKind::JobFinished { .. }
@@ -409,8 +389,8 @@ impl Run {
                 "git_dir path is not valid UTF-8",
             )
         })?;
-        let db = crate::db::open(&self.db_path)?;
-        crate::db::runs::set_run_bootstrap_data(&db, &self.id, git_dir_str, traceparent)?;
+        let db = crate::db::Db::open(&self.db_path)?;
+        db.set_run_bootstrap_data(&self.id, git_dir_str, traceparent)?;
         Ok(())
     }
 
@@ -420,8 +400,8 @@ impl Run {
             return Err(Error::AlreadyDispatched);
         }
         let now = Timestamp::now().as_millisecond();
-        let db = crate::db::open(&self.db_path)?;
-        crate::db::runs::set_run_dispatched(&db, &self.id, now)?;
+        let db = crate::db::Db::open(&self.db_path)?;
+        db.set_run_dispatched(&self.id, now)?;
         self.dispatched = true;
         Ok(())
     }
@@ -432,8 +412,8 @@ impl Run {
             return Err(Error::AlreadyResolved);
         }
         let now = Timestamp::now().as_millisecond();
-        let db = crate::db::open(&self.db_path)?;
-        crate::db::runs::resolve_run(&db, &self.id, now, outcome)?;
+        let db = crate::db::Db::open(&self.db_path)?;
+        db.resolve_run(&self.id, now, outcome)?;
         self.dispatched = true;
         self.resolved = true;
         Ok(())
@@ -441,8 +421,8 @@ impl Run {
 
     /// Read the immutable metadata for this run.
     pub fn read_meta(&self) -> Result<RunMeta> {
-        let db = crate::db::open(&self.db_path)?;
-        let (sha, ref_name, pushed_at_ms) = crate::db::runs::get_run_meta(&db, &self.id)?;
+        let db = crate::db::Db::open(&self.db_path)?;
+        let (sha, ref_name, pushed_at_ms) = db.get_run_meta(&self.id)?;
         Ok(RunMeta {
             sha,
             r#ref: ref_name,
@@ -453,22 +433,22 @@ impl Run {
 
     /// Read the `dispatched_at` timestamp for this run, if set.
     pub fn read_dispatched_at(&self) -> Result<Option<Timestamp>> {
-        let db = crate::db::open(&self.db_path)?;
-        let ms = crate::db::runs::get_run_dispatched_at(&db, &self.id)?;
+        let db = crate::db::Db::open(&self.db_path)?;
+        let ms = db.get_run_dispatched_at(&self.id)?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
     /// Read the `resolved_at` timestamp for this run, if set.
     pub fn read_resolved_at(&self) -> Result<Option<Timestamp>> {
-        let db = crate::db::open(&self.db_path)?;
-        let ms = crate::db::runs::get_run_resolved_at(&db, &self.id)?;
+        let db = crate::db::Db::open(&self.db_path)?;
+        let ms = db.get_run_resolved_at(&self.id)?;
         Ok(ms.map(|m| Timestamp::from_millisecond(m).expect("valid timestamp")))
     }
 
     /// Read the `outcome` string for this run, if set.
     pub fn read_outcome(&self) -> Result<Option<String>> {
-        let db = crate::db::open(&self.db_path)?;
-        Ok(crate::db::runs::get_run_outcome(&db, &self.id)?)
+        let db = crate::db::Db::open(&self.db_path)?;
+        Ok(db.get_run_outcome(&self.id)?)
     }
 }
 
@@ -517,8 +497,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // Initialize the database.
-        let mut db = crate::db::open(&quire.db_path()).expect("init db");
-        crate::db::migrate(&mut db).expect("migrate db");
+        let mut db = crate::db::Db::open(&quire.db_path()).expect("init db");
+        db.migrate().expect("migrate db");
         drop(db);
         (dir, quire)
     }
@@ -665,8 +645,8 @@ mod tests {
         // Run ID is minted by the server, not taken from the session.
         assert!(uuid::Uuid::parse_str(run.id()).is_ok());
 
-        let conn = crate::db::open(&quire.db_path()).expect("db");
-        let stored = crate::db::runs::get_run_token(&conn, run.id()).expect("row");
+        let db = crate::db::Db::open(&quire.db_path()).expect("db");
+        let stored = db.get_run_token(run.id()).expect("row");
         assert_eq!(stored.as_deref(), Some(session.run_token.as_str()));
     }
 
@@ -1002,8 +982,8 @@ mod tests {
         let outcome = run.ingest_events(&events_path).expect("ingest");
         assert_eq!(outcome, Some(RunOutcome::PipelineFailure));
 
-        let db = crate::db::open(&quire.db_path()).expect("open db");
-        let jobs: Vec<(String, String, i64, i64)> = db
+        let conn = rusqlite::Connection::open(quire.db_path()).expect("open db");
+        let jobs: Vec<(String, String, i64, i64)> = conn
             .prepare(
                 "SELECT job_id, state, started_at_ms, finished_at_ms FROM jobs \
                  WHERE run_id = ?1 ORDER BY started_at_ms",
@@ -1023,7 +1003,7 @@ mod tests {
             ]
         );
 
-        let sh_events: Vec<(String, i64, i64, i32, String)> = db
+        let sh_events: Vec<(String, i64, i64, i32, String)> = conn
             .prepare(
                 "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd FROM sh \
                  WHERE run_id = ?1 ORDER BY started_at_ms",
@@ -1061,8 +1041,8 @@ mod tests {
             .expect("missing file should not error");
         assert!(outcome.is_none(), "missing file yields no outcome");
 
-        let db = crate::db::open(&quire.db_path()).expect("open db");
-        let count: i64 = db
+        let conn = rusqlite::Connection::open(quire.db_path()).expect("open db");
+        let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM jobs WHERE run_id = ?1",
                 [run.id()],

@@ -76,8 +76,8 @@ mod tests {
             let bare = repos_dir.join("example.git");
             fs_err::create_dir_all(&bare).expect("mkdir bare repo");
 
-            let mut db = crate::db::open(&quire.db_path()).expect("db open");
-            crate::db::migrate(&mut db).expect("migrate");
+            let mut db = crate::db::Db::open(&quire.db_path()).expect("db open");
+            db.migrate().expect("migrate");
             drop(db);
 
             Self { _dir: dir, quire }
@@ -94,20 +94,17 @@ mod tests {
             resolved: Option<i64>,
         ) {
             let db = self.quire.db_pool();
-            crate::db::runs::insert_seeded_run(
-                &db,
-                &crate::db::runs::SeededRun {
-                    id,
-                    repo: "example.git",
-                    ref_name,
-                    sha,
-                    pushed_at_ms: created,
-                    created_at: created,
-                    dispatched_at: dispatched,
-                    resolved_at: resolved,
-                    outcome,
-                },
-            )
+            db.insert_seeded_run(&crate::db::runs::SeededRun {
+                id,
+                repo: "example.git",
+                ref_name,
+                sha,
+                pushed_at_ms: created,
+                created_at: created,
+                dispatched_at: dispatched,
+                resolved_at: resolved,
+                outcome,
+            })
             .expect("insert run");
         }
 
@@ -121,16 +118,8 @@ mod tests {
             finished: Option<i64>,
         ) {
             let db = self.quire.db_pool();
-            crate::db::runs::insert_job(
-                &db,
-                run_id,
-                job_id,
-                state,
-                exit_code,
-                started.unwrap_or(0),
-                finished.unwrap_or(0),
-            )
-            .expect("insert job");
+            db.insert_job(run_id, job_id, state, exit_code, started.unwrap_or(0), finished.unwrap_or(0))
+                .expect("insert job");
         }
 
         fn app(&self) -> axum::Router {

@@ -222,7 +222,7 @@ pub struct RepoGithubConfig {
 pub struct Quire {
     base_dir: PathBuf,
     pub config: GlobalConfig,
-    db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
+    db_pool: Arc<OnceLock<Mutex<crate::db::Db>>>,
 }
 
 impl Quire {
@@ -270,10 +270,10 @@ impl Quire {
     ///
     /// Lazily initialises the connection on first call. Once open, the
     /// same connection is reused for all subsequent requests.
-    pub fn db_pool(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    pub fn db_pool(&self) -> std::sync::MutexGuard<'_, crate::db::Db> {
         let mutex = self.db_pool.get_or_init(|| {
-            let conn = crate::db::open(&self.db_path()).expect("failed to open database");
-            Mutex::new(conn)
+            let db = crate::db::Db::open(&self.db_path()).expect("failed to open database");
+            Mutex::new(db)
         });
         mutex.lock().unwrap_or_else(|e| e.into_inner())
     }

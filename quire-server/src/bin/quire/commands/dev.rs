@@ -51,7 +51,7 @@ struct SeedShEvent {
 
 struct Seeder {
     quire: Quire,
-    db: rusqlite::Connection,
+    db: quire::db::Db,
     base_ms: i64,
     runs: Vec<SeedRun>,
 }
@@ -89,10 +89,12 @@ impl Seeder {
             miette::bail!("git clone --bare failed with {status}");
         }
 
-        let mut db = quire::db::open(&quire.db_path())
+        let mut db = quire::db::Db::open(&quire.db_path())
             .into_diagnostic()
             .context("failed to open database")?;
-        quire::db::migrate(&mut db).context("failed to run migrations")?;
+        db.migrate()
+            .into_diagnostic()
+            .context("failed to run migrations")?;
 
         Ok(Self {
             quire,
@@ -107,7 +109,7 @@ impl Seeder {
             self.insert_run(run)?;
         }
 
-        let run_count = quire::db::runs::count_runs(&self.db).into_diagnostic()?;
+        let run_count = self.db.count_runs().into_diagnostic()?;
 
         tracing::info!(%run_count, "seeded database");
         Ok(self.quire)
@@ -122,9 +124,8 @@ impl Seeder {
         let dispatched_at = run.dispatched_delta_ms.map(|d| pushed_at + d);
         let resolved_at = dispatched_at.zip(run.duration_ms).map(|(s, d)| s + d);
 
-        quire::db::runs::insert_seeded_run(
-            &self.db,
-            &SeededRun {
+        self.db
+            .insert_seeded_run(&SeededRun {
                 id: &run_id,
                 repo,
                 ref_name: run.ref_name,
@@ -134,9 +135,8 @@ impl Seeder {
                 dispatched_at,
                 resolved_at,
                 outcome: run.outcome,
-            },
-        )
-        .into_diagnostic()?;
+            })
+            .into_diagnostic()?;
 
         let Some(run_dispatched_at) = dispatched_at else {
             return Ok(()); // queued run; no jobs to insert.
@@ -153,30 +153,30 @@ impl Seeder {
             let job_started_at = run_dispatched_at + job.started_delta_ms;
             let job_finished_at = job.duration_ms.map(|d| job_started_at + d);
 
-            quire::db::runs::insert_job(
-                &self.db,
-                &run_id,
-                job.job_id,
-                job.state,
-                job.exit_code,
-                job_started_at,
-                job_finished_at.unwrap_or(0),
-            )
-            .into_diagnostic()?;
+            self.db
+                .insert_job(
+                    &run_id,
+                    job.job_id,
+                    job.state,
+                    job.exit_code,
+                    job_started_at,
+                    job_finished_at.unwrap_or(0),
+                )
+                .into_diagnostic()?;
 
             for (idx, event) in job.events.iter().enumerate() {
                 let started_at = job_started_at + event.started_delta_ms;
                 let finished_at = started_at + event.duration_ms;
-                quire::db::runs::insert_sh_event(
-                    &self.db,
-                    &run_id,
-                    job.job_id,
-                    started_at,
-                    finished_at,
-                    event.exit_code,
-                    event.cmd,
-                )
-                .into_diagnostic()?;
+                self.db
+                    .insert_sh_event(
+                        &run_id,
+                        job.job_id,
+                        started_at,
+                        finished_at,
+                        event.exit_code,
+                        event.cmd,
+                    )
+                    .into_diagnostic()?;
 
                 if let Some(content) = event.log {
                     let dir = logs_base.join("jobs").join(job.job_id);

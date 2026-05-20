@@ -103,7 +103,7 @@ async fn verify_run_token(
 
     let run_id = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
         let db = quire.db_pool();
-        match crate::db::runs::get_run_id_for_token(&db, &token) {
+        match db.get_run_id_for_token(&token) {
             Ok(id) => Ok(id),
             Err(rusqlite::Error::QueryReturnedNoRows) => Err(ApiError::Unauthorized),
             Err(e) => Err(ApiError::Db(e)),
@@ -131,10 +131,11 @@ async fn get_bootstrap(
 ) -> Result<axum::Json<Bootstrap>, ApiError> {
     let bootstrap =
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
-            let db = crate::db::open(&quire.db_path())?;
+            let db = crate::db::Db::open(&quire.db_path())?;
 
-            let row =
-                crate::db::runs::get_run_bootstrap_data(&db, &run_id)?.ok_or(ApiError::NotFound)?;
+            let row = db
+                .get_run_bootstrap_data(&run_id)?
+                .ok_or(ApiError::NotFound)?;
 
             if row.dispatched_at.is_some() {
                 return Err(ApiError::Gone);
@@ -150,7 +151,7 @@ async fn get_bootstrap(
             };
 
             let now_ms = jiff::Timestamp::now().as_millisecond();
-            crate::db::runs::set_run_dispatched(&db, &run_id, now_ms)?;
+            db.set_run_dispatched(&run_id, now_ms)?;
 
             Ok(Bootstrap {
                 meta,
@@ -212,8 +213,8 @@ mod tests {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
             let quire = Quire::load(dir.path().to_path_buf()).expect("load");
-            let mut db = crate::db::open(&quire.db_path()).expect("db open");
-            crate::db::migrate(&mut db).expect("migrate");
+            let mut db = crate::db::Db::open(&quire.db_path()).expect("db open");
+            db.migrate().expect("migrate");
             drop(db);
             Self { _dir: dir, quire }
         }
@@ -222,8 +223,8 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             fs_err::write(dir.path().join("config.fnl"), content).expect("write config");
             let quire = crate::Quire::load(dir.path().to_path_buf()).expect("load config");
-            let mut db = crate::db::open(&quire.db_path()).expect("db open");
-            crate::db::migrate(&mut db).expect("migrate");
+            let mut db = crate::db::Db::open(&quire.db_path()).expect("db open");
+            db.migrate().expect("migrate");
             drop(db);
             Self { _dir: dir, quire }
         }
@@ -267,8 +268,8 @@ mod tests {
             .expect("create run");
         let run_id = run.id().to_string();
 
-        let db = crate::db::open(&env.quire.db_path()).expect("db open");
-        crate::db::runs::set_run_bootstrap_data(&db, &run_id, git_dir, traceparent)
+        let db = crate::db::Db::open(&env.quire.db_path()).expect("db open");
+        db.set_run_bootstrap_data(&run_id, git_dir, traceparent)
             .expect("update bootstrap data");
         run_id
     }

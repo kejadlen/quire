@@ -7,12 +7,12 @@ use crate::{Quire, Result};
 
 pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
     let db = quire.db_pool();
-    Ok(crate::db::runs::list_runs(&db, repo)?)
+    Ok(db.list_runs(repo)?)
 }
 
 pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDetail> {
     let db = quire.db_pool();
-    Ok(crate::db::runs::get_run_detail(&db, repo, run_id)?)
+    Ok(db.get_run_detail(repo, run_id)?)
 }
 
 /// Resolve a URL slug to the on-disk repo name.
