@@ -369,10 +369,11 @@ fn main() -> Result<()> {
             let run_span =
                 tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref);
             if let Some(tp) = sentry_ctx.traceparent.as_deref() {
-                let mut carrier = std::collections::HashMap::new();
-                carrier.insert("traceparent".to_string(), tp.to_string());
+                let mut extractor = std::collections::HashMap::new();
+                extractor.insert("traceparent".to_string(), tp.to_string());
                 run_span.set_parent(
-                    opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(&carrier),
+                    opentelemetry_sdk::propagation::TraceContextPropagator::new()
+                        .extract(&extractor),
                 );
             }
             let _run_span = run_span.entered();
