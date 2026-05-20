@@ -2,14 +2,9 @@
 
 use miette::{Context, IntoDiagnostic, Result};
 use rusqlite::params;
+use uuid::Uuid;
 
 use quire::Quire;
-
-/// Anchor timestamp for seed data: captured at seed time so relative
-/// displays like "3m ago" stay realistic regardless of wall clock.
-fn base_ms() -> i64 {
-    jiff::Timestamp::now().as_millisecond()
-}
 
 /// Seed a tempdir with realistic CI run data and return a `Quire` pointing at it.
 ///
@@ -18,510 +13,445 @@ fn base_ms() -> i64 {
 /// superseded) with matching on-disk log artifacts. Idempotent — same input,
 /// same output.
 pub fn seed() -> Result<Quire> {
-    let dir = tempfile::tempdir()
-        .into_diagnostic()
-        .context("failed to create tempdir")?;
-
-    // Leak the TempDir so it outlives the function. The server will
-    // clean up on shutdown, or the OS will when the process exits.
-    let base_dir = dir.keep();
-    tracing::info!(path = %base_dir.display(), "seeded tempdir");
-
-    let quire = Quire::new(base_dir);
-
-    // Create the repos dir + a bare repo so the web view resolves the repo.
-    let bare_repo = quire.repos_dir().join("example.git");
-    fs_err::create_dir_all(&bare_repo)
-        .into_diagnostic()
-        .context("failed to create bare repo dir")?;
-    let db_path = quire.db_path();
-
-    // Open and migrate.
-    let mut db = quire::db::open(&db_path)
-        .into_diagnostic()
-        .context("failed to open database")?;
-    quire::db::migrate(&mut db)
-        .into_diagnostic()
-        .context("failed to run migrations")?;
-
-    insert_runs(&db)?;
-    insert_jobs(&db)?;
-    insert_sh_events(&db)?;
-    write_log_artifacts(&quire)?;
-
-    let run_count: i64 = db
-        .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
-        .into_diagnostic()?;
-
-    tracing::info!(%run_count, "seeded database");
-    Ok(quire)
+    Seeder::new()?.run()
 }
 
-fn insert_runs(db: &rusqlite::Connection) -> Result<()> {
-    let repo = "example.git";
-    let workspace = "/tmp/quire-seed";
+/// One run with its jobs. `pushed_delta_ms` is offset from "now" at seed time;
+/// `started_delta_ms` is offset from `pushed`; `duration_ms` is how long the
+/// run ran after starting.
+struct SeedRun {
+    state: &'static str,
+    sha: &'static str,
+    ref_name: &'static str,
+    pushed_delta_ms: i64,
+    started_delta_ms: Option<i64>,
+    duration_ms: Option<i64>,
+    jobs: Vec<SeedJob>,
+}
 
-    let runs = [
-        // Complete run — all jobs passed.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000001",
-            "complete",
-            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            "refs/heads/main",
-            base_ms(),
-            Some(base_ms() + 1000),
-            Some(base_ms() + 5000),
-        ),
-        // Failed run — one job failed.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000002",
-            "failed",
-            "cafebabecafebabecafebabecafebabecafebabe",
-            "refs/heads/main",
-            base_ms() - 600_000,
-            Some(base_ms() - 600_000 + 1000),
-            Some(base_ms() - 600_000 + 8000),
-        ),
-        // Superseded run — pushed then rebased.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000003",
-            "superseded",
-            "1111111111111111111111111111111111111111",
-            "refs/heads/feature",
-            base_ms() - 1_200_000,
-            Some(base_ms() - 1_200_000 + 1000),
-            Some(base_ms() - 1_200_000 + 2000),
-        ),
-        // Active run — still running.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000004",
-            "active",
-            "2222222222222222222222222222222222222222",
-            "refs/heads/main",
-            base_ms() - 5000,
-            Some(base_ms() - 4000),
-            None,
-        ),
-        // Pending run — queued but not started.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000005",
-            "pending",
-            "3333333333333333333333333333333333333333",
-            "refs/heads/main",
-            base_ms() - 1000,
-            None,
-            None,
-        ),
-        // Complete run on a different branch with multiple jobs.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "complete",
-            "4444444444444444444444444444444444444444",
-            "refs/heads/v2",
-            base_ms() - 3_600_000,
-            Some(base_ms() - 3_600_000 + 2000),
-            Some(base_ms() - 3_600_000 + 12000),
-        ),
-        // Failed run — orphaned (container died).
-        (
-            "aaaaaaaa-0000-0000-0000-000000000007",
-            "failed",
-            "5555555555555555555555555555555555555555",
-            "refs/heads/main",
-            base_ms() - 7_200_000,
-            Some(base_ms() - 7_200_000 + 1000),
-            Some(base_ms() - 7_200_000 + 60000),
-        ),
-    ];
+/// `started_delta_ms` is offset from the run's start; `duration_ms` is how long
+/// the job ran (None if still active).
+struct SeedJob {
+    job_id: &'static str,
+    state: &'static str,
+    exit_code: Option<i32>,
+    started_delta_ms: i64,
+    duration_ms: Option<i64>,
+    events: Vec<SeedShEvent>,
+}
 
-    let mut stmt = db.prepare(
-        "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                           queued_at_ms, started_at_ms, finished_at_ms,
-                           container_id, image_tag, build_started_at_ms, build_finished_at_ms,
-                           container_started_at_ms, container_stopped_at_ms, workspace_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, NULL, NULL, NULL, NULL, NULL, ?10)"
-    ).into_diagnostic()?;
+/// `started_delta_ms` is offset from the job's start.
+struct SeedShEvent {
+    started_delta_ms: i64,
+    duration_ms: i64,
+    exit_code: i32,
+    cmd: &'static str,
+    log: Option<&'static str>,
+}
 
-    for (id, state, sha, ref_name, pushed_at_ms, started_at_ms, finished_at_ms) in &runs {
-        stmt.execute(params![
-            id,
-            repo,
-            ref_name,
-            sha,
-            pushed_at_ms,
-            state,
-            pushed_at_ms, // queued_at_ms = pushed_at_ms
-            started_at_ms,
-            finished_at_ms,
-            workspace,
-        ])
-        .into_diagnostic()?;
+struct Seeder {
+    quire: Quire,
+    db: rusqlite::Connection,
+    base_ms: i64,
+    runs: Vec<SeedRun>,
+}
+
+impl Seeder {
+    fn new() -> Result<Self> {
+        let dir = tempfile::tempdir()
+            .into_diagnostic()
+            .context("failed to create tempdir")?;
+
+        // Leak the TempDir so it outlives the function. The server will
+        // clean up on shutdown, or the OS will when the process exits.
+        let base_dir = dir.keep();
+        tracing::info!(path = %base_dir.display(), "seeded tempdir");
+
+        let quire = Quire::new(base_dir);
+
+        // Create the repos dir + a bare repo so the web view resolves the repo.
+        let bare_repo = quire.repos_dir().join("example.git");
+        fs_err::create_dir_all(&bare_repo)
+            .into_diagnostic()
+            .context("failed to create bare repo dir")?;
+
+        let mut db = quire::db::open(&quire.db_path())
+            .into_diagnostic()
+            .context("failed to open database")?;
+        quire::db::migrate(&mut db)
+            .into_diagnostic()
+            .context("failed to run migrations")?;
+
+        Ok(Self {
+            quire,
+            db,
+            base_ms: jiff::Timestamp::now().as_millisecond(),
+            runs: build_runs(),
+        })
     }
 
-    Ok(())
-}
+    fn run(self) -> Result<Quire> {
+        for run in &self.runs {
+            self.insert_run(run)?;
+        }
 
-fn insert_jobs(db: &rusqlite::Connection) -> Result<()> {
-    let jobs = [
-        // Run 1 (complete): two passing jobs.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000001",
-            "build",
-            "complete",
-            Some(0),
-            base_ms() + 1000,
-            Some(base_ms() + 3000),
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000001",
-            "test",
-            "complete",
-            Some(0),
-            base_ms() + 3000,
-            Some(base_ms() + 5000),
-        ),
-        // Run 2 (failed): one pass, one fail.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000002",
-            "build",
-            "complete",
-            Some(0),
-            base_ms() - 600_000 + 1000,
-            Some(base_ms() - 600_000 + 3000),
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000002",
-            "test",
-            "failed",
-            Some(1),
-            base_ms() - 600_000 + 3000,
-            Some(base_ms() - 600_000 + 8000),
-        ),
-        // Run 3 (superseded): one job started then cancelled.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000003",
-            "build",
-            "complete",
-            Some(0),
-            base_ms() - 1_200_000 + 1000,
-            Some(base_ms() - 1_200_000 + 2000),
-        ),
-        // Run 4 (active): build running.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000004",
-            "build",
-            "active",
-            None,
-            base_ms() - 4000,
-            None,
-        ),
-        // Run 5 (pending): nothing started.
-        // (no jobs yet)
-        // Run 6 (complete, multi-job): lint + build + test.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "lint",
-            "complete",
-            Some(0),
-            base_ms() - 3_600_000 + 2000,
-            Some(base_ms() - 3_600_000 + 4000),
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "build",
-            "complete",
-            Some(0),
-            base_ms() - 3_600_000 + 4000,
-            Some(base_ms() - 3_600_000 + 8000),
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "test",
-            "complete",
-            Some(0),
-            base_ms() - 3_600_000 + 8000,
-            Some(base_ms() - 3_600_000 + 12000),
-        ),
-        // Run 7 (failed, orphaned): build passed, test was running when container died.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000007",
-            "build",
-            "complete",
-            Some(0),
-            base_ms() - 7_200_000 + 1000,
-            Some(base_ms() - 7_200_000 + 4000),
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000007",
-            "test",
-            "failed",
-            Some(137),
-            base_ms() - 7_200_000 + 4000,
-            Some(base_ms() - 7_200_000 + 60000),
-        ),
-    ];
+        let run_count: i64 = self
+            .db
+            .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
+            .into_diagnostic()?;
 
-    let mut stmt = db
-        .prepare(
-            "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )
-        .into_diagnostic()?;
-
-    for (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms) in &jobs {
-        stmt.execute(params![
-            run_id,
-            job_id,
-            state,
-            exit_code,
-            started_at_ms,
-            finished_at_ms
-        ])
-        .into_diagnostic()?;
+        tracing::info!(%run_count, "seeded database");
+        Ok(self.quire)
     }
 
-    Ok(())
-}
+    fn insert_run(&self, run: &SeedRun) -> Result<()> {
+        let repo = "example.git";
+        let workspace = "/tmp/quire-seed";
+        // v7 UUIDs so the IDs are time-sortable in addition to unique.
+        let run_id = Uuid::now_v7().to_string();
 
-fn insert_sh_events(db: &rusqlite::Connection) -> Result<()> {
-    let events = [
-        // Run 1, build job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000001",
-            "build",
-            base_ms() + 1000,
-            base_ms() + 2500,
-            0,
-            "cargo build --release",
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000001",
-            "build",
-            base_ms() + 2500,
-            base_ms() + 3000,
-            0,
-            "cargo clippy -- -D warnings",
-        ),
-        // Run 1, test job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000001",
-            "test",
-            base_ms() + 3000,
-            base_ms() + 4800,
-            0,
-            "cargo test --workspace",
-        ),
-        // Run 2, build job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000002",
-            "build",
-            base_ms() - 600_000 + 1000,
-            base_ms() - 600_000 + 3000,
-            0,
-            "cargo build --release",
-        ),
-        // Run 2, test job — fails.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000002",
-            "test",
-            base_ms() - 600_000 + 3000,
-            base_ms() - 600_000 + 5000,
-            0,
-            "cargo test --workspace",
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000002",
-            "test",
-            base_ms() - 600_000 + 5000,
-            base_ms() - 600_000 + 8000,
-            1,
-            "cargo test -- --ignored",
-        ),
-        // Run 3, build job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000003",
-            "build",
-            base_ms() - 1_200_000 + 1000,
-            base_ms() - 1_200_000 + 2000,
-            0,
-            "cargo build --release",
-        ),
-        // Run 4, active build.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000004",
-            "build",
-            base_ms() - 4000,
-            base_ms() - 2000,
-            0,
-            "cargo build --release",
-        ),
-        (
-            "aaaaaaaa-0000-0000-0000-000000000004",
-            "build",
-            base_ms() - 2000,
-            base_ms() - 1000,
-            0,
-            "cargo clippy -- -D warnings",
-        ),
-        // Run 6, lint job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "lint",
-            base_ms() - 3_600_000 + 2000,
-            base_ms() - 3_600_000 + 4000,
-            0,
-            "cargo fmt --check",
-        ),
-        // Run 6, build job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "build",
-            base_ms() - 3_600_000 + 4000,
-            base_ms() - 3_600_000 + 8000,
-            0,
-            "cargo build --release",
-        ),
-        // Run 6, test job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000006",
-            "test",
-            base_ms() - 3_600_000 + 8000,
-            base_ms() - 3_600_000 + 12000,
-            0,
-            "cargo test --workspace",
-        ),
-        // Run 7, build job.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000007",
-            "build",
-            base_ms() - 7_200_000 + 1000,
-            base_ms() - 7_200_000 + 4000,
-            0,
-            "cargo build --release",
-        ),
-        // Run 7, test job — container died mid-run.
-        (
-            "aaaaaaaa-0000-0000-0000-000000000007",
-            "test",
-            base_ms() - 7_200_000 + 4000,
-            base_ms() - 7_200_000 + 60000,
-            137,
-            "cargo test --workspace",
-        ),
-    ];
+        let pushed_at = self.base_ms + run.pushed_delta_ms;
+        let started_at = run.started_delta_ms.map(|d| pushed_at + d);
+        let finished_at = started_at.zip(run.duration_ms).map(|(s, d)| s + d);
 
-    let mut stmt = db
-        .prepare(
-            "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )
-        .into_diagnostic()?;
+        self.db.execute(
+            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
+                               queued_at_ms, started_at_ms, finished_at_ms,
+                               container_id, image_tag, build_started_at_ms, build_finished_at_ms,
+                               container_started_at_ms, container_stopped_at_ms, workspace_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, NULL, NULL, NULL, NULL, NULL, ?10)",
+            params![
+                run_id,
+                repo,
+                run.ref_name,
+                run.sha,
+                pushed_at,
+                run.state,
+                pushed_at, // queued_at_ms = pushed_at_ms
+                started_at,
+                finished_at,
+                workspace,
+            ],
+        ).into_diagnostic()?;
 
-    for (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd) in &events {
-        stmt.execute(params![
-            run_id,
-            job_id,
-            started_at_ms,
-            finished_at_ms,
-            exit_code,
-            cmd
-        ])
-        .into_diagnostic()?;
-    }
+        let Some(run_started_at) = started_at else {
+            return Ok(()); // pending run; no jobs to insert.
+        };
 
-    Ok(())
-}
+        let logs_base = self
+            .quire
+            .base_dir()
+            .join("runs")
+            .join("example.git")
+            .join(&run_id);
 
-fn write_log_artifacts(quire: &Quire) -> Result<()> {
-    let b = quire.base_dir().join("runs").join("example.git");
+        for job in &run.jobs {
+            let job_started_at = run_started_at + job.started_delta_ms;
+            let job_finished_at = job.duration_ms.map(|d| job_started_at + d);
 
-    // Run 1 — complete, clean build output.
-    write_sh_log(
-        &b,
-        run_id(1),
-        "build",
-        1,
-        include_str!("fixtures/run-1-build-1.log"),
-    );
-    write_sh_log(
-        &b,
-        run_id(1),
-        "build",
-        2,
-        include_str!("fixtures/run-1-build-2.log"),
-    );
-    write_sh_log(
-        &b,
-        run_id(1),
-        "test",
-        1,
-        include_str!("fixtures/run-1-test-1.log"),
-    );
+            self.db
+                .execute(
+                    "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        run_id,
+                        job.job_id,
+                        job.state,
+                        job.exit_code,
+                        job_started_at,
+                        job_finished_at,
+                    ],
+                )
+                .into_diagnostic()?;
 
-    // Run 2 — failed, test output with failures.
-    write_sh_log(
-        &b,
-        run_id(2),
-        "build",
-        1,
-        include_str!("fixtures/run-2-build-1.log"),
-    );
-    write_sh_log(
-        &b,
-        run_id(2),
-        "test",
-        1,
-        include_str!("fixtures/run-2-test-1.log"),
-    );
-    write_sh_log(
-        &b,
-        run_id(2),
-        "test",
-        2,
-        include_str!("fixtures/run-2-test-2.log"),
-    );
+            for (idx, event) in job.events.iter().enumerate() {
+                let started_at = job_started_at + event.started_delta_ms;
+                let finished_at = started_at + event.duration_ms;
+                self.db
+                    .execute(
+                        "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            run_id,
+                            job.job_id,
+                            started_at,
+                            finished_at,
+                            event.exit_code,
+                            event.cmd,
+                        ],
+                    )
+                    .into_diagnostic()?;
 
-    // Run 7 — orphaned, long output that was interrupted.
-    write_sh_log(
-        &b,
-        run_id(7),
-        "build",
-        1,
-        include_str!("fixtures/run-7-build-1.log"),
-    );
-    write_sh_log(
-        &b,
-        run_id(7),
-        "test",
-        1,
-        include_str!("fixtures/run-7-test-1.log"),
-    );
+                if let Some(content) = event.log {
+                    let dir = logs_base.join("jobs").join(job.job_id);
+                    fs_err::create_dir_all(&dir)
+                        .into_diagnostic()
+                        .context("failed to create log dir")?;
+                    fs_err::write(dir.join(format!("sh-{}.log", idx + 1)), content)
+                        .into_diagnostic()
+                        .context("failed to write log")?;
+                }
+            }
+        }
 
-    Ok(())
-}
-
-/// Short-hand for the seed run UUIDs (1-indexed).
-fn run_id(n: u8) -> &'static str {
-    match n {
-        1 => "aaaaaaaa-0000-0000-0000-000000000001",
-        2 => "aaaaaaaa-0000-0000-0000-000000000002",
-        3 => "aaaaaaaa-0000-0000-0000-000000000003",
-        4 => "aaaaaaaa-0000-0000-0000-000000000004",
-        5 => "aaaaaaaa-0000-0000-0000-000000000005",
-        6 => "aaaaaaaa-0000-0000-0000-000000000006",
-        7 => "aaaaaaaa-0000-0000-0000-000000000007",
-        _ => panic!("no seed run with index {n}"),
+        Ok(())
     }
 }
 
-fn write_sh_log(
-    runs_base: &std::path::Path,
-    run_id: &str,
-    job_id: &str,
-    sh_n: usize,
-    content: &str,
-) {
-    let dir = runs_base.join(run_id).join("jobs").join(job_id);
-    fs_err::create_dir_all(&dir).expect("failed to create log dir");
-    fs_err::write(dir.join(format!("sh-{sh_n}.log")), content).expect("failed to write log");
+fn build_runs() -> Vec<SeedRun> {
+    vec![
+        // Run 1 — complete, all jobs passed.
+        SeedRun {
+            state: "complete",
+            sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            ref_name: "refs/heads/main",
+            pushed_delta_ms: 0,
+            started_delta_ms: Some(1000),
+            duration_ms: Some(4000),
+            jobs: vec![
+                SeedJob {
+                    job_id: "build",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 0,
+                    duration_ms: Some(2000),
+                    events: vec![
+                        SeedShEvent {
+                            started_delta_ms: 0,
+                            duration_ms: 1500,
+                            exit_code: 0,
+                            cmd: "cargo build --release",
+                            log: Some(include_str!("fixtures/run-1-build-1.log")),
+                        },
+                        SeedShEvent {
+                            started_delta_ms: 1500,
+                            duration_ms: 500,
+                            exit_code: 0,
+                            cmd: "cargo clippy -- -D warnings",
+                            log: Some(include_str!("fixtures/run-1-build-2.log")),
+                        },
+                    ],
+                },
+                SeedJob {
+                    job_id: "test",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 2000,
+                    duration_ms: Some(2000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 1800,
+                        exit_code: 0,
+                        cmd: "cargo test --workspace",
+                        log: Some(include_str!("fixtures/run-1-test-1.log")),
+                    }],
+                },
+            ],
+        },
+        // Run 2 — failed, one job failed.
+        SeedRun {
+            state: "failed",
+            sha: "cafebabecafebabecafebabecafebabecafebabe",
+            ref_name: "refs/heads/main",
+            pushed_delta_ms: -600_000,
+            started_delta_ms: Some(1000),
+            duration_ms: Some(7000),
+            jobs: vec![
+                SeedJob {
+                    job_id: "build",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 0,
+                    duration_ms: Some(2000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 2000,
+                        exit_code: 0,
+                        cmd: "cargo build --release",
+                        log: Some(include_str!("fixtures/run-2-build-1.log")),
+                    }],
+                },
+                SeedJob {
+                    job_id: "test",
+                    state: "failed",
+                    exit_code: Some(1),
+                    started_delta_ms: 2000,
+                    duration_ms: Some(5000),
+                    events: vec![
+                        SeedShEvent {
+                            started_delta_ms: 0,
+                            duration_ms: 2000,
+                            exit_code: 0,
+                            cmd: "cargo test --workspace",
+                            log: Some(include_str!("fixtures/run-2-test-1.log")),
+                        },
+                        SeedShEvent {
+                            started_delta_ms: 2000,
+                            duration_ms: 3000,
+                            exit_code: 1,
+                            cmd: "cargo test -- --ignored",
+                            log: Some(include_str!("fixtures/run-2-test-2.log")),
+                        },
+                    ],
+                },
+            ],
+        },
+        // Run 3 — superseded, pushed then rebased.
+        SeedRun {
+            state: "superseded",
+            sha: "1111111111111111111111111111111111111111",
+            ref_name: "refs/heads/feature",
+            pushed_delta_ms: -1_200_000,
+            started_delta_ms: Some(1000),
+            duration_ms: Some(1000),
+            jobs: vec![SeedJob {
+                job_id: "build",
+                state: "complete",
+                exit_code: Some(0),
+                started_delta_ms: 0,
+                duration_ms: Some(1000),
+                events: vec![SeedShEvent {
+                    started_delta_ms: 0,
+                    duration_ms: 1000,
+                    exit_code: 0,
+                    cmd: "cargo build --release",
+                    log: None,
+                }],
+            }],
+        },
+        // Run 4 — active, still running.
+        SeedRun {
+            state: "active",
+            sha: "2222222222222222222222222222222222222222",
+            ref_name: "refs/heads/main",
+            pushed_delta_ms: -5000,
+            started_delta_ms: Some(1000),
+            duration_ms: None,
+            jobs: vec![SeedJob {
+                job_id: "build",
+                state: "active",
+                exit_code: None,
+                started_delta_ms: 0,
+                duration_ms: None,
+                events: vec![
+                    SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 2000,
+                        exit_code: 0,
+                        cmd: "cargo build --release",
+                        log: None,
+                    },
+                    SeedShEvent {
+                        started_delta_ms: 2000,
+                        duration_ms: 1000,
+                        exit_code: 0,
+                        cmd: "cargo clippy -- -D warnings",
+                        log: None,
+                    },
+                ],
+            }],
+        },
+        // Run 5 — pending, queued but not started.
+        SeedRun {
+            state: "pending",
+            sha: "3333333333333333333333333333333333333333",
+            ref_name: "refs/heads/main",
+            pushed_delta_ms: -1000,
+            started_delta_ms: None,
+            duration_ms: None,
+            jobs: vec![],
+        },
+        // Run 6 — complete, multi-job: lint + build + test.
+        SeedRun {
+            state: "complete",
+            sha: "4444444444444444444444444444444444444444",
+            ref_name: "refs/heads/v2",
+            pushed_delta_ms: -3_600_000,
+            started_delta_ms: Some(2000),
+            duration_ms: Some(10_000),
+            jobs: vec![
+                SeedJob {
+                    job_id: "lint",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 0,
+                    duration_ms: Some(2000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 2000,
+                        exit_code: 0,
+                        cmd: "cargo fmt --check",
+                        log: None,
+                    }],
+                },
+                SeedJob {
+                    job_id: "build",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 2000,
+                    duration_ms: Some(4000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 4000,
+                        exit_code: 0,
+                        cmd: "cargo build --release",
+                        log: None,
+                    }],
+                },
+                SeedJob {
+                    job_id: "test",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 6000,
+                    duration_ms: Some(4000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 4000,
+                        exit_code: 0,
+                        cmd: "cargo test --workspace",
+                        log: None,
+                    }],
+                },
+            ],
+        },
+        // Run 7 — failed, orphaned (container died mid-run).
+        SeedRun {
+            state: "failed",
+            sha: "5555555555555555555555555555555555555555",
+            ref_name: "refs/heads/main",
+            pushed_delta_ms: -7_200_000,
+            started_delta_ms: Some(1000),
+            duration_ms: Some(59_000),
+            jobs: vec![
+                SeedJob {
+                    job_id: "build",
+                    state: "complete",
+                    exit_code: Some(0),
+                    started_delta_ms: 0,
+                    duration_ms: Some(3000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 3000,
+                        exit_code: 0,
+                        cmd: "cargo build --release",
+                        log: Some(include_str!("fixtures/run-7-build-1.log")),
+                    }],
+                },
+                SeedJob {
+                    job_id: "test",
+                    state: "failed",
+                    exit_code: Some(137),
+                    started_delta_ms: 3000,
+                    duration_ms: Some(56_000),
+                    events: vec![SeedShEvent {
+                        started_delta_ms: 0,
+                        duration_ms: 56_000,
+                        exit_code: 137,
+                        cmd: "cargo test --workspace",
+                        log: Some(include_str!("fixtures/run-7-test-1.log")),
+                    }],
+                },
+            ],
+        },
+    ]
 }
