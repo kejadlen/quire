@@ -8,6 +8,7 @@ use std::rc::Rc;
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
 use miette::{IntoDiagnostic, Result, bail};
+use opentelemetry::propagation::TextMapPropagator as _;
 use quire_core::api::SecretResponse;
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
@@ -17,11 +18,10 @@ use quire_core::ci::run::RunMeta;
 use quire_core::ci::runtime::{Runtime, RuntimeError, RuntimeEvent, RuntimeHandle};
 use quire_core::fennel::FennelError;
 use quire_core::secret::{Error as SecretError, Result as SecretResult, SecretRegistry};
-use opentelemetry::propagation::TextMapPropagator as _;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
-use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::sync::Arc;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 /// Errors from running a job's `run_fn`. Lua errors are re-wrapped
 /// via [`FennelError::from_lua`] so they carry the same source-code

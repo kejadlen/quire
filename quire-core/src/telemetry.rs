@@ -199,7 +199,6 @@ impl Drop for TracingGuard {
     }
 }
 
-
 /// Initialize the global tracing subscriber with `QUIRE_LOG`-driven filtering,
 /// a stderr fmt layer per `fmt_mode`, the `sentry-tracing` bridge, the
 /// supplied [`MietteLayer`], and an OTEL tracing layer wired to Sentry.
