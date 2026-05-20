@@ -5,15 +5,15 @@ mod run;
 pub(crate) mod error;
 
 pub use error::{Error, Result};
+use opentelemetry::propagation::TextMapPropagator as _;
 pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
 pub use quire_core::ci::run::ApiSession;
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{pipeline, registration, runtime};
-use opentelemetry::propagation::TextMapPropagator as _;
-use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 /// A resolved commit reference.
 ///
