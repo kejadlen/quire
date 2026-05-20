@@ -4,6 +4,9 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use miette::IntoDiagnostic;
+use opentelemetry::propagation::TextMapPropagator as _;
+use opentelemetry::trace::TracerProvider as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -201,8 +204,6 @@ impl Drop for TracingGuard {
 /// Extract the W3C traceparent from a tracing span's OTEL context.
 /// Returns None when the span has no valid OTEL context (e.g. OTEL not initialised).
 pub fn traceparent_from_span(span: &tracing::Span) -> Option<String> {
-    use opentelemetry::propagation::TextMapPropagator as _;
-    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     let propagator = opentelemetry_sdk::propagation::TraceContextPropagator::new();
     let cx = span.context();
     let mut carrier = std::collections::HashMap::new();
@@ -213,7 +214,6 @@ pub fn traceparent_from_span(span: &tracing::Span) -> Option<String> {
 /// Decode a W3C traceparent string into an OTEL context suitable for
 /// passing to [`tracing_opentelemetry::OpenTelemetrySpanExt::set_parent`].
 pub fn context_from_traceparent(traceparent: &str) -> opentelemetry::Context {
-    use opentelemetry::propagation::TextMapPropagator as _;
     let propagator = opentelemetry_sdk::propagation::TraceContextPropagator::new();
     let mut carrier = std::collections::HashMap::new();
     carrier.insert("traceparent".to_string(), traceparent.to_string());
@@ -245,7 +245,6 @@ pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Res
         }
     };
 
-    use opentelemetry::trace::TracerProvider as _;
     let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_span_processor(sentry_opentelemetry::SentrySpanProcessor::new())
         .build();
