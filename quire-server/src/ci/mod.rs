@@ -5,7 +5,7 @@ mod run;
 pub(crate) mod error;
 
 pub use error::{Error, Result};
-use opentelemetry::trace::TraceContextExt as _;
+use opentelemetry::propagation::TextMapPropagator as _;
 pub use quire_core::ci::pipeline::{
     DefinitionError, Diagnostic, Job, Pipeline, PipelineError, StructureError,
 };
@@ -169,15 +169,13 @@ fn run_ref(ctx: &TriggerContext<'_>, pushed_at: jiff::Timestamp, push_ref: &Push
     let session = ApiSession::new(ctx.port);
 
     let span = tracing::info_span!("quire.ci.run", repo = %ctx.event_repo);
-    let sc = span.context().span().span_context().clone();
-    let traceparent = sc.is_valid().then(|| {
-        format!(
-            "00-{}-{}-{:02x}",
-            sc.trace_id(),
-            sc.span_id(),
-            sc.trace_flags()
-        )
-    });
+    let traceparent = {
+        let mut carrier = std::collections::HashMap::new();
+        opentelemetry::global::get_text_map_propagator(|p| {
+            p.inject_context(&span.context(), &mut carrier)
+        });
+        carrier.remove("traceparent")
+    };
     let _guard = span.enter();
 
     sentry::with_scope(
