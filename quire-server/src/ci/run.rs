@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use super::error::{Error, Result};
 use jiff::Timestamp;
+use quire_core::ci::event::{Event, EventKind};
 use quire_core::ci::run::ApiSession;
 
 pub use quire_core::ci::run::RunMeta;
@@ -395,8 +396,6 @@ impl Run {
     /// the schema, then re-serialized to canonical JSON and inserted into the
     /// `events` table. Job and sh-event reconstruction happens at read time.
     fn ingest_events(&self, path: &Path) -> Result<Option<quire_core::ci::event::RunOutcome>> {
-        use quire_core::ci::event::{Event, EventKind};
-
         let bytes = match fs_err::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

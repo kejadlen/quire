@@ -1,5 +1,9 @@
 //! Data access structs and DB loading functions for the web view.
 
+use std::collections::HashMap;
+
+use quire_core::ci::event::{Event, EventKind, JobOutcome};
+
 use crate::{Quire, Result};
 
 /// Raw run row from the database.
@@ -68,9 +72,6 @@ pub struct RunDetail {
 }
 
 pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDetail> {
-    use std::collections::HashMap;
-    use quire_core::ci::event::{Event, EventKind, JobOutcome};
-
     let db = quire
         .db_pool()
         .lock()
