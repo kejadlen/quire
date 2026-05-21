@@ -344,7 +344,14 @@ impl Run {
                         JobOutcome::Succeeded => "succeeded",
                         JobOutcome::Failed => "failed",
                     };
-                    db.insert_job(&self.id, job_id, state, None, started_at, event.at_ms)?;
+                    db.insert_job(&crate::db::runs::NewJob {
+                        run_id: &self.id,
+                        job_id,
+                        state,
+                        exit_code: None,
+                        started_at_ms: started_at,
+                        finished_at_ms: event.at_ms,
+                    })?;
                 }
                 EventKind::RunFinished { outcome } => {
                     run_outcome = Some(*outcome);
@@ -366,7 +373,14 @@ impl Run {
                     let Some((started_at, cmd)) = inflight_sh.remove(job_id.as_str()) else {
                         continue;
                     };
-                    db.insert_sh_event(&self.id, job_id, started_at, event.at_ms, *exit_code, cmd)?;
+                    db.insert_sh_event(&crate::db::runs::NewShEvent {
+                        run_id: &self.id,
+                        job_id,
+                        started_at_ms: started_at,
+                        finished_at_ms: event.at_ms,
+                        exit_code: *exit_code,
+                        cmd,
+                    })?;
                 }
                 EventKind::JobStarted { .. }
                 | EventKind::JobFinished { .. }

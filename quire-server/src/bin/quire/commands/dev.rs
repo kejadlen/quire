@@ -154,28 +154,28 @@ impl Seeder {
             let job_finished_at = job.duration_ms.map(|d| job_started_at + d);
 
             self.db
-                .insert_job(
-                    &run_id,
-                    job.job_id,
-                    job.state,
-                    job.exit_code,
-                    job_started_at,
-                    job_finished_at.unwrap_or(0),
-                )
+                .insert_job(&quire::db::runs::NewJob {
+                    run_id: &run_id,
+                    job_id: job.job_id,
+                    state: job.state,
+                    exit_code: job.exit_code,
+                    started_at_ms: job_started_at,
+                    finished_at_ms: job_finished_at.unwrap_or(0),
+                })
                 .into_diagnostic()?;
 
             for (idx, event) in job.events.iter().enumerate() {
                 let started_at = job_started_at + event.started_delta_ms;
                 let finished_at = started_at + event.duration_ms;
                 self.db
-                    .insert_sh_event(
-                        &run_id,
-                        job.job_id,
-                        started_at,
-                        finished_at,
-                        event.exit_code,
-                        event.cmd,
-                    )
+                    .insert_sh_event(&quire::db::runs::NewShEvent {
+                        run_id: &run_id,
+                        job_id: job.job_id,
+                        started_at_ms: started_at,
+                        finished_at_ms: finished_at,
+                        exit_code: event.exit_code,
+                        cmd: event.cmd,
+                    })
                     .into_diagnostic()?;
 
                 if let Some(content) = event.log {

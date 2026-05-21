@@ -118,8 +118,15 @@ mod tests {
             finished: Option<i64>,
         ) {
             let db = self.quire.db_pool();
-            db.insert_job(run_id, job_id, state, exit_code, started.unwrap_or(0), finished.unwrap_or(0))
-                .expect("insert job");
+            db.insert_job(&crate::db::runs::NewJob {
+                run_id,
+                job_id,
+                state,
+                exit_code,
+                started_at_ms: started.unwrap_or(0),
+                finished_at_ms: finished.unwrap_or(0),
+            })
+            .expect("insert job");
         }
 
         fn app(&self) -> axum::Router {

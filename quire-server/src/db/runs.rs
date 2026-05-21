@@ -68,6 +68,26 @@ pub struct NewRun<'a> {
     pub run_token: Option<&'a str>,
 }
 
+/// Parameters for inserting a job row.
+pub struct NewJob<'a> {
+    pub run_id: &'a str,
+    pub job_id: &'a str,
+    pub state: &'a str,
+    pub exit_code: Option<i32>,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+}
+
+/// Parameters for inserting a shell-event row.
+pub struct NewShEvent<'a> {
+    pub run_id: &'a str,
+    pub job_id: &'a str,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub exit_code: i32,
+    pub cmd: &'a str,
+}
+
 // ── Seeding ───────────────────────────────────────────────────────────────────
 
 /// A run row with all state fields explicit — for dev seeding and test fixtures.
@@ -97,36 +117,34 @@ impl super::Db {
         Ok(())
     }
 
-    pub fn insert_job(
-        &self,
-        run_id: &str,
-        job_id: &str,
-        state: &str,
-        exit_code: Option<i32>,
-        started_at_ms: i64,
-        finished_at_ms: i64,
-    ) -> rusqlite::Result<()> {
+    pub fn insert_job(&self, p: &NewJob<'_>) -> rusqlite::Result<()> {
         self.0.execute(
             "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![run_id, job_id, state, exit_code, started_at_ms, finished_at_ms],
+            params![
+                p.run_id,
+                p.job_id,
+                p.state,
+                p.exit_code,
+                p.started_at_ms,
+                p.finished_at_ms
+            ],
         )?;
         Ok(())
     }
 
-    pub fn insert_sh_event(
-        &self,
-        run_id: &str,
-        job_id: &str,
-        started_at_ms: i64,
-        finished_at_ms: i64,
-        exit_code: i32,
-        cmd: &str,
-    ) -> rusqlite::Result<()> {
+    pub fn insert_sh_event(&self, p: &NewShEvent<'_>) -> rusqlite::Result<()> {
         self.0.execute(
             "INSERT INTO sh (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd],
+            params![
+                p.run_id,
+                p.job_id,
+                p.started_at_ms,
+                p.finished_at_ms,
+                p.exit_code,
+                p.cmd
+            ],
         )?;
         Ok(())
     }
