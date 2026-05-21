@@ -334,23 +334,49 @@ mod tests {
             ).expect("insert run");
         }
 
-        fn insert_job(
+        fn insert_job_events(
             &self,
             run_id: &str,
             job_id: &str,
-            state: &str,
-            exit_code: Option<i32>,
-            started: Option<i64>,
-            finished: Option<i64>,
+            outcome: quire_core::ci::event::JobOutcome,
+            started_at_ms: i64,
+            finished_at_ms: i64,
         ) {
+            use quire_core::ci::event::{Event, EventKind};
             let pool = self.quire.db_pool();
             let db = pool.lock().expect("lock");
-            db.execute(
-                "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![run_id, job_id, state, exit_code, started, finished],
-            )
-            .expect("insert job");
+            let next_seq: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(seq)+1, 0) FROM events WHERE run_id = ?1",
+                    rusqlite::params![run_id],
+                    |r| r.get(0),
+                )
+                .expect("seq query");
+            for (offset, event) in [
+                Event {
+                    at_ms: started_at_ms,
+                    kind: EventKind::JobStarted {
+                        job_id: job_id.to_string(),
+                    },
+                },
+                Event {
+                    at_ms: finished_at_ms,
+                    kind: EventKind::JobFinished {
+                        job_id: job_id.to_string(),
+                        outcome,
+                    },
+                },
+            ]
+            .iter()
+            .enumerate()
+            {
+                let json = serde_json::to_string(event).unwrap();
+                db.execute(
+                    "INSERT INTO events (run_id, seq, event) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![run_id, next_seq + offset as i64, json],
+                )
+                .expect("insert event");
+            }
         }
 
         fn app(&self) -> axum::Router {
@@ -434,7 +460,13 @@ mod tests {
             Some(2000),
             Some(3000),
         );
-        env.insert_job(UUID1, "build", "complete", Some(0), Some(2000), Some(3000));
+        env.insert_job_events(
+            UUID1,
+            "build",
+            quire_core::ci::event::JobOutcome::Complete,
+            2000,
+            3000,
+        );
         let app = env.app();
         let req = Request::builder()
             .uri(&format!("/example/ci/{UUID1}"))

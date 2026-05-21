@@ -68,6 +68,9 @@ pub struct RunDetail {
 }
 
 pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDetail> {
+    use std::collections::HashMap;
+    use quire_core::ci::event::{Event, EventKind, JobOutcome};
+
     let db = quire
         .db_pool()
         .lock()
@@ -90,41 +93,80 @@ pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDet
         },
     )?;
 
-    let mut job_stmt = db.prepare(
-        "SELECT job_id, state, exit_code, started_at_ms, finished_at_ms
-         FROM jobs WHERE run_id = ?1
-         ORDER BY started_at_ms IS NULL ASC, started_at_ms ASC, job_id ASC",
-    )?;
-
-    let jobs = job_stmt
-        .query_map(rusqlite::params![run_id], |row| {
-            Ok(JobRow {
-                job_id: row.get(0)?,
-                state: row.get(1)?,
-                exit_code: row.get(2)?,
-                started_at_ms: row.get(3)?,
-                finished_at_ms: row.get(4)?,
-            })
-        })?
+    let event_jsons: Vec<String> = db
+        .prepare("SELECT event FROM events WHERE run_id = ?1 ORDER BY seq")?
+        .query_map(rusqlite::params![run_id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut sh_stmt = db.prepare(
-        "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd
-         FROM sh_events WHERE run_id = ?1
-         ORDER BY job_id, started_at_ms",
-    )?;
+    let events: Vec<Event> = event_jsons
+        .iter()
+        .map(|s| serde_json::from_str(s))
+        .collect::<std::result::Result<_, _>>()?;
 
-    let sh_events = sh_stmt
-        .query_map(rusqlite::params![run_id], |row| {
-            Ok(ShEvent {
-                job_id: row.get(0)?,
-                started_at_ms: row.get(1)?,
-                finished_at_ms: row.get(2)?,
-                exit_code: row.get(3)?,
-                cmd: row.get(4)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Reconstruct job rows by pairing JobStarted with JobFinished.
+    let mut pending_jobs: HashMap<String, i64> = HashMap::new();
+    let mut jobs: Vec<JobRow> = Vec::new();
+    for event in &events {
+        match &event.kind {
+            EventKind::JobStarted { job_id } => {
+                pending_jobs.insert(job_id.clone(), event.at_ms);
+            }
+            EventKind::JobFinished { job_id, outcome } => {
+                let started_at = pending_jobs.remove(job_id.as_str());
+                jobs.push(JobRow {
+                    job_id: job_id.clone(),
+                    state: match outcome {
+                        JobOutcome::Complete => "complete",
+                        JobOutcome::Failed => "failed",
+                    }
+                    .to_string(),
+                    exit_code: None,
+                    started_at_ms: started_at,
+                    finished_at_ms: Some(event.at_ms),
+                });
+            }
+            _ => {}
+        }
+    }
+    // Match old SQL order: non-null started_at first, then by started_at, then job_id.
+    jobs.sort_by(|a, b| {
+        let a_null = a.started_at_ms.is_none() as u8;
+        let b_null = b.started_at_ms.is_none() as u8;
+        a_null
+            .cmp(&b_null)
+            .then_with(|| a.started_at_ms.cmp(&b.started_at_ms))
+            .then(a.job_id.cmp(&b.job_id))
+    });
+
+    // Reconstruct sh events by pairing ShStarted with ShFinished.
+    let mut pending_sh: HashMap<String, (i64, String)> = HashMap::new();
+    let mut sh_events: Vec<ShEvent> = Vec::new();
+    for event in &events {
+        match &event.kind {
+            EventKind::ShStarted { job_id, cmd } => {
+                pending_sh.insert(job_id.clone(), (event.at_ms, cmd.clone()));
+            }
+            EventKind::ShFinished { job_id, exit_code } => {
+                let Some((started_at, cmd)) = pending_sh.remove(job_id.as_str()) else {
+                    continue;
+                };
+                sh_events.push(ShEvent {
+                    job_id: job_id.clone(),
+                    started_at_ms: started_at,
+                    finished_at_ms: event.at_ms,
+                    exit_code: *exit_code,
+                    cmd,
+                });
+            }
+            _ => {}
+        }
+    }
+    // Match old SQL order: by job_id then started_at_ms.
+    sh_events.sort_by(|a, b| {
+        a.job_id
+            .cmp(&b.job_id)
+            .then(a.started_at_ms.cmp(&b.started_at_ms))
+    });
 
     Ok(RunDetail {
         run,

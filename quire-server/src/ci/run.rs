@@ -5,7 +5,6 @@
 //! Run directories on disk hold the materialized workspace and per-job
 //! log files, but state lives in the database.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::error::{Error, Result};
@@ -272,8 +271,8 @@ impl Run {
     /// Layout under the run dir on disk:
     /// * `quire-ci.log` — combined stdout+stderr of the subprocess.
     /// * `events.jsonl` — structured event stream (one JSON object per
-    ///   line). Ingested into `jobs` and `sh_events` after the
-    ///   subprocess exits.
+    ///   line). Ingested into the `events` table after the subprocess
+    ///   exits.
     /// * `jobs/<job>/sh-<n>.log` — per-sh CRI logs, written by quire-ci
     ///   via `--out-dir`.
     ///
@@ -357,7 +356,7 @@ impl Run {
                 tracing::warn!(
                     run_id = %self.id,
                     error = %e,
-                    "failed to ingest quire-ci events; jobs/sh_events rows may be incomplete"
+                    "failed to ingest quire-ci events; events table may be incomplete"
                 );
                 None
             }
@@ -390,82 +389,43 @@ impl Run {
         Ok(())
     }
 
-    /// Read `events.jsonl` and replay it into the database.
+    /// Read `events.jsonl` and store each event as JSON in the database.
     ///
-    /// Done in two passes because `sh_events` has a foreign key on
-    /// `(run_id, job_id)` in `jobs`, and the wire format interleaves
-    /// sh events with their owning job. Pass 1 inserts every job row
-    /// (paired by `job_id`); pass 2 inserts sh events.
+    /// Each line is parsed through [`quire_core::ci::event::Event`] to validate
+    /// the schema, then re-serialized to canonical JSON and inserted into the
+    /// `events` table. Job and sh-event reconstruction happens at read time.
     fn ingest_events(&self, path: &Path) -> Result<Option<quire_core::ci::event::RunOutcome>> {
-        use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
+        use quire_core::ci::event::{Event, EventKind};
 
         let bytes = match fs_err::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        let events: Vec<Event> = bytes
+
+        let db = crate::db::open(&self.db_path)?;
+        let mut run_outcome = None;
+
+        for (seq, line) in bytes
             .split(|b| *b == b'\n')
             .filter(|line| !line.is_empty())
-            .map(serde_json::from_slice)
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|e| Error::EventStreamParse {
+            .enumerate()
+        {
+            let event: Event = serde_json::from_slice(line).map_err(|e| Error::EventStreamParse {
                 path: path.to_path_buf(),
                 source: e,
             })?;
 
-        let db = crate::db::open(&self.db_path)?;
-
-        // Pass 1: jobs rows. Pair JobStarted with JobFinished by job_id.
-        let mut pending_jobs: HashMap<&str, i64> = HashMap::new();
-        let mut run_outcome: Option<RunOutcome> = None;
-        for event in &events {
-            match &event.kind {
-                EventKind::JobStarted { job_id } => {
-                    pending_jobs.insert(job_id.as_str(), event.at_ms);
-                }
-                EventKind::JobFinished { job_id, outcome } => {
-                    let started_at = pending_jobs.remove(job_id.as_str()).unwrap_or(event.at_ms);
-                    let state = match outcome {
-                        JobOutcome::Complete => "complete",
-                        JobOutcome::Failed => "failed",
-                    };
-                    db.execute(
-                        "INSERT INTO jobs (run_id, job_id, state, started_at_ms, finished_at_ms) \
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![&self.id, job_id, state, started_at, event.at_ms],
-                    )?;
-                }
-                EventKind::RunFinished { outcome } => {
-                    run_outcome = Some(*outcome);
-                }
-                EventKind::ShStarted { .. } | EventKind::ShFinished { .. } => {}
+            if let EventKind::RunFinished { outcome } = &event.kind {
+                run_outcome = Some(*outcome);
             }
-        }
 
-        // Pass 2: sh_events rows. Pair ShStarted with ShFinished by job_id
-        // (sequential within a run-fn, so a single buffer slot per job
-        // is enough).
-        let mut pending_sh: HashMap<&str, (i64, &str)> = HashMap::new();
-        for event in &events {
-            match &event.kind {
-                EventKind::ShStarted { job_id, cmd } => {
-                    pending_sh.insert(job_id.as_str(), (event.at_ms, cmd.as_str()));
-                }
-                EventKind::ShFinished { job_id, exit_code } => {
-                    let Some((started_at, cmd)) = pending_sh.remove(job_id.as_str()) else {
-                        continue;
-                    };
-                    db.execute(
-                        "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        rusqlite::params![&self.id, job_id, started_at, event.at_ms, exit_code, cmd],
-                    )?;
-                }
-                EventKind::JobStarted { .. }
-                | EventKind::JobFinished { .. }
-                | EventKind::RunFinished { .. } => {}
-            }
+            let event_json =
+                serde_json::to_string(&event).expect("Event is always JSON-serializable");
+            db.execute(
+                "INSERT INTO events (run_id, seq, event) VALUES (?1, ?2, ?3)",
+                rusqlite::params![&self.id, seq as i64, event_json],
+            )?;
         }
 
         Ok(run_outcome)
@@ -1104,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_events_writes_jobs_and_sh_events_rows() {
+    fn ingest_events_stores_json_rows_and_returns_outcome() {
         use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 
         let (_dir, quire) = tmp_quire();
@@ -1174,49 +1134,22 @@ mod tests {
         let outcome = run.ingest_events(&events_path).expect("ingest");
         assert_eq!(outcome, Some(RunOutcome::PipelineFailure));
 
+        // Verify all events are stored in order and round-trip through JSON.
         let db = crate::db::open(&quire.db_path()).expect("open db");
-        let jobs: Vec<(String, String, i64, i64)> = db
-            .prepare(
-                "SELECT job_id, state, started_at_ms, finished_at_ms FROM jobs \
-                 WHERE run_id = ?1 ORDER BY started_at_ms",
-            )
+        let stored: Vec<(i64, String)> = db
+            .prepare("SELECT seq, event FROM events WHERE run_id = ?1 ORDER BY seq")
             .unwrap()
-            .query_map([&run_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
+            .query_map([&run_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .collect::<std::result::Result<_, _>>()
             .unwrap();
-        assert_eq!(
-            jobs,
-            vec![
-                ("build".to_string(), "complete".to_string(), 100, 200),
-                ("test".to_string(), "failed".to_string(), 210, 220),
-            ]
-        );
 
-        let sh_events: Vec<(String, i64, i64, i32, String)> = db
-            .prepare(
-                "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd FROM sh_events \
-                 WHERE run_id = ?1 ORDER BY started_at_ms",
-            )
-            .unwrap()
-            .query_map([&run_id], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            })
-            .unwrap()
-            .collect::<std::result::Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            sh_events,
-            vec![("build".to_string(), 110, 190, 0, "echo hi".to_string())]
-        );
+        assert_eq!(stored.len(), events.len());
+        for (i, (seq, event_json)) in stored.iter().enumerate() {
+            assert_eq!(*seq, i as i64);
+            let decoded: Event = serde_json::from_str(event_json).expect("valid JSON");
+            assert_eq!(decoded, events[i]);
+        }
     }
 
     #[test]
@@ -1236,7 +1169,7 @@ mod tests {
         let db = crate::db::open(&quire.db_path()).expect("open db");
         let count: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM jobs WHERE run_id = ?1",
+                "SELECT COUNT(*) FROM events WHERE run_id = ?1",
                 [run.id()],
                 |r| r.get(0),
             )
