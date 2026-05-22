@@ -19,6 +19,7 @@ static MIGRATIONS: std::sync::LazyLock<Migrations<'static>> = std::sync::LazyLoc
         M::up(include_str!("../migrations/0005_rename_run_token.sql")),
         M::up(include_str!("../migrations/0006_traceparent.sql")),
         M::up(include_str!("../migrations/0007_schema_cleanup.sql")),
+        M::up(include_str!("../migrations/0008_rename_sh.sql")),
     ])
 });
 

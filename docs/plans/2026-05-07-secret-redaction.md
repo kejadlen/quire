@@ -64,14 +64,14 @@ The `Runtime::sh` method records `ShOutput` into `self.outputs`. Redact `stdout`
 No code changes needed. Since Task 3 redacts the `ShOutput` before it reaches `write_cri_log` and the DB insert path, both surfaces are covered.
 
 Schema audit — text columns that could carry user-derived text:
-- `sh_events.cmd` — covered by Task 3 (redacted before insert)
+- `sh.cmd` — covered by Task 3 (redacted before insert)
 - `runs.repo` — git repo name, system-generated
 - `runs.ref_name` — git ref, system-generated
 - `runs.sha` — commit hash, system-generated
 - `runs.failure_kind` — enum tag, not user text
 - `runs.container_id`, `image_tag`, `workspace_path` — system-generated
 
-No additional redaction sites needed beyond `sh_events.cmd`.
+No additional redaction sites needed beyond `sh.cmd`.
 
 - [x] **Step 1: Verify CRI logs and DB receive redacted content**
 - [x] **Step 2: Commit**
