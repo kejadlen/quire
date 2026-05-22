@@ -227,6 +227,48 @@ Two things in `CI.md` that the code does *not* yet implement at this layer:
 * **Queue + Notify wakeup.** `CI.md` describes a separate runner task pulled from a SQLite queue via `tokio::sync::Notify`. Today `ci::trigger` is called **synchronously** on the listener's tokio task — one push at a time, no queue, no separate runner. Max-concurrency-1 falls out of this trivially, but it isn't the architecture in `CI.md`.
 * **Per-run container.** `CI.md` says `docker run` at run start, `docker exec` per `(sh …)`, `docker stop` at end. `quire-ci` invokes `(sh …)` directly on the host process; the `container_id` column is unused by the current executor and read only by `supersede_existing` (which calls `docker kill` if it's set).
 
+## Schema column inventory
+
+A column-by-column map of what's live vs. dead weight with the current Process executor. "Dead" means no code path writes a non-NULL value **and** no code path reads it back, or writes it but nothing reads it.
+
+### `runs` table
+
+| Column | Written by | Read by | Status |
+| --- | --- | --- | --- |
+| `id` | `Runs::create` | everywhere | **live** |
+| `repo` | `Runs::create` | `supersede_existing`, web handlers | **live** |
+| `ref_name` | `Runs::create` | `supersede_existing`, web handlers, bootstrap response | **live** |
+| `sha` | `Runs::create` | `read_meta`, bootstrap response, web handlers | **live** |
+| `pushed_at_ms` | `Runs::create` | `read_meta`, web handlers | **live** |
+| `state` | `Runs::create` (→ `pending`) + every transition | everywhere | **live** |
+| `failure_kind` | `Run::transition(Failed, …)`, `reconcile_orphans` | web handlers | **live** |
+| `queued_at_ms` | `Runs::create` | web handlers | **live** |
+| `started_at_ms` | `transition(Active)`, also stamped as fallback in `Complete/Failed/Superseded` | `read_started_at`, web handlers | **live** |
+| `finished_at_ms` | `transition(Complete/Failed/Superseded)` | `read_finished_at`, web handlers | **live** |
+| `run_token` | `Runs::create` (API sessions only) | `verify_run_token` middleware | **live** |
+| `git_dir` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint | **live** |
+| `traceparent` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint | **live** |
+| `container_id` | nothing (always inserted/cleared as `NULL`) | `supersede_existing` checks it before calling `docker kill`, then clears it on supersede | **dead** — always NULL with the Process executor; the read-and-clear is a hook for a future Docker executor that never shipped |
+| `workspace_path` | `Runs::create` (hardcoded in test helpers too) | nothing reads it back | **dead** — the runtime reconstructs the path as `<base_dir>/<run_id>/workspace` from config + ID |
+| `image_tag` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
+| `build_started_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
+| `build_finished_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
+| `container_started_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
+| `container_stopped_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
+| `sentry_trace_id` | nothing (added in migration 0004, never written) | nothing | **dead** — superseded by `traceparent` (migration 0006) before the column was ever used |
+
+The five `image_tag` / `build_*` / `container_{started,stopped}_at_ms` columns and `sentry_trace_id` are pure schema debt — they were added speculatively for a Docker executor that was never implemented. `container_id` and `workspace_path` are written but never read back by live code paths, so they are candidates for removal as well.
+
+### `jobs` table
+
+All six columns (`run_id`, `job_id`, `state`, `exit_code`, `started_at_ms`, `finished_at_ms`) are written by `Run::ingest_events` and read by the web detail view. All **live**.
+
+The schema permits six states (`pending`, `active`, `complete`, `failed`, `skipped`, `aborted`) but `ingest_events` only writes `complete` and `failed`. The other four states have no producer today — see Gaps below.
+
+### `sh_events` table
+
+All columns (`run_id`, `job_id`, `started_at_ms`, `finished_at_ms`, `exit_code`, `cmd`) are written by `Run::ingest_events` (pass 2) and read by the web detail view. All **live**.
+
 ## Gaps
 
 States the schema admits — or `CI.md` commits to — that no code path produces today:
