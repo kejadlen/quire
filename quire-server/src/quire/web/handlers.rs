@@ -393,7 +393,7 @@ mod tests {
         let env = TestEnv::new();
         env.insert_run(
             UUID1,
-            "complete",
+            "succeeded",
             SHA1,
             "refs/heads/main",
             1000,
@@ -426,14 +426,14 @@ mod tests {
         let env = TestEnv::new();
         env.insert_run(
             UUID1,
-            "complete",
+            "succeeded",
             SHA1,
             "refs/heads/main",
             1000,
             Some(2000),
             Some(3000),
         );
-        env.insert_job(UUID1, "build", "complete", Some(0), Some(2000), Some(3000));
+        env.insert_job(UUID1, "build", "succeeded", Some(0), Some(2000), Some(3000));
         let app = env.app();
         let req = Request::builder()
             .uri(&format!("/example/ci/{UUID1}"))

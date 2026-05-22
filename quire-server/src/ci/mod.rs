@@ -428,7 +428,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ -n "$events" ] && [ "$events" != "null" ]; then
-  printf '{"at_ms":0,"type":"run_finished","outcome":"success"}\n' > "$events"
+  printf '{"at_ms":0,"type":"run_finished","outcome":"succeeded"}\n' > "$events"
 fi
 exit 0
 "#
@@ -477,7 +477,7 @@ exit 0
     }
 
     #[test]
-    fn run_ref_inner_drives_run_to_complete_with_fake_quire_ci() {
+    fn run_ref_inner_drives_run_to_succeeded_with_fake_quire_ci() {
         let source = r#"(local ci (require :quire.ci))
 (ci.job :build [:quire/push] (fn [] nil))"#;
         let (_dir, quire, name) = bare_repo_with_ci(source);
@@ -506,7 +506,7 @@ exit 0
 
         trigger_result.expect("trigger_ref should succeed with fake quire-ci");
 
-        // The run should have reached complete.
+        // The run should have reached succeeded.
         let conn = crate::db::open(&quire.db_path()).expect("db");
         let state: String = conn
             .query_row(
@@ -516,19 +516,19 @@ exit 0
             )
             .expect("should have a run");
         assert_eq!(
-            state, "complete",
-            "run should be complete after fake quire-ci exits 0"
+            state, "succeeded",
+            "run should be succeeded after fake quire-ci exits 0"
         );
 
-        // No pending or active rows left behind.
+        // No queued or active rows left behind.
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM runs WHERE state IN ('pending', 'active')",
+                "SELECT COUNT(*) FROM runs WHERE state IN ('queued', 'active')",
                 [],
                 |row| row.get(0),
             )
             .expect("count");
-        assert_eq!(count, 0, "run should be complete, not orphaned");
+        assert_eq!(count, 0, "run should be succeeded, not orphaned");
     }
 
     #[test]

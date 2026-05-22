@@ -166,7 +166,7 @@ impl DetailRun {
     }
 
     pub fn is_terminal(&self) -> bool {
-        self.state == "complete" || self.state == "failed"
+        self.state == "succeeded" || self.state == "failed"
     }
 
     pub fn duration_display(&self) -> String {

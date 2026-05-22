@@ -9,8 +9,8 @@ use quire::Quire;
 /// Seed a tempdir with realistic CI run data and return a `Quire` pointing at it.
 ///
 /// Creates a fresh tempdir under `std::env::temp_dir()`, inserts a fixed corpus
-/// of runs covering every interesting state (complete, failed, active, pending,
-/// superseded) with matching on-disk log artifacts. Idempotent — same input,
+/// of runs covering every interesting state (succeeded, failed, active, queued,
+/// canceled) with matching on-disk log artifacts. Idempotent — same input,
 /// same output.
 pub fn seed() -> Result<Quire> {
     Seeder::new()?.run()
@@ -133,7 +133,7 @@ impl Seeder {
             .into_diagnostic()?;
 
         let Some(run_started_at) = started_at else {
-            return Ok(()); // pending run; no jobs to insert.
+            return Ok(()); // queued run; no jobs to insert.
         };
 
         let logs_base = self
@@ -198,9 +198,9 @@ impl Seeder {
 
 fn build_runs() -> Vec<SeedRun> {
     vec![
-        // Run 1 — complete, all jobs passed.
+        // Run 1 — succeeded, all jobs passed.
         SeedRun {
-            state: "complete",
+            state: "succeeded",
             sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             ref_name: "refs/heads/main",
             pushed_delta_ms: 0,
@@ -209,7 +209,7 @@ fn build_runs() -> Vec<SeedRun> {
             jobs: vec![
                 SeedJob {
                     job_id: "build",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 0,
                     duration_ms: Some(2000),
@@ -232,7 +232,7 @@ fn build_runs() -> Vec<SeedRun> {
                 },
                 SeedJob {
                     job_id: "test",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 2000,
                     duration_ms: Some(2000),
@@ -257,7 +257,7 @@ fn build_runs() -> Vec<SeedRun> {
             jobs: vec![
                 SeedJob {
                     job_id: "build",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 0,
                     duration_ms: Some(2000),
@@ -294,9 +294,9 @@ fn build_runs() -> Vec<SeedRun> {
                 },
             ],
         },
-        // Run 3 — superseded, pushed then rebased.
+        // Run 3 — canceled, pushed then rebased.
         SeedRun {
-            state: "superseded",
+            state: "canceled",
             sha: "1111111111111111111111111111111111111111",
             ref_name: "refs/heads/feature",
             pushed_delta_ms: -1_200_000,
@@ -304,7 +304,7 @@ fn build_runs() -> Vec<SeedRun> {
             duration_ms: Some(1000),
             jobs: vec![SeedJob {
                 job_id: "build",
-                state: "complete",
+                state: "succeeded",
                 exit_code: Some(0),
                 started_delta_ms: 0,
                 duration_ms: Some(1000),
@@ -349,9 +349,9 @@ fn build_runs() -> Vec<SeedRun> {
                 ],
             }],
         },
-        // Run 5 — pending, queued but not started.
+        // Run 5 — queued but not started.
         SeedRun {
-            state: "pending",
+            state: "queued",
             sha: "3333333333333333333333333333333333333333",
             ref_name: "refs/heads/main",
             pushed_delta_ms: -1000,
@@ -359,9 +359,9 @@ fn build_runs() -> Vec<SeedRun> {
             duration_ms: None,
             jobs: vec![],
         },
-        // Run 6 — complete, multi-job: lint + build + test.
+        // Run 6 — succeeded, multi-job: lint + build + test.
         SeedRun {
-            state: "complete",
+            state: "succeeded",
             sha: "4444444444444444444444444444444444444444",
             ref_name: "refs/heads/v2",
             pushed_delta_ms: -3_600_000,
@@ -370,7 +370,7 @@ fn build_runs() -> Vec<SeedRun> {
             jobs: vec![
                 SeedJob {
                     job_id: "lint",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 0,
                     duration_ms: Some(2000),
@@ -384,7 +384,7 @@ fn build_runs() -> Vec<SeedRun> {
                 },
                 SeedJob {
                     job_id: "build",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 2000,
                     duration_ms: Some(4000),
@@ -398,7 +398,7 @@ fn build_runs() -> Vec<SeedRun> {
                 },
                 SeedJob {
                     job_id: "test",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 6000,
                     duration_ms: Some(4000),
@@ -423,7 +423,7 @@ fn build_runs() -> Vec<SeedRun> {
             jobs: vec![
                 SeedJob {
                     job_id: "build",
-                    state: "complete",
+                    state: "succeeded",
                     exit_code: Some(0),
                     started_delta_ms: 0,
                     duration_ms: Some(3000),

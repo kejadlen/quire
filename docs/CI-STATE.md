@@ -15,26 +15,25 @@ A run owns its jobs; jobs FK on `(run_id, job_id)` and cascade delete.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending : Runs.create
+    [*] --> queued : Runs.create
 
-    pending  --> active     : bootstrap endpoint
-    pending  --> superseded : supersede_existing
-    pending  --> failed     : reconcile_orphans
+    queued  --> active    : bootstrap endpoint
+    queued  --> canceled  : cancel_existing
+    queued  --> failed    : reconcile_orphans
 
-    active   --> complete   : transition Complete
-    active   --> failed     : pipeline-failure
-    active   --> failed     : process-crashed
-    active   --> superseded : supersede_existing
-    active   --> failed     : reconcile_orphans
+    active  --> succeeded : transition Succeeded
+    active  --> failed    : pipeline-failure
+    active  --> failed    : process-crashed
+    active  --> canceled  : cancel_existing
+    active  --> failed    : reconcile_orphans
 
-    complete   --> [*]
-    failed     --> [*]
-    superseded --> [*]
+    succeeded --> [*]
+    failed    --> [*]
+    canceled  --> [*]
 
-    note right of pending
+    note right of queued
       started_at_ms  IS NULL
       finished_at_ms IS NULL
-      container_id   IS NULL
     end note
 
     note right of active
@@ -42,9 +41,8 @@ stateDiagram-v2
       finished_at_ms still NULL
     end note
 
-    note right of complete
+    note right of succeeded
       started_at_ms, finished_at_ms set
-      container_id cleared
     end note
 ```
 
@@ -52,36 +50,36 @@ stateDiagram-v2
 
 | From → To | Where | When | `failure_kind` |
 | --- | --- | --- | --- |
-| `[*] → pending` | `Runs::create` (`quire-server/src/ci/run.rs:103`) | A push event arrives and a `runs` row is inserted. | — |
-| `pending → active` | Bootstrap endpoint (`api.rs`), called when `quire-ci` fetches bootstrap data | `quire-ci` connects to the server and marks the run active. Stamps `started_at_ms`. | — |
-| `active → complete` | `Run::transition`, called from `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: Success }` was ingested. Stamps `finished_at_ms`, clears `container_id`. | — |
+| `[*] → queued` | `Runs::create` (`quire-server/src/ci/run.rs`) | A push event arrives and a `runs` row is inserted. | — |
+| `queued → active` | Bootstrap endpoint (`api.rs`), called when `quire-ci` fetches bootstrap data | `quire-ci` connects to the server and marks the run active. Stamps `started_at_ms`. | — |
+| `active → succeeded` | `Run::transition`, called from `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: Succeeded }` was ingested. Stamps `finished_at_ms`. | — |
 | `active → failed` | `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: PipelineFailure }` was ingested — a job's run-fn returned an error. | `"pipeline-failure"` |
 | `active → failed` | `Run::execute` | `quire-ci` exited non-zero, or exited 0 but emitted no `RunFinished` event (process crash or panic). | `"process-crashed"` |
-| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs:155`) via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Both pending and active rows are flipped directly. | — |
-| `{pending, active} → failed` | `reconcile_orphans` (`run.rs:205`) via raw SQL, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
+| `{queued, active} → canceled` | `Runs::cancel_existing` via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Both queued and active rows are flipped directly. | — |
+| `{queued, active} → failed` | `reconcile_orphans` via raw SQL, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
 
 `Run::transition(to, failure_kind)`'s allowed-transition match:
 
 ```
-(Pending, Active) | (Pending, Complete) | (Pending, Superseded) |
-(Active,  Complete) | (Active,  Failed) | (Active,  Superseded)
+(Queued, Active) | (Queued, Succeeded) | (Queued, Canceled) |
+(Active, Succeeded) | (Active, Failed) | (Active, Canceled)
 ```
 
-In practice only `(Active, Complete)` and `(Active, Failed)` are exercised via `transition` — the `Pending → Active` edge is owned by the bootstrap endpoint (api.rs), and the supersede edges go through raw SQL (`supersede_existing`), not `transition`. The other edges are gated for defensive consistency, in case a future caller routes supersede through the typed API. Anything else — `Pending → Failed`, `Active → Pending`, or any transition out of a terminal state — returns `InvalidTransition`.
+In practice only `(Active, Succeeded)` and `(Active, Failed)` are exercised via `transition` — the `Queued → Active` edge is owned by the bootstrap endpoint (api.rs), and the cancel edges go through raw SQL (`cancel_existing`), not `transition`. The other edges are gated for defensive consistency, in case a future caller routes cancellation through the typed API. Anything else — `Queued → Failed`, `Active → Queued`, or any transition out of a terminal state — returns `InvalidTransition`.
 
-`failure_kind` is recorded only when `to == Failed`; it's ignored for `Active`, `Complete`, and `Superseded`.
+`failure_kind` is recorded only when `to == Failed`; it's ignored for `Active`, `Succeeded`, and `Canceled`.
 
 ### Database invariants
 
-The DB enforces shape per state via a `CHECK` constraint (see `migrations/0007_schema_cleanup.sql`):
+The DB enforces shape per state via a `CHECK` constraint (see `migrations/0009_rename_ci_vocab.sql`):
 
 | State | `started_at_ms` | `finished_at_ms` |
 | --- | --- | --- |
-| `pending` | NULL | NULL |
+| `queued` | NULL | NULL |
 | `active` | set | NULL |
-| `complete` | set | set |
+| `succeeded` | set | set |
 | `failed` | (any) | set |
-| `superseded` | (any) | set |
+| `canceled` | (any) | set |
 
 Plus monotonicity: `started_at_ms >= queued_at_ms`, `finished_at_ms >= started_at_ms`. `started_at_ms`, `finished_at_ms`, and `failure_kind` are stamped at most once each, via `COALESCE` in the `UPDATE`.
 
@@ -95,7 +93,7 @@ Nullable column populated by `Run::transition` when entering `Failed`, plus `rec
 | `"process-crashed"` | `Run::execute`: `quire-ci` exited non-zero, or exited 0 but never emitted a `RunFinished` event (panic or unexpected termination). |
 | `"orphaned"` | `reconcile_orphans` on startup. |
 
-Successful and superseded runs leave `failure_kind` NULL. The set is open — UI consumers should not assume it's exhaustive.
+Succeeded and canceled runs leave `failure_kind` NULL. The set is open — UI consumers should not assume it's exhaustive.
 
 ## Job state machine
 
@@ -103,43 +101,35 @@ Successful and superseded runs leave `failure_kind` NULL. The set is open — UI
 
 ```mermaid
 stateDiagram-v2
-    [*] --> complete : JobFinished complete
-    [*] --> failed   : JobFinished failed
+    [*] --> succeeded : JobFinished succeeded
+    [*] --> failed    : JobFinished failed
 
-    complete --> [*]
-    failed   --> [*]
+    succeeded --> [*]
+    failed    --> [*]
 
-    pending --> [*] : no producer yet
-    active  --> [*] : no producer yet
-    skipped --> [*] : no producer yet
-    aborted --> [*] : no producer yet
+    active --> [*] : no producer yet
 ```
 
 ### Transitions in code
 
-There is only one writer of `jobs` rows: `Run::ingest_events` (`run.rs:399`). It reads `events.jsonl` after the `quire-ci` subprocess exits and, for each `JobStarted`/`JobFinished` pair, inserts **one row directly in the terminal state**. The intermediate `active` state is held in an in-memory `pending_jobs` map during ingest and never persisted.
+There is only one writer of `jobs` rows: `Run::ingest_events`. It reads `events.jsonl` after the `quire-ci` subprocess exits and, for each `JobStarted`/`JobFinished` pair, inserts **one row directly in the terminal state**. The intermediate `active` state is held in an in-memory `inflight_jobs` map during ingest and never persisted.
 
 | From → To | Where | When |
 | --- | --- | --- |
-| `[*] → complete` | `Run::ingest_events` (`run.rs:399`) | `JobFinished { outcome: complete }` paired with a buffered `JobStarted`. |
+| `[*] → succeeded` | `Run::ingest_events` | `JobFinished { outcome: succeeded }` paired with a buffered `JobStarted`. |
 | `[*] → failed` | `Run::ingest_events` | `JobFinished { outcome: failed }` paired with a buffered `JobStarted`. |
 
 Consequence: while `quire-ci` is running, **no `jobs` rows exist for this run**. They all materialize at ingest time. Live progress is visible via `events.jsonl` or per-`sh` log files on disk, not via SQL.
 
 ### Database invariants
 
-`migrations/0001_initial.sql` allows six job states (`pending`, `active`, `complete`, `failed`, `skipped`, `aborted`) with these shape rules:
+`migrations/0009_rename_ci_vocab.sql` allows three job states (`active`, `succeeded`, `failed`) with these shape rules:
 
 | State | `started_at_ms` | `finished_at_ms` |
 | --- | --- | --- |
-| `pending` | NULL | NULL |
 | `active` | set | NULL |
-| `complete` | set | set |
+| `succeeded` | set | set |
 | `failed` | set | set |
-| `skipped` | NULL | set |
-| `aborted` | (any) | set |
-
-`skipped` carries `finished_at_ms` but not `started_at_ms` — the row exists to record "this job never ran" with a timestamp anchoring it to the run.
 
 ### Stop-on-first-failure inside `quire-ci`
 
@@ -152,7 +142,7 @@ if let Err(e) = result {
 }
 ```
 
-`JobStarted`/`JobFinished` are only emitted for jobs that actually ran. **Jobs downstream of the failure produce no events, so no `jobs` row at all** — not `skipped`, not anything. See Gaps below.
+`JobStarted`/`JobFinished` are only emitted for jobs that actually ran. **Jobs downstream of the failure produce no events, so no `jobs` row at all.** See Gaps below.
 
 ## Event flow: Process executor
 
@@ -180,8 +170,8 @@ sequenceDiagram
     Run->>Run: ingest_events(events.jsonl)
     Run->>DB: INSERT jobs (pass 1)
     Run->>DB: INSERT sh (pass 2)
-    alt RunFinished(Success) + exit 0
-        Run->>DB: UPDATE runs SET state='complete'
+    alt RunFinished(Succeeded) + exit 0
+        Run->>DB: UPDATE runs SET state='succeeded'
     else RunFinished(PipelineFailure) + exit 0
         Run->>DB: UPDATE runs SET state='failed' (failure_kind='pipeline-failure')
     else exit nonzero or no RunFinished
@@ -192,7 +182,7 @@ sequenceDiagram
 Wire events (`quire-core/src/ci/event.rs`):
 
 * `JobStarted { job_id }`
-* `JobFinished { job_id, outcome: complete | failed }` — `JobOutcome` is the closed set, not the full job-state enum.
+* `JobFinished { job_id, outcome: succeeded | failed }` — `JobOutcome` is the closed set, not the full job-state enum.
 * `ShStarted { job_id, cmd }` / `ShFinished { job_id, exit_code }`
 
 `Run::ingest_events` reads the file in two passes (jobs first to satisfy the FK on `(run_id, job_id)`, then sh). Ingest failures are logged but never demote the run's own outcome — a partial DB write is preferable to losing the pass/fail signal.
@@ -213,12 +203,12 @@ sequenceDiagram
     Hook->>Listener: PushEvent JSON over /var/quire/server.sock
     Listener->>Trigger: trigger(quire, &event)
     loop per updated ref
-      Trigger->>DB: supersede_existing (Pending|Active → Superseded for same repo/ref)
-      Trigger->>DB: INSERT runs (state=pending)
+      Trigger->>DB: cancel_existing (Queued|Active → Canceled for same repo/ref)
+      Trigger->>DB: INSERT runs (state=queued)
       Trigger->>FS: create run dir + workspace
       Trigger->>FS: git archive | tar -x  (materialize workspace)
       Trigger->>Exec: execute()
-      Exec->>DB: active → complete|failed (via bootstrap endpoint + ingest_events)
+      Exec->>DB: active → succeeded|failed (via bootstrap endpoint + ingest_events)
     end
 ```
 
@@ -234,15 +224,15 @@ Two things in `CI.md` that the code does *not* yet implement at this layer:
 | Column | Written by | Read by |
 | --- | --- | --- |
 | `id` | `Runs::create` | everywhere |
-| `repo` | `Runs::create` | `supersede_existing`, web handlers |
-| `ref_name` | `Runs::create` | `supersede_existing`, web handlers, bootstrap response |
+| `repo` | `Runs::create` | `cancel_existing`, web handlers |
+| `ref_name` | `Runs::create` | `cancel_existing`, web handlers, bootstrap response |
 | `sha` | `Runs::create` | `read_meta`, bootstrap response, web handlers |
 | `pushed_at_ms` | `Runs::create` | `read_meta`, web handlers |
-| `state` | `Runs::create` (→ `pending`) + every transition | everywhere |
+| `state` | `Runs::create` (→ `queued`) + every transition | everywhere |
 | `failure_kind` | `Run::transition(Failed, …)`, `reconcile_orphans` | web handlers |
 | `queued_at_ms` | `Runs::create` | web handlers |
-| `started_at_ms` | `transition(Active)`, also stamped as fallback in `Complete/Failed/Superseded` | `read_started_at`, web handlers |
-| `finished_at_ms` | `transition(Complete/Failed/Superseded)` | `read_finished_at`, web handlers |
+| `started_at_ms` | `transition(Active)`, also stamped as fallback in `Succeeded/Failed/Canceled` | `read_started_at`, web handlers |
+| `finished_at_ms` | `transition(Succeeded/Failed/Canceled)` | `read_finished_at`, web handlers |
 | `run_token` | `Runs::create` (API sessions only) | `verify_run_token` middleware |
 | `git_dir` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
 | `traceparent` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
@@ -253,7 +243,7 @@ Migration 0007 dropped eight columns that carried no live data with the Process 
 
 All six columns (`run_id`, `job_id`, `state`, `exit_code`, `started_at_ms`, `finished_at_ms`) are written by `Run::ingest_events` and read by the web detail view. All live.
 
-The schema permits six states (`pending`, `active`, `complete`, `failed`, `skipped`, `aborted`) but `ingest_events` only writes `complete` and `failed`. The other four states have no producer today — see Gaps below.
+The schema permits three states (`active`, `succeeded`, `failed`) but `ingest_events` only writes `succeeded` and `failed`. `active` has no producer today — see Gaps below.
 
 ### `sh` table
 
@@ -266,9 +256,7 @@ States the schema admits — or `CI.md` commits to — that no code path produce
 | Gap | Schema/spec | Producer needed |
 | --- | --- | --- |
 | Job `active` rows during execution | Schema-allowed | `ingest_events` inserts one row per job at JobFinished time. While `quire-ci` is running, the `jobs` table has nothing for this run. Live UI of "currently running job" needs an active-row writer — either eager ingest, or a separate writer inside `quire-ci`. |
-| Job `pending` rows | Schema-allowed | Useful for "queued jobs in topo order" UI. Today jobs go straight from no-row to a terminal row. |
-| Job `skipped` rows for dependents of a failed job | Schema-allowed | `quire-ci`'s loop `break`s on first failure and emits no events for downstream jobs. To populate `skipped`, either `quire-ci` would emit `JobSkipped` events for unrun topo-order jobs, or the ingester would compute them from the pipeline graph + the surviving JobFinished rows. |
-| Job `aborted` rows | Schema-allowed | Needed when a run is killed mid-flight — e.g. by `supersede_existing` `docker kill`-ing the container. Today the run row flips to `superseded`, but no `jobs` rows are written for the work that was in flight. |
+| Job `skipped` outcome for dependents of a failed job | Tracked in ranger `wwpxzuvq` | `quire-ci`'s loop `break`s on first failure and emits no events for downstream jobs. Would need `skipped` re-added to the jobs CHECK constraint; producer would emit `JobSkipped` events from `quire-ci` or compute them in the ingester from the pipeline graph. |
 | `:allow-failure` job flag | Documented in `CI.md` as v1 | Not implemented anywhere in `quire-core`, `quire-ci`, or `quire-server`. The structural validator doesn't recognize the key; the executor treats every job error as fatal. |
 | Queue + Notify wakeup | `CI.md` "Communication" section | `trigger` runs synchronously on the listener task. No queue scan, no Notify, no separate runner task. |
 

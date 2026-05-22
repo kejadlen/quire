@@ -520,7 +520,7 @@ fn run_pipeline(
         sink.emit(Event {
             at_ms: jiff::Timestamp::now().as_millisecond(),
             kind: EventKind::RunFinished {
-                outcome: RunOutcome::Success,
+                outcome: RunOutcome::Succeeded,
             },
         })
         .expect("emit run_finished");
@@ -613,7 +613,7 @@ fn run_pipeline(
         runtime.leave_job();
 
         let outcome = if result.is_ok() {
-            JobOutcome::Complete
+            JobOutcome::Succeeded
         } else {
             JobOutcome::Failed
         };
@@ -642,7 +642,7 @@ fn run_pipeline(
         tracing::warn!(job = %job_id, error = err as &(dyn std::error::Error + 'static), "job run-fn failed");
         RunOutcome::PipelineFailure
     } else {
-        RunOutcome::Success
+        RunOutcome::Succeeded
     };
 
     sink.borrow_mut()

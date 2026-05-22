@@ -15,15 +15,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobOutcome {
-    Complete,
+    Succeeded,
     Failed,
 }
 
-/// Outcome of the complete pipeline run, carried by [`EventKind::RunFinished`].
+/// Outcome of the pipeline run, carried by [`EventKind::RunFinished`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunOutcome {
-    Success,
+    Succeeded,
     PipelineFailure,
 }
 
@@ -42,7 +42,7 @@ pub struct Event {
 pub enum EventKind {
     /// A job's run-fn is about to fire.
     JobStarted { job_id: String },
-    /// A job's run-fn returned. `outcome` is `complete` if the run-fn
+    /// A job's run-fn returned. `outcome` is `succeeded` if the run-fn
     /// returned `Ok`, else `failed`.
     JobFinished { job_id: String, outcome: JobOutcome },
     /// An sh process is about to spawn.
@@ -80,13 +80,13 @@ mod tests {
             at_ms: 250,
             kind: EventKind::JobFinished {
                 job_id: "build".into(),
-                outcome: JobOutcome::Complete,
+                outcome: JobOutcome::Succeeded,
             },
         };
         let json = serde_json::to_string(&event).unwrap();
         assert_eq!(
             json,
-            r#"{"at_ms":250,"type":"job_finished","job_id":"build","outcome":"complete"}"#
+            r#"{"at_ms":250,"type":"job_finished","job_id":"build","outcome":"succeeded"}"#
         );
     }
 

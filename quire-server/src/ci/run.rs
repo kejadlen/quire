@@ -30,21 +30,21 @@ pub enum Executor {
 /// The state of a CI run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
-    Pending,
+    Queued,
     Active,
-    Complete,
+    Succeeded,
     Failed,
-    Superseded,
+    Canceled,
 }
 
 impl RunState {
     pub fn as_str(&self) -> &'static str {
         match self {
-            RunState::Pending => "pending",
+            RunState::Queued => "queued",
             RunState::Active => "active",
-            RunState::Complete => "complete",
+            RunState::Succeeded => "succeeded",
             RunState::Failed => "failed",
-            RunState::Superseded => "superseded",
+            RunState::Canceled => "canceled",
         }
     }
 }
@@ -54,11 +54,11 @@ impl std::str::FromStr for RunState {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "pending" => Some(RunState::Pending),
+            "queued" => Some(RunState::Queued),
             "active" => Some(RunState::Active),
-            "complete" => Some(RunState::Complete),
+            "succeeded" => Some(RunState::Succeeded),
             "failed" => Some(RunState::Failed),
-            "superseded" => Some(RunState::Superseded),
+            "canceled" => Some(RunState::Canceled),
             _ => None,
         }
         .ok_or(())
@@ -86,9 +86,9 @@ impl Runs {
         }
     }
 
-    /// Create a new run record in the `pending` state.
+    /// Create a new run record in the `queued` state.
     ///
-    /// Before inserting, supersedes any existing `pending` or `active`
+    /// Before inserting, cancels any existing `queued` or `active`
     /// run for the same `(repo, ref)`.
     ///
     /// Inserts a row into `runs` and creates the run directory for
@@ -109,14 +109,14 @@ impl Runs {
 
         let db = crate::db::open(&self.db_path)?;
 
-        // Supersede any existing pending or active run for (repo, ref).
+        // Cancel any existing queued or active run for (repo, ref).
         // Do this before inserting the new run so the new run is never
-        // caught by its own supersede query.
-        self.supersede_existing(&db, &meta.r#ref)?;
+        // caught by its own cancel query.
+        self.cancel_existing(&db, &meta.r#ref)?;
 
         db.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, run_token)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7)",
             rusqlite::params![
                 &id,
                 &self.repo,
@@ -135,14 +135,14 @@ impl Runs {
         Ok(Run {
             db_path: self.db_path.clone(),
             id,
-            state: RunState::Pending,
+            state: RunState::Queued,
             base_dir: self.base_dir.clone(),
         })
     }
 
-    /// Supersede any existing `pending` or `active` run for
+    /// Cancel any existing `queued` or `active` run for
     /// `(repo, ref)`. Different refs are unaffected.
-    fn supersede_existing(&self, db: &rusqlite::Connection, ref_name: &str) -> Result<()> {
+    fn cancel_existing(&self, db: &rusqlite::Connection, ref_name: &str) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
 
         let active_ids: Vec<String> = db
@@ -155,26 +155,26 @@ impl Runs {
 
         for run_id in &active_ids {
             db.execute(
-                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1 WHERE id = ?2",
+                "UPDATE runs SET state = 'canceled', finished_at_ms = ?1 WHERE id = ?2",
                 rusqlite::params![now, run_id],
             )?;
-            tracing::info!(run_id = %run_id, "superseded active run");
+            tracing::info!(run_id = %run_id, "canceled active run");
         }
 
-        let pending_count = db.execute(
-            "UPDATE runs SET state = 'superseded', finished_at_ms = ?1
-             WHERE repo = ?2 AND ref_name = ?3 AND state = 'pending'",
+        let queued_count = db.execute(
+            "UPDATE runs SET state = 'canceled', finished_at_ms = ?1
+             WHERE repo = ?2 AND ref_name = ?3 AND state = 'queued'",
             rusqlite::params![now, &self.repo, ref_name],
         )?;
-        if pending_count > 0 {
-            tracing::info!(count = pending_count, "superseded pending run(s)");
+        if queued_count > 0 {
+            tracing::info!(count = queued_count, "canceled queued run(s)");
         }
 
         Ok(())
     }
 }
 
-/// Move every `pending` or `active` run to `failed` with
+/// Move every `queued` or `active` run to `failed` with
 /// `failure_kind = 'orphaned'`. Called once at server startup to clean
 /// up runs left behind by a prior instance. Operates across all repos —
 /// orphans aren't a per-repo concern.
@@ -183,7 +183,7 @@ pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
     let db = crate::db::open(db_path)?;
     let count = db.execute(
         "UPDATE runs SET state = 'failed', finished_at_ms = ?1, failure_kind = 'orphaned'
-         WHERE state IN ('pending', 'active')",
+         WHERE state IN ('queued', 'active')",
         rusqlite::params![now],
     )?;
     if count > 0 {
@@ -252,7 +252,7 @@ impl Run {
     /// * `jobs/<job>/sh-<n>.log` — per-sh CRI logs, written by quire-ci
     ///   via `--out-dir`.
     ///
-    /// Run finishes `Complete` on exit 0, `Failed` otherwise. The DB
+    /// Run finishes `Succeeded` on exit 0, `Failed` otherwise. The DB
     /// rows are written even on failure so the web UI can render
     /// partial progress.
     pub fn execute(
@@ -264,11 +264,11 @@ impl Run {
         session: Option<&ApiSession>,
     ) -> Result<()> {
         // For API runs the GET /api/run/bootstrap endpoint owns the
-        // pending → active transition (it sets started_at_ms when quire-ci
+        // queued → active transition (it sets started_at_ms when quire-ci
         // fetches the payload). Calling transition() here would set state =
         // 'active' in the DB before quire-ci connects, causing the endpoint
         // to return 410 Gone. Update local state only so the later
-        // transition(Complete/Failed) call passes the state-machine check.
+        // transition(Succeeded/Failed) call passes the state-machine check.
         if session.is_some() {
             self.state = RunState::Active;
         } else {
@@ -349,8 +349,8 @@ impl Run {
         // quire-ci exited cleanly but never reached the terminal event —
         // treat that as a crash too.
         match run_outcome {
-            Some(quire_core::ci::event::RunOutcome::Success) => {
-                self.transition(RunState::Complete, None)?;
+            Some(quire_core::ci::event::RunOutcome::Succeeded) => {
+                self.transition(RunState::Succeeded, None)?;
             }
             Some(quire_core::ci::event::RunOutcome::PipelineFailure) => {
                 self.transition(RunState::Failed, Some("pipeline-failure"))?;
@@ -392,17 +392,17 @@ impl Run {
         let db = crate::db::open(&self.db_path)?;
 
         // Pass 1: jobs rows. Pair JobStarted with JobFinished by job_id.
-        let mut pending_jobs: HashMap<&str, i64> = HashMap::new();
+        let mut inflight_jobs: HashMap<&str, i64> = HashMap::new();
         let mut run_outcome: Option<RunOutcome> = None;
         for event in &events {
             match &event.kind {
                 EventKind::JobStarted { job_id } => {
-                    pending_jobs.insert(job_id.as_str(), event.at_ms);
+                    inflight_jobs.insert(job_id.as_str(), event.at_ms);
                 }
                 EventKind::JobFinished { job_id, outcome } => {
-                    let started_at = pending_jobs.remove(job_id.as_str()).unwrap_or(event.at_ms);
+                    let started_at = inflight_jobs.remove(job_id.as_str()).unwrap_or(event.at_ms);
                     let state = match outcome {
-                        JobOutcome::Complete => "complete",
+                        JobOutcome::Succeeded => "succeeded",
                         JobOutcome::Failed => "failed",
                     };
                     db.execute(
@@ -421,14 +421,14 @@ impl Run {
         // Pass 2: sh rows. Pair ShStarted with ShFinished by job_id
         // (sequential within a run-fn, so a single buffer slot per job
         // is enough).
-        let mut pending_sh: HashMap<&str, (i64, &str)> = HashMap::new();
+        let mut inflight_sh: HashMap<&str, (i64, &str)> = HashMap::new();
         for event in &events {
             match &event.kind {
                 EventKind::ShStarted { job_id, cmd } => {
-                    pending_sh.insert(job_id.as_str(), (event.at_ms, cmd.as_str()));
+                    inflight_sh.insert(job_id.as_str(), (event.at_ms, cmd.as_str()));
                 }
                 EventKind::ShFinished { job_id, exit_code } => {
-                    let Some((started_at, cmd)) = pending_sh.remove(job_id.as_str()) else {
+                    let Some((started_at, cmd)) = inflight_sh.remove(job_id.as_str()) else {
                         continue;
                     };
                     db.execute(
@@ -470,12 +470,12 @@ impl Run {
     ///
     /// Allowed edges (see `docs/CI-STATE.md`):
     ///
-    /// * `Pending → Active`
-    /// * `Pending → Complete`
-    /// * `Pending → Superseded`
-    /// * `Active  → Complete`
-    /// * `Active  → Failed`
-    /// * `Active  → Superseded`
+    /// * `Queued → Active`
+    /// * `Queued → Succeeded`
+    /// * `Queued → Canceled`
+    /// * `Active → Succeeded`
+    /// * `Active → Failed`
+    /// * `Active → Canceled`
     ///
     /// `failure_kind` is recorded only when transitioning to
     /// `Failed`; it is ignored for other targets. Pass a short tag
@@ -487,12 +487,12 @@ impl Run {
         use RunState::*;
         let allowed = matches!(
             (self.state, to),
-            (Pending, Active)
-                | (Pending, Complete)
-                | (Pending, Superseded)
-                | (Active, Complete)
+            (Queued, Active)
+                | (Queued, Succeeded)
+                | (Queued, Canceled)
+                | (Active, Succeeded)
                 | (Active, Failed)
-                | (Active, Superseded)
+                | (Active, Canceled)
         );
         if !allowed {
             return Err(Error::InvalidTransition {
@@ -512,7 +512,7 @@ impl Run {
                     rusqlite::params![now, &self.id],
                 )?;
             }
-            Complete | Superseded => {
+            Succeeded | Canceled => {
                 db.execute(
                     "UPDATE runs SET state = ?1, \
                         started_at_ms = COALESCE(started_at_ms, ?2), \
@@ -531,7 +531,7 @@ impl Run {
                     rusqlite::params![now, now, failure_kind, &self.id],
                 )?;
             }
-            Pending => unreachable!("transition to Pending is not valid"),
+            Queued => unreachable!("transition to Queued is not valid"),
         }
 
         self.state = to;
@@ -759,11 +759,11 @@ mod tests {
     #[test]
     fn run_state_round_trips() {
         for state in [
-            RunState::Pending,
+            RunState::Queued,
             RunState::Active,
-            RunState::Complete,
+            RunState::Succeeded,
             RunState::Failed,
-            RunState::Superseded,
+            RunState::Canceled,
         ] {
             assert!(state.as_str().parse::<RunState>().is_ok());
         }
@@ -825,14 +825,14 @@ mod tests {
     }
 
     #[test]
-    fn create_writes_row_in_pending_state() {
+    fn create_writes_row_in_queued_state() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
             .create(&test_meta(), Some(&test_session()))
             .expect("create");
 
-        assert_eq!(run.state(), RunState::Pending);
+        assert_eq!(run.state(), RunState::Queued);
 
         // Verify workspace directory was created.
         let workspace = run.path().join("workspace");
@@ -887,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn transition_stamps_finished_at_on_complete_and_failed() {
+    fn transition_stamps_finished_at_on_succeeded_and_failed() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
@@ -898,8 +898,8 @@ mod tests {
             .transition(RunState::Active, None)
             .expect("to active");
         completed
-            .transition(RunState::Complete, None)
-            .expect("to complete");
+            .transition(RunState::Succeeded, None)
+            .expect("to succeed");
         assert!(completed.read_finished_at().expect("read").is_some());
 
         let mut failed = runs
@@ -966,7 +966,7 @@ mod tests {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
-        // Pending -> Failed is not allowed (must go via Active).
+        // Queued -> Failed is not allowed (must go via Active).
         let mut run = runs
             .create(&test_meta(), Some(&test_session()))
             .expect("create");
@@ -980,8 +980,8 @@ mod tests {
             .transition(RunState::Active, None)
             .expect("to active");
         completed
-            .transition(RunState::Complete, None)
-            .expect("to complete");
+            .transition(RunState::Succeeded, None)
+            .expect("to succeed");
         assert!(completed.transition(RunState::Active, None).is_err());
         assert!(completed.transition(RunState::Failed, None).is_err());
     }
@@ -997,8 +997,8 @@ mod tests {
         run.transition(RunState::Active, None).expect("to active");
         let started = run.read_started_at().expect("read started_at");
 
-        run.transition(RunState::Complete, None)
-            .expect("to complete");
+        run.transition(RunState::Succeeded, None)
+            .expect("to succeed");
         assert_eq!(
             run.read_started_at().expect("read"),
             started,
@@ -1015,14 +1015,14 @@ mod tests {
             .expect("create");
 
         run.transition(RunState::Active, None).expect("to active");
-        run.transition(RunState::Complete, None)
-            .expect("to complete");
+        run.transition(RunState::Succeeded, None)
+            .expect("to succeed");
 
-        assert_eq!(run.state(), RunState::Complete);
+        assert_eq!(run.state(), RunState::Succeeded);
     }
 
     #[test]
-    fn reconcile_fails_pending_orphans() {
+    fn reconcile_fails_queued_orphans() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let run = runs
@@ -1053,21 +1053,21 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_leaves_complete_runs_alone() {
+    fn reconcile_leaves_succeeded_runs_alone() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
             .create(&test_meta(), Some(&test_session()))
             .expect("create");
         run.transition(RunState::Active, None).expect("to active");
-        run.transition(RunState::Complete, None)
-            .expect("to complete");
+        run.transition(RunState::Succeeded, None)
+            .expect("to succeed");
         let id = run.id().to_string();
 
         reconcile_orphans(&quire.db_path()).expect("reconcile");
 
         let reopened = Run::open(quire.db_path(), id, runs.base_dir.clone()).expect("reopen");
-        assert_eq!(reopened.state(), RunState::Complete);
+        assert_eq!(reopened.state(), RunState::Succeeded);
     }
 
     #[test]
@@ -1112,7 +1112,7 @@ mod tests {
                 at_ms: 200,
                 kind: EventKind::JobFinished {
                     job_id: "build".into(),
-                    outcome: JobOutcome::Complete,
+                    outcome: JobOutcome::Succeeded,
                 },
             },
             Event {
@@ -1163,7 +1163,7 @@ mod tests {
         assert_eq!(
             jobs,
             vec![
-                ("build".to_string(), "complete".to_string(), 100, 200),
+                ("build".to_string(), "succeeded".to_string(), 100, 200),
                 ("test".to_string(), "failed".to_string(), 210, 220),
             ]
         );
@@ -1218,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn create_supersedes_pending_run_on_same_ref() {
+    fn create_cancels_queued_run_on_same_ref() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
@@ -1227,9 +1227,9 @@ mod tests {
             .create(&test_meta(), Some(&test_session()))
             .expect("create run1");
         let run1_id = run1.id().to_string();
-        assert_eq!(run1.state(), RunState::Pending);
+        assert_eq!(run1.state(), RunState::Queued);
 
-        // Create second run for same (repo, ref) — should supersede the first.
+        // Create second run for same (repo, ref) — should cancel the first.
         let meta2 = RunMeta {
             sha: "def456".to_string(),
             r#ref: "refs/heads/main".to_string(),
@@ -1238,19 +1238,19 @@ mod tests {
         let run2 = runs
             .create(&meta2, Some(&test_session()))
             .expect("create run2");
-        assert_eq!(run2.state(), RunState::Pending);
+        assert_eq!(run2.state(), RunState::Queued);
 
-        // First run should now be superseded.
+        // First run should now be canceled.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
-        assert_eq!(reopened.state(), RunState::Superseded);
+        assert_eq!(reopened.state(), RunState::Canceled);
         assert!(
             reopened.read_finished_at().expect("read").is_some(),
-            "superseded run should have finished_at"
+            "canceled run should have finished_at"
         );
     }
 
     #[test]
-    fn create_supersedes_active_run_on_same_ref() {
+    fn create_cancels_active_run_on_same_ref() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
@@ -1270,19 +1270,19 @@ mod tests {
         let run2 = runs
             .create(&meta2, Some(&test_session()))
             .expect("create run2");
-        assert_eq!(run2.state(), RunState::Pending);
+        assert_eq!(run2.state(), RunState::Queued);
 
-        // First run should be superseded.
+        // First run should be canceled.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
-        assert_eq!(reopened.state(), RunState::Superseded);
+        assert_eq!(reopened.state(), RunState::Canceled);
         assert!(
             reopened.read_finished_at().expect("read").is_some(),
-            "superseded run should have finished_at"
+            "canceled run should have finished_at"
         );
     }
 
     #[test]
-    fn create_does_not_supersede_different_ref() {
+    fn create_does_not_cancel_different_ref() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
@@ -1302,24 +1302,24 @@ mod tests {
             .create(&meta2, Some(&test_session()))
             .expect("create run2");
 
-        // First run should still be pending.
+        // First run should still be queued.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
-        assert_eq!(reopened.state(), RunState::Pending);
+        assert_eq!(reopened.state(), RunState::Queued);
     }
 
     #[test]
-    fn create_does_not_supersede_complete_or_failed_runs() {
+    fn create_does_not_cancel_succeeded_or_failed_runs() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
 
-        // Create and complete first run.
+        // Drive first run to succeeded.
         let mut run1 = runs
             .create(&test_meta(), Some(&test_session()))
             .expect("create run1");
         let run1_id = run1.id().to_string();
         run1.transition(RunState::Active, None).expect("to active");
-        run1.transition(RunState::Complete, None)
-            .expect("to complete");
+        run1.transition(RunState::Succeeded, None)
+            .expect("to succeed");
 
         // Create second run for same (repo, ref).
         let meta2 = RunMeta {
@@ -1331,38 +1331,36 @@ mod tests {
             .create(&meta2, Some(&test_session()))
             .expect("create run2");
 
-        // First run should still be complete.
+        // First run should still be succeeded.
         let reopened = Run::open(quire.db_path(), run1_id, runs.base_dir.clone()).expect("reopen");
-        assert_eq!(reopened.state(), RunState::Complete);
+        assert_eq!(reopened.state(), RunState::Succeeded);
     }
 
     #[test]
-    fn transition_allows_pending_to_superseded() {
+    fn transition_allows_queued_to_canceled() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
             .create(&test_meta(), Some(&test_session()))
             .expect("create");
-        run.transition(RunState::Superseded, None)
-            .expect("to superseded");
-        assert_eq!(run.state(), RunState::Superseded);
+        run.transition(RunState::Canceled, None).expect("to cancel");
+        assert_eq!(run.state(), RunState::Canceled);
     }
 
     #[test]
-    fn transition_allows_active_to_superseded() {
+    fn transition_allows_active_to_canceled() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
             .create(&test_meta(), Some(&test_session()))
             .expect("create");
         run.transition(RunState::Active, None).expect("to active");
-        run.transition(RunState::Superseded, None)
-            .expect("to superseded");
-        assert_eq!(run.state(), RunState::Superseded);
+        run.transition(RunState::Canceled, None).expect("to cancel");
+        assert_eq!(run.state(), RunState::Canceled);
     }
 
     #[test]
-    fn supersede_sets_finished_at() {
+    fn cancel_sets_finished_at() {
         let (_dir, quire) = tmp_quire();
         let runs = test_runs(&quire);
         let mut run = runs
@@ -1372,14 +1370,13 @@ mod tests {
 
         assert!(
             run.read_finished_at().expect("read").is_none(),
-            "should not have finished_at before supersede"
+            "should not have finished_at before cancel"
         );
 
-        run.transition(RunState::Superseded, None)
-            .expect("to superseded");
+        run.transition(RunState::Canceled, None).expect("to cancel");
         assert!(
             run.read_finished_at().expect("read").is_some(),
-            "superseded run should have finished_at"
+            "canceled run should have finished_at"
         );
     }
 }

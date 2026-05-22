@@ -168,7 +168,7 @@ async fn get_bootstrap(
                 .next()
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
 
-            if row.state != "pending" {
+            if row.state != "queued" {
                 return Err(ApiError::Gone);
             }
 

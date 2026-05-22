@@ -83,7 +83,7 @@ fn format_ms_duration(ms: i64) -> String {
 /// don't each carry their own identical match.
 pub fn state_class(state: &str) -> &'static str {
     match state {
-        "complete" => "c-ok",
+        "succeeded" => "c-ok",
         "failed" => "c-bad",
         _ => "c-muted",
     }
@@ -171,8 +171,8 @@ mod tests {
     }
 
     #[test]
-    fn state_class_complete() {
-        assert_eq!(state_class("complete"), "c-ok");
+    fn state_class_succeeded() {
+        assert_eq!(state_class("succeeded"), "c-ok");
     }
 
     #[test]
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn state_class_unknown_falls_through() {
-        assert_eq!(state_class("pending"), "c-muted");
+        assert_eq!(state_class("queued"), "c-muted");
         assert_eq!(state_class("active"), "c-muted");
         assert_eq!(state_class(""), "c-muted");
     }
