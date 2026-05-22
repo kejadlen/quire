@@ -331,6 +331,27 @@ fn main() -> Result<()> {
             };
             let client = RunClient::new(session.clone());
 
+            // Initialize Sentry and tracing before bootstrap so that a
+            // bootstrap failure (e.g. timeout reaching the server) is
+            // captured. Per-run scope tags that depend on bootstrap
+            // data (sha, ref, repo, run_id) are attached after
+            // `fetch_bootstrap` returns.
+            //
+            // Drop order: `_sentry` flushes first (still inside the
+            // runtime), then `_enter`, then `rt`.
+            let _sentry = cli.quire.sentry_dsn.as_deref().map(init_sentry);
+
+            // No type registrations: quire-ci's user-level errors
+            // (CompileError, JobError, FennelError) are no longer logged
+            // at tracing::error, so the miette renderer would never fire
+            // for them. The layer stays installed in case future ops
+            // errors want to register types.
+            let miette_layer = MietteLayer::new();
+            // _tracing_guard must be declared AFTER _sentry so it drops
+            // BEFORE _sentry — OTEL provider flushes spans to Sentry SDK
+            // before the Sentry client flushes to the server.
+            let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+
             let (git_dir, meta, sentry_ctx) = if local {
                 let Some(git_dir) = git_dir else {
                     bail!("--git-dir is required for local runs");
@@ -344,27 +365,12 @@ fn main() -> Result<()> {
                 };
                 (git_dir, meta, TelemetryContext::default())
             } else {
-                client.fetch_bootstrap()?
+                client.fetch_bootstrap().inspect_err(|e| {
+                    tracing::error!(error = %e, "bootstrap fetch failed");
+                })?
             };
 
-            // Drop order: `_sentry` flushes first (still inside the
-            // runtime), then `_enter`, then `rt`.
-            let _sentry = cli
-                .quire
-                .sentry_dsn
-                .as_deref()
-                .map(|dsn| init_sentry(dsn, &meta, &sentry_ctx));
-
-            // No type registrations: quire-ci's user-level errors
-            // (CompileError, JobError, FennelError) are no longer logged
-            // at tracing::error, so the miette renderer would never fire
-            // for them. The layer stays installed in case future ops
-            // errors want to register types.
-            let miette_layer = MietteLayer::new();
-            // _tracing_guard must be declared AFTER _sentry so it drops
-            // BEFORE _sentry — OTEL provider flushes spans to Sentry SDK
-            // before the Sentry client flushes to the server.
-            let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+            tag_run_scope(&meta, &sentry_ctx);
 
             let run_span =
                 tracing::info_span!("quire.ci.run", sha = %meta.sha, r#ref = %meta.r#ref);
@@ -397,16 +403,24 @@ struct TelemetryContext {
     run_id: Option<String>,
 }
 
-/// Initialize Sentry. Tags the scope with `service=quire-ci` plus the
-/// run's sha and ref so events from this binary are distinguishable
-/// from quire-server's in the same project. `repo`, `run_id`, and the
-/// trace context come from the bootstrap handoff and are attached only
-/// when present (absent for local runs); the trace id links both
-/// sides' events onto the same trace.
-fn init_sentry(dsn: &str, meta: &RunMeta, ctx: &TelemetryContext) -> sentry::ClientInitGuard {
+/// Initialize Sentry and tag the scope with `service=quire-ci` so
+/// events from this binary are distinguishable from quire-server's in
+/// the same project. Per-run tags (sha, ref, repo, run_id) are added
+/// later by [`tag_run_scope`] once the bootstrap handoff returns.
+fn init_sentry(dsn: &str) -> sentry::ClientInitGuard {
     let guard = sentry::init((dsn, telemetry::sentry_client_options(VERSION)));
     sentry::configure_scope(|scope| {
         scope.set_tag("service", "quire-ci");
+    });
+    guard
+}
+
+/// Attach per-run tags to the Sentry scope. `repo`, `run_id`, and the
+/// trace context come from the bootstrap handoff and are attached only
+/// when present (absent for local runs); the trace id links both
+/// sides' events onto the same trace.
+fn tag_run_scope(meta: &RunMeta, ctx: &TelemetryContext) {
+    sentry::configure_scope(|scope| {
         scope.set_tag("sha", &meta.sha);
         scope.set_tag("ref", &meta.r#ref);
         if let Some(repo) = &ctx.repo {
@@ -416,7 +430,6 @@ fn init_sentry(dsn: &str, meta: &RunMeta, ctx: &TelemetryContext) -> sentry::Cli
             scope.set_tag("run_id", run_id);
         }
     });
-    guard
 }
 
 fn git_rev_parse(git_dir: &std::path::Path, rev: &str) -> Result<String> {
