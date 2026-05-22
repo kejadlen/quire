@@ -106,7 +106,6 @@ impl Seeder {
 
     fn insert_run(&self, run: &SeedRun) -> Result<()> {
         let repo = "example.git";
-        let workspace = "/tmp/quire-seed";
         // v7 UUIDs so the IDs are time-sortable in addition to unique.
         let run_id = Uuid::now_v7().to_string();
 
@@ -114,25 +113,24 @@ impl Seeder {
         let started_at = run.started_delta_ms.map(|d| pushed_at + d);
         let finished_at = started_at.zip(run.duration_ms).map(|(s, d)| s + d);
 
-        self.db.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                               queued_at_ms, started_at_ms, finished_at_ms,
-                               container_id, image_tag, build_started_at_ms, build_finished_at_ms,
-                               container_started_at_ms, container_stopped_at_ms, workspace_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, NULL, NULL, NULL, NULL, NULL, ?10)",
-            params![
-                run_id,
-                repo,
-                run.ref_name,
-                run.sha,
-                pushed_at,
-                run.state,
-                pushed_at, // queued_at_ms = pushed_at_ms
-                started_at,
-                finished_at,
-                workspace,
-            ],
-        ).into_diagnostic()?;
+        self.db
+            .execute(
+                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
+                               queued_at_ms, started_at_ms, finished_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)",
+                params![
+                    run_id,
+                    repo,
+                    run.ref_name,
+                    run.sha,
+                    pushed_at,
+                    run.state,
+                    pushed_at, // queued_at_ms = pushed_at_ms
+                    started_at,
+                    finished_at,
+                ],
+            )
+            .into_diagnostic()?;
 
         let Some(run_started_at) = started_at else {
             return Ok(()); // pending run; no jobs to insert.

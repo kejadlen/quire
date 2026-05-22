@@ -326,12 +326,11 @@ mod tests {
             let db = pool.lock().expect("lock");
             db.execute(
                 "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                                  queued_at_ms, started_at_ms, finished_at_ms,
-                                  container_id, image_tag, build_started_at_ms, build_finished_at_ms,
-                                  container_started_at_ms, container_stopped_at_ms, workspace_path)
-                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?5, NULL, ?4, ?6, ?7, NULL, NULL, NULL, NULL, NULL, NULL, '/tmp/ws')",
+                                  queued_at_ms, started_at_ms, finished_at_ms)
+                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?5, NULL, ?4, ?6, ?7)",
                 rusqlite::params![id, ref_name, sha, queued, state, started, finished],
-            ).expect("insert run");
+            )
+            .expect("insert run");
         }
 
         fn insert_job(
