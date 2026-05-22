@@ -57,7 +57,7 @@ stateDiagram-v2
 | `active → complete` | `Run::transition`, called from `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: Success }` was ingested. Stamps `finished_at_ms`, clears `container_id`. | — |
 | `active → failed` | `Run::execute` | `quire-ci` exited 0 and `RunFinished { outcome: PipelineFailure }` was ingested — a job's run-fn returned an error. | `"pipeline-failure"` |
 | `active → failed` | `Run::execute` | `quire-ci` exited non-zero, or exited 0 but emitted no `RunFinished` event (process crash or panic). | `"process-crashed"` |
-| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs:155`) via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Pending rows are flipped directly; active rows have their container killed (`docker kill`) first. | — |
+| `{pending, active} → superseded` | `Runs::supersede_existing` (`run.rs:155`) via raw SQL, **bypassing `transition`** | A new `Runs::create` for the same `(repo, ref)` arrived. Both pending and active rows are flipped directly. | — |
 | `{pending, active} → failed` | `reconcile_orphans` (`run.rs:205`) via raw SQL, **bypassing `transition`** | Startup-time cleanup of rows left behind by a previous `quire serve` instance. | `"orphaned"` |
 
 `Run::transition(to, failure_kind)`'s allowed-transition match:
@@ -73,15 +73,15 @@ In practice only `(Active, Complete)` and `(Active, Failed)` are exercised via `
 
 ### Database invariants
 
-The DB enforces shape per state via a `CHECK` constraint in `migrations/0001_initial.sql`:
+The DB enforces shape per state via a `CHECK` constraint (see `migrations/0007_schema_cleanup.sql`):
 
-| State | `started_at_ms` | `finished_at_ms` | `container_id` |
-| --- | --- | --- | --- |
-| `pending` | NULL | NULL | NULL |
-| `active` | set | NULL | (any) |
-| `complete` | set | set | NULL |
-| `failed` | (any) | set | NULL |
-| `superseded` | (any) | set | NULL |
+| State | `started_at_ms` | `finished_at_ms` |
+| --- | --- | --- |
+| `pending` | NULL | NULL |
+| `active` | set | NULL |
+| `complete` | set | set |
+| `failed` | (any) | set |
+| `superseded` | (any) | set |
 
 Plus monotonicity: `started_at_ms >= queued_at_ms`, `finished_at_ms >= started_at_ms`. `started_at_ms`, `finished_at_ms`, and `failure_kind` are stamped at most once each, via `COALESCE` in the `UPDATE`.
 
@@ -225,49 +225,39 @@ sequenceDiagram
 Two things in `CI.md` that the code does *not* yet implement at this layer:
 
 * **Queue + Notify wakeup.** `CI.md` describes a separate runner task pulled from a SQLite queue via `tokio::sync::Notify`. Today `ci::trigger` is called **synchronously** on the listener's tokio task — one push at a time, no queue, no separate runner. Max-concurrency-1 falls out of this trivially, but it isn't the architecture in `CI.md`.
-* **Per-run container.** `CI.md` says `docker run` at run start, `docker exec` per `(sh …)`, `docker stop` at end. `quire-ci` invokes `(sh …)` directly on the host process; the `container_id` column is unused by the current executor and read only by `supersede_existing` (which calls `docker kill` if it's set).
+* **Per-run container.** `CI.md` says `docker run` at run start, `docker exec` per `(sh …)`, `docker stop` at end. `quire-ci` invokes `(sh …)` directly on the host process. The Docker-executor schema columns (`container_id`, `image_tag`, build/container timestamps) have been removed in migration 0007.
 
 ## Schema column inventory
 
-A column-by-column map of what's live vs. dead weight with the current Process executor. "Dead" means no code path writes a non-NULL value **and** no code path reads it back, or writes it but nothing reads it.
-
 ### `runs` table
 
-| Column | Written by | Read by | Status |
-| --- | --- | --- | --- |
-| `id` | `Runs::create` | everywhere | **live** |
-| `repo` | `Runs::create` | `supersede_existing`, web handlers | **live** |
-| `ref_name` | `Runs::create` | `supersede_existing`, web handlers, bootstrap response | **live** |
-| `sha` | `Runs::create` | `read_meta`, bootstrap response, web handlers | **live** |
-| `pushed_at_ms` | `Runs::create` | `read_meta`, web handlers | **live** |
-| `state` | `Runs::create` (→ `pending`) + every transition | everywhere | **live** |
-| `failure_kind` | `Run::transition(Failed, …)`, `reconcile_orphans` | web handlers | **live** |
-| `queued_at_ms` | `Runs::create` | web handlers | **live** |
-| `started_at_ms` | `transition(Active)`, also stamped as fallback in `Complete/Failed/Superseded` | `read_started_at`, web handlers | **live** |
-| `finished_at_ms` | `transition(Complete/Failed/Superseded)` | `read_finished_at`, web handlers | **live** |
-| `run_token` | `Runs::create` (API sessions only) | `verify_run_token` middleware | **live** |
-| `git_dir` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint | **live** |
-| `traceparent` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint | **live** |
-| `container_id` | nothing (always inserted/cleared as `NULL`) | `supersede_existing` checks it before calling `docker kill`, then clears it on supersede | **dead** — always NULL with the Process executor; the read-and-clear is a hook for a future Docker executor that never shipped |
-| `workspace_path` | `Runs::create` (hardcoded in test helpers too) | nothing reads it back | **dead** — the runtime reconstructs the path as `<base_dir>/<run_id>/workspace` from config + ID |
-| `image_tag` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
-| `build_started_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
-| `build_finished_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
-| `container_started_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
-| `container_stopped_at_ms` | nothing (always `NULL`) | nothing | **dead** — Docker executor placeholder |
-| `sentry_trace_id` | nothing (added in migration 0004, never written) | nothing | **dead** — superseded by `traceparent` (migration 0006) before the column was ever used |
+| Column | Written by | Read by |
+| --- | --- | --- |
+| `id` | `Runs::create` | everywhere |
+| `repo` | `Runs::create` | `supersede_existing`, web handlers |
+| `ref_name` | `Runs::create` | `supersede_existing`, web handlers, bootstrap response |
+| `sha` | `Runs::create` | `read_meta`, bootstrap response, web handlers |
+| `pushed_at_ms` | `Runs::create` | `read_meta`, web handlers |
+| `state` | `Runs::create` (→ `pending`) + every transition | everywhere |
+| `failure_kind` | `Run::transition(Failed, …)`, `reconcile_orphans` | web handlers |
+| `queued_at_ms` | `Runs::create` | web handlers |
+| `started_at_ms` | `transition(Active)`, also stamped as fallback in `Complete/Failed/Superseded` | `read_started_at`, web handlers |
+| `finished_at_ms` | `transition(Complete/Failed/Superseded)` | `read_finished_at`, web handlers |
+| `run_token` | `Runs::create` (API sessions only) | `verify_run_token` middleware |
+| `git_dir` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
+| `traceparent` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
 
-The five `image_tag` / `build_*` / `container_{started,stopped}_at_ms` columns and `sentry_trace_id` are pure schema debt — they were added speculatively for a Docker executor that was never implemented. `container_id` and `workspace_path` are written but never read back by live code paths, so they are candidates for removal as well.
+Migration 0007 dropped eight columns that carried no live data with the Process executor: `container_id`, `workspace_path`, `image_tag`, `build_started_at_ms`, `build_finished_at_ms`, `container_started_at_ms`, `container_stopped_at_ms`, and `sentry_trace_id`. The first five were Docker-executor placeholders; `workspace_path` was written at create time but reconstructable from `<base_dir>/<run_id>/workspace`; `sentry_trace_id` was added in migration 0004 and superseded by `traceparent` before it was ever used.
 
 ### `jobs` table
 
-All six columns (`run_id`, `job_id`, `state`, `exit_code`, `started_at_ms`, `finished_at_ms`) are written by `Run::ingest_events` and read by the web detail view. All **live**.
+All six columns (`run_id`, `job_id`, `state`, `exit_code`, `started_at_ms`, `finished_at_ms`) are written by `Run::ingest_events` and read by the web detail view. All live.
 
 The schema permits six states (`pending`, `active`, `complete`, `failed`, `skipped`, `aborted`) but `ingest_events` only writes `complete` and `failed`. The other four states have no producer today — see Gaps below.
 
 ### `sh_events` table
 
-All columns (`run_id`, `job_id`, `started_at_ms`, `finished_at_ms`, `exit_code`, `cmd`) are written by `Run::ingest_events` (pass 2) and read by the web detail view. All **live**.
+All columns (`run_id`, `job_id`, `started_at_ms`, `finished_at_ms`, `exit_code`, `cmd`) are written by `Run::ingest_events` (pass 2) and read by the web detail view. All live.
 
 ## Gaps
 

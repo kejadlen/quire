@@ -89,9 +89,7 @@ impl Runs {
     /// Create a new run record in the `pending` state.
     ///
     /// Before inserting, supersedes any existing `pending` or `active`
-    /// run for the same `(repo, ref)`. Pending runs are marked
-    /// superseded directly; active runs have their container killed
-    /// first, then marked superseded.
+    /// run for the same `(repo, ref)`.
     ///
     /// Inserts a row into `runs` and creates the run directory for
     /// workspace materialization and log storage.
@@ -108,7 +106,6 @@ impl Runs {
                 (id, Some(s.run_token.as_str()))
             }
         };
-        let workspace_path = self.base_dir.join(&id).join("workspace");
 
         let db = crate::db::open(&self.db_path)?;
 
@@ -118,8 +115,8 @@ impl Runs {
         self.supersede_existing(&db, &meta.r#ref)?;
 
         db.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, workspace_path, run_token)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
+            "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, queued_at_ms, run_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
             rusqlite::params![
                 &id,
                 &self.repo,
@@ -127,15 +124,12 @@ impl Runs {
                 &meta.sha,
                 meta.pushed_at.as_millisecond(),
                 Timestamp::now().as_millisecond(),
-                workspace_path.to_str().ok_or_else(|| std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "workspace path is not valid UTF-8",
-                ))?,
                 run_token_str,
             ],
         )?;
 
         // Create run directory for workspace and logs.
+        let workspace_path = self.base_dir.join(&id).join("workspace");
         fs_err::create_dir_all(&workspace_path)?;
 
         Ok(Run {
@@ -147,44 +141,26 @@ impl Runs {
     }
 
     /// Supersede any existing `pending` or `active` run for
-    /// `(repo, ref)`.
-    ///
-    /// Pending runs are transitioned directly to `superseded`. Active
-    /// runs have their container killed via `docker kill` before
-    /// transition. Different refs are unaffected.
+    /// `(repo, ref)`. Different refs are unaffected.
     fn supersede_existing(&self, db: &rusqlite::Connection, ref_name: &str) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
 
-        // Handle active runs first: kill the container, then mark superseded.
-        let active_rows: Vec<(String, Option<String>)> = db
+        let active_ids: Vec<String> = db
             .prepare(
-                "SELECT id, container_id FROM runs
+                "SELECT id FROM runs
                  WHERE repo = ?1 AND ref_name = ?2 AND state = 'active'",
             )?
-            .query_map(rusqlite::params![&self.repo, ref_name], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })?
+            .query_map(rusqlite::params![&self.repo, ref_name], |row| row.get(0))?
             .collect::<std::result::Result<_, _>>()?;
 
-        for (run_id, container_id) in &active_rows {
-            if let Some(cid) = container_id {
-                tracing::info!(run_id = %run_id, container_id = %cid, "killing superseded container");
-                let kill_status = std::process::Command::new("docker")
-                    .args(["kill", cid])
-                    .status();
-                if let Err(e) = kill_status {
-                    tracing::warn!(run_id = %run_id, error = %e, "docker kill failed");
-                }
-            }
+        for run_id in &active_ids {
             db.execute(
-                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1, container_id = NULL
-                 WHERE id = ?2",
+                "UPDATE runs SET state = 'superseded', finished_at_ms = ?1 WHERE id = ?2",
                 rusqlite::params![now, run_id],
             )?;
             tracing::info!(run_id = %run_id, "superseded active run");
         }
 
-        // Handle pending runs: just mark superseded.
         let pending_count = db.execute(
             "UPDATE runs SET state = 'superseded', finished_at_ms = ?1
              WHERE repo = ?2 AND ref_name = ?3 AND state = 'pending'",
@@ -206,8 +182,7 @@ pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
     let now = Timestamp::now().as_millisecond();
     let db = crate::db::open(db_path)?;
     let count = db.execute(
-        "UPDATE runs SET state = 'failed', finished_at_ms = ?1,
-         container_id = NULL, failure_kind = 'orphaned'
+        "UPDATE runs SET state = 'failed', finished_at_ms = ?1, failure_kind = 'orphaned'
          WHERE state IN ('pending', 'active')",
         rusqlite::params![now],
     )?;
@@ -541,8 +516,7 @@ impl Run {
                 db.execute(
                     "UPDATE runs SET state = ?1, \
                         started_at_ms = COALESCE(started_at_ms, ?2), \
-                        finished_at_ms = COALESCE(finished_at_ms, ?3), \
-                        container_id = NULL \
+                        finished_at_ms = COALESCE(finished_at_ms, ?3) \
                      WHERE id = ?4",
                     rusqlite::params![to.as_str(), now, now, &self.id],
                 )?;
@@ -552,7 +526,6 @@ impl Run {
                     "UPDATE runs SET state = 'failed', \
                         started_at_ms = COALESCE(started_at_ms, ?1), \
                         finished_at_ms = COALESCE(finished_at_ms, ?2), \
-                        container_id = NULL, \
                         failure_kind = COALESCE(failure_kind, ?3) \
                      WHERE id = ?4",
                     rusqlite::params![now, now, failure_kind, &self.id],
