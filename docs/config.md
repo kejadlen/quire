@@ -66,7 +66,7 @@ for the run; later appearances in `(sh ...)` stdout, stderr, or
 recorded command strings are replaced with `{{ name }}` in:
 
 - The CRI log files written under each run's workspace.
-- The `sh_events.cmd` column.
+- The `sh.cmd` column.
 - Any other `ShOutput`-derived persistence.
 
 Limits worth knowing:

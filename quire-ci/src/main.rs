@@ -98,7 +98,7 @@ enum Commands {
         ///   `stdout` — write JSONL to stdout.
         ///   `<path>` — write JSONL to this file. The orchestrator
         ///              reads the file post-run to populate `jobs`
-        ///              and `sh_events` database rows.
+        ///              and `sh` database rows.
         #[facet(args::named, default = "null")]
         events: String,
 

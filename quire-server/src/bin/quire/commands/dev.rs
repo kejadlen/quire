@@ -167,7 +167,7 @@ impl Seeder {
                 let finished_at = started_at + event.duration_ms;
                 self.db
                     .execute(
-                        "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
+                        "INSERT INTO sh (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                         params![
                             run_id,

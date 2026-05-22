@@ -179,7 +179,7 @@ sequenceDiagram
     CI-->>Run: exit status
     Run->>Run: ingest_events(events.jsonl)
     Run->>DB: INSERT jobs (pass 1)
-    Run->>DB: INSERT sh_events (pass 2)
+    Run->>DB: INSERT sh (pass 2)
     alt RunFinished(Success) + exit 0
         Run->>DB: UPDATE runs SET state='complete'
     else RunFinished(PipelineFailure) + exit 0
@@ -195,7 +195,7 @@ Wire events (`quire-core/src/ci/event.rs`):
 * `JobFinished { job_id, outcome: complete | failed }` — `JobOutcome` is the closed set, not the full job-state enum.
 * `ShStarted { job_id, cmd }` / `ShFinished { job_id, exit_code }`
 
-`Run::ingest_events` reads the file in two passes (jobs first to satisfy the FK on `(run_id, job_id)`, then sh_events). Ingest failures are logged but never demote the run's own outcome — a partial DB write is preferable to losing the pass/fail signal.
+`Run::ingest_events` reads the file in two passes (jobs first to satisfy the FK on `(run_id, job_id)`, then sh). Ingest failures are logged but never demote the run's own outcome — a partial DB write is preferable to losing the pass/fail signal.
 
 ## Orchestration today
 
@@ -255,7 +255,7 @@ All six columns (`run_id`, `job_id`, `state`, `exit_code`, `started_at_ms`, `fin
 
 The schema permits six states (`pending`, `active`, `complete`, `failed`, `skipped`, `aborted`) but `ingest_events` only writes `complete` and `failed`. The other four states have no producer today — see Gaps below.
 
-### `sh_events` table
+### `sh` table
 
 All columns (`run_id`, `job_id`, `started_at_ms`, `finished_at_ms`, `exit_code`, `cmd`) are written by `Run::ingest_events` (pass 2) and read by the web detail view. All live.
 

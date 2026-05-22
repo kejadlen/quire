@@ -247,7 +247,7 @@ impl Run {
     /// Layout under the run dir on disk:
     /// * `quire-ci.log` — combined stdout+stderr of the subprocess.
     /// * `events.jsonl` — structured event stream (one JSON object per
-    ///   line). Ingested into `jobs` and `sh_events` after the
+    ///   line). Ingested into `jobs` and `sh` after the
     ///   subprocess exits.
     /// * `jobs/<job>/sh-<n>.log` — per-sh CRI logs, written by quire-ci
     ///   via `--out-dir`.
@@ -332,7 +332,7 @@ impl Run {
                 tracing::warn!(
                     run_id = %self.id,
                     error = %e,
-                    "failed to ingest quire-ci events; jobs/sh_events rows may be incomplete"
+                    "failed to ingest quire-ci events; jobs/sh rows may be incomplete"
                 );
                 None
             }
@@ -367,7 +367,7 @@ impl Run {
 
     /// Read `events.jsonl` and replay it into the database.
     ///
-    /// Done in two passes because `sh_events` has a foreign key on
+    /// Done in two passes because `sh` has a foreign key on
     /// `(run_id, job_id)` in `jobs`, and the wire format interleaves
     /// sh events with their owning job. Pass 1 inserts every job row
     /// (paired by `job_id`); pass 2 inserts sh events.
@@ -418,7 +418,7 @@ impl Run {
             }
         }
 
-        // Pass 2: sh_events rows. Pair ShStarted with ShFinished by job_id
+        // Pass 2: sh rows. Pair ShStarted with ShFinished by job_id
         // (sequential within a run-fn, so a single buffer slot per job
         // is enough).
         let mut pending_sh: HashMap<&str, (i64, &str)> = HashMap::new();
@@ -432,7 +432,7 @@ impl Run {
                         continue;
                     };
                     db.execute(
-                        "INSERT INTO sh_events (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd) \
+                        "INSERT INTO sh (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                         rusqlite::params![&self.id, job_id, started_at, event.at_ms, exit_code, cmd],
                     )?;
@@ -1170,7 +1170,7 @@ mod tests {
 
         let sh_events: Vec<(String, i64, i64, i32, String)> = db
             .prepare(
-                "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd FROM sh_events \
+                "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd FROM sh \
                  WHERE run_id = ?1 ORDER BY started_at_ms",
             )
             .unwrap()

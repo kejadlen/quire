@@ -110,7 +110,7 @@ pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDet
 
     let mut sh_stmt = db.prepare(
         "SELECT job_id, started_at_ms, finished_at_ms, exit_code, cmd
-         FROM sh_events WHERE run_id = ?1
+         FROM sh WHERE run_id = ?1
          ORDER BY job_id, started_at_ms",
     )?;
 
