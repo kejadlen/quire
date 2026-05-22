@@ -29,13 +29,7 @@ pub enum MigrationError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error("migration error: {0}")]
-    Migration(#[source] rusqlite_migration::Error),
-}
-
-impl From<rusqlite_migration::Error> for MigrationError {
-    fn from(e: rusqlite_migration::Error) -> Self {
-        Self::Migration(e)
-    }
+    Migration(#[from] rusqlite_migration::Error),
 }
 
 /// Open the database at `path`, enable WAL mode and foreign keys.
