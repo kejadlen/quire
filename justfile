@@ -86,7 +86,7 @@ install:
 # Manual release: tag a revision (default: closest_pushable()) as
 # v<UTC-date>-<short-sha> and push to github. Use this when the normal CI path
 # is not working. Triggers the release workflow.
-manual-release rev="closest_pushable()":
+manual-release rev="@-":
     #!/usr/bin/env bash
     set -euo pipefail
     sha=$(jj log -r "{{rev}}" --no-graph -T commit_id --limit 1)
