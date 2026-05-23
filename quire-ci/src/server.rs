@@ -19,29 +19,31 @@ async fn index() -> String {
 }
 
 /// Initialize Sentry if the global config provides a DSN.
+///
+/// Returns the guard if initialized, or None if Sentry is not configured.
+/// Logs a warning on failure but does not abort.
 fn init_sentry(quire: &QuireCi) -> Option<ClientInitGuard> {
-    let config = match quire.global_config() {
-        Ok(config) => config,
-        Err(e) => {
+    let config = quire
+        .global_config()
+        .inspect_err(|e| {
             tracing::warn!(
                 error = %e,
                 "failed to load global config, skipping Sentry init"
             );
-            return None;
-        }
-    };
+        })
+        .ok()?;
 
     let sentry_config = config.sentry.as_ref()?;
-    let dsn = match sentry_config.dsn.reveal() {
-        Ok(dsn) => dsn,
-        Err(e) => {
+    let dsn = sentry_config
+        .dsn
+        .reveal()
+        .inspect_err(|e| {
             tracing::warn!(
-                error = &e as &(dyn std::error::Error + 'static),
+                error = %e,
                 "failed to resolve Sentry DSN, skipping Sentry init"
             );
-            return None;
-        }
-    };
+        })
+        .ok()?;
 
     Some(sentry::init((
         dsn,
@@ -50,7 +52,12 @@ fn init_sentry(quire: &QuireCi) -> Option<ClientInitGuard> {
 }
 
 pub async fn run(quire: QuireCi) -> Result<()> {
-    let config = quire.global_config().ok();
+    let config = quire
+        .global_config()
+        .inspect(|c| tracing::info!(port = c.port, "loaded config"))
+        .inspect_err(|e| tracing::warn!(error = %e, "proceeding with defaults"))
+        .ok();
+
     let port = config.as_ref().map(|c| c.port).unwrap_or(3000);
 
     let _sentry = init_sentry(&quire);
@@ -68,7 +75,5 @@ pub async fn run(quire: QuireCi) -> Result<()> {
         .await
         .into_diagnostic()?;
 
-    axum::serve(listener, app).await.into_diagnostic()?;
-
-    Ok(())
+    axum::serve(listener, app).await.into_diagnostic()
 }
