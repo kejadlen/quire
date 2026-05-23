@@ -3,8 +3,6 @@ use std::net::SocketAddr;
 use axum::Router;
 use axum::routing::get;
 use miette::{IntoDiagnostic, Result};
-use quire_core::telemetry::{self, FmtMode};
-use sentry::ClientInitGuard;
 
 use crate::quire::QuireCi;
 
@@ -18,32 +16,15 @@ async fn index() -> String {
     format!("quire-ci {VERSION}\n")
 }
 
-/// Initialize Sentry if the global config provides a DSN.
-fn init_sentry(quire: &QuireCi) -> Option<ClientInitGuard> {
-    let sentry_config = quire.config().sentry.as_ref()?;
-    let dsn = sentry_config
-        .dsn
-        .reveal()
-        .inspect_err(|e| {
-            tracing::warn!(
-                error = %e,
-                "failed to resolve Sentry DSN, skipping Sentry init"
-            );
-        })
-        .ok()?;
-
-    Some(sentry::init((
-        dsn,
-        telemetry::sentry_client_options(VERSION),
-    )))
-}
-
 pub async fn run(quire: QuireCi) -> Result<()> {
     let port = quire.config().port;
 
-    let _sentry = init_sentry(&quire);
-    let miette_layer = telemetry::MietteLayer::new();
-    let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::AutoJson)?;
+    let _sentry = init_sentry(&quire)?;
+    let miette_layer = quire_core::telemetry::MietteLayer::new();
+    let _tracing_guard = quire_core::telemetry::init_tracing(
+        miette_layer,
+        quire_core::telemetry::FmtMode::AutoJson,
+    )?;
 
     let app = Router::new()
         .route("/health", get(health))
@@ -57,4 +38,16 @@ pub async fn run(quire: QuireCi) -> Result<()> {
         .into_diagnostic()?;
 
     axum::serve(listener, app).await.into_diagnostic()
+}
+
+/// Initialize Sentry if the global config provides a DSN.
+fn init_sentry(quire: &QuireCi) -> Result<Option<sentry::ClientInitGuard>> {
+    let Some(sentry_config) = quire.config().sentry.as_ref() else {
+        return Ok(None);
+    };
+    let dsn = sentry_config.dsn.reveal().into_diagnostic()?;
+    Ok(Some(sentry::init((
+        dsn,
+        quire_core::telemetry::sentry_client_options(VERSION),
+    ))))
 }
