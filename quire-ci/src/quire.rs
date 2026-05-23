@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use miette::{Result, ensure};
 
@@ -37,11 +37,6 @@ impl QuireCi {
         Self { base_dir }
     }
 
-    #[allow(dead_code)]
-    pub fn base_dir(&self) -> &Path {
-        &self.base_dir
-    }
-
     pub fn config_path(&self) -> PathBuf {
         self.base_dir.join("config.fnl")
     }
@@ -62,17 +57,6 @@ impl QuireCi {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn quire() -> QuireCi {
-        QuireCi::new(PathBuf::from("/var/quire-ci"))
-    }
-
-    #[test]
-    fn default_paths() {
-        let q = quire();
-        assert_eq!(q.base_dir(), Path::new("/var/quire-ci"));
-        assert_eq!(q.config_path(), PathBuf::from("/var/quire-ci/config.fnl"));
-    }
 
     #[test]
     fn global_config_defaults() {
