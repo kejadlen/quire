@@ -32,12 +32,6 @@ pub struct QuireCi {
     base_dir: PathBuf,
 }
 
-impl Default for QuireCi {
-    fn default() -> Self {
-        Self::new(PathBuf::from("/var/quire-ci"))
-    }
-}
-
 impl QuireCi {
     pub fn new(base_dir: PathBuf) -> Self {
         Self { base_dir }
@@ -70,7 +64,7 @@ mod tests {
     use super::*;
 
     fn quire() -> QuireCi {
-        QuireCi::default()
+        QuireCi::new(PathBuf::from("/var/quire-ci"))
     }
 
     #[test]
