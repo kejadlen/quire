@@ -19,21 +19,8 @@ async fn index() -> String {
 }
 
 /// Initialize Sentry if the global config provides a DSN.
-///
-/// Returns the guard if initialized, or None if Sentry is not configured.
-/// Logs a warning on failure but does not abort.
 fn init_sentry(quire: &QuireCi) -> Option<ClientInitGuard> {
-    let config = quire
-        .global_config()
-        .inspect_err(|e| {
-            tracing::warn!(
-                error = %e,
-                "failed to load global config, skipping Sentry init"
-            );
-        })
-        .ok()?;
-
-    let sentry_config = config.sentry.as_ref()?;
+    let sentry_config = quire.config().sentry.as_ref()?;
     let dsn = sentry_config
         .dsn
         .reveal()
@@ -52,13 +39,7 @@ fn init_sentry(quire: &QuireCi) -> Option<ClientInitGuard> {
 }
 
 pub async fn run(quire: QuireCi) -> Result<()> {
-    let config = quire
-        .global_config()
-        .inspect(|c| tracing::info!(port = c.port, "loaded config"))
-        .inspect_err(|e| tracing::warn!(error = %e, "proceeding with defaults"))
-        .ok();
-
-    let port = config.as_ref().map(|c| c.port).unwrap_or(3000);
+    let port = quire.config().port;
 
     let _sentry = init_sentry(&quire);
     let miette_layer = telemetry::MietteLayer::new();

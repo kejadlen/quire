@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use miette::{Result, ensure};
+use miette::{IntoDiagnostic, Result};
 
 use quire_core::fennel::Fennel;
 
 /// Parsed global configuration (`<base-dir>/config.fnl`).
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct GlobalConfig {
     #[serde(default)]
@@ -19,38 +19,43 @@ fn default_port() -> u16 {
     3000
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Clone)]
 pub struct SentryConfig {
     pub dsn: quire_core::secret::SecretString,
 }
 
 /// Application runtime context.
 ///
-/// Carries configuration and provides resolved paths.
+/// Loads config at construction time so callers don't have to thread
+/// Results around.
 #[derive(Clone)]
 pub struct QuireCi {
-    base_dir: PathBuf,
+    config: GlobalConfig,
 }
 
 impl QuireCi {
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self { base_dir }
+    pub fn new(base_dir: PathBuf) -> Result<Self> {
+        let config_path = base_dir.join("config.fnl");
+        let config = if config_path.exists() {
+            let fennel = Fennel::new().into_diagnostic()?;
+            fennel.load_file(&config_path).into_diagnostic()?
+        } else {
+            GlobalConfig::default()
+        };
+        Ok(Self { config })
     }
 
-    pub fn config_path(&self) -> PathBuf {
-        self.base_dir.join("config.fnl")
+    pub fn config(&self) -> &GlobalConfig {
+        &self.config
     }
+}
 
-    /// Load and parse the global Fennel config file.
-    pub fn global_config(&self) -> Result<GlobalConfig> {
-        let config_path = self.config_path();
-        ensure!(
-            config_path.exists(),
-            "config not found: {}",
-            config_path.display()
-        );
-        let fennel = Fennel::new()?;
-        Ok(fennel.load_file(&config_path)?)
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            sentry: None,
+            port: default_port(),
+        }
     }
 }
 
@@ -64,9 +69,8 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = QuireCi::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
-        assert_eq!(config.port, 3000);
+        let q = QuireCi::new(dir.path().to_path_buf()).expect("should load");
+        assert_eq!(q.config().port, 3000);
     }
 
     #[test]
@@ -75,20 +79,17 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, r#"{:port 4000}"#).expect("write");
 
-        let q = QuireCi::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
-        assert_eq!(config.port, 4000);
+        let q = QuireCi::new(dir.path().to_path_buf()).expect("should load");
+        assert_eq!(q.config().port, 4000);
     }
 
     #[test]
-    fn global_config_missing_file_errors() {
+    fn global_config_missing_file_uses_defaults() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = QuireCi::new(dir.path().to_path_buf());
-        let err = q.global_config().unwrap_err();
-        assert!(
-            err.to_string().contains("config not found"),
-            "expected config not found error, got {err:?}"
-        );
+
+        let q = QuireCi::new(dir.path().to_path_buf()).expect("should load");
+        assert_eq!(q.config().port, 3000);
+        assert!(q.config().sentry.is_none());
     }
 
     #[test]
@@ -101,9 +102,12 @@ mod tests {
         )
         .expect("write");
 
-        let q = QuireCi::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
-        let sentry = config.sentry.expect("sentry should be present");
+        let q = QuireCi::new(dir.path().to_path_buf()).expect("should load");
+        let sentry = q
+            .config()
+            .sentry
+            .as_ref()
+            .expect("sentry should be present");
         assert_eq!(sentry.dsn.reveal().unwrap(), "https://key@sentry.io/123");
     }
 }

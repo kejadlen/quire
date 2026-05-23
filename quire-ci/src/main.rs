@@ -298,7 +298,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Validate => validate(workspace),
         Commands::Serve => {
-            let quire = quire::QuireCi::new(cli.base_dir);
+            let quire = quire::QuireCi::new(cli.base_dir)?;
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
