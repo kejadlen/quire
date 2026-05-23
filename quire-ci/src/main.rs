@@ -1,3 +1,4 @@
+mod server;
 mod sink;
 
 use std::cell::RefCell;
@@ -119,6 +120,13 @@ enum Commands {
         /// bootstrap API instead.
         #[facet(args::named, default)]
         git_dir: Option<PathBuf>,
+    },
+
+    /// Start the HTTP server.
+    Serve {
+        /// Port to listen on.
+        #[facet(args::named, default = 3000)]
+        port: u16,
     },
 }
 
@@ -288,6 +296,13 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Validate => validate(workspace),
+        Commands::Serve { port } => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .into_diagnostic()?;
+            rt.block_on(server::run(port))
+        }
         Commands::Run {
             events,
             out_dir,

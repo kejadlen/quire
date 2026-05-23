@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = { workspace = true }
 facet = { workspace = true }
 figue = "*"
 fs-err = { workspace = true }
@@ -17,8 +18,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["full"] }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true }
