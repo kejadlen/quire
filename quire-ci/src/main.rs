@@ -48,8 +48,8 @@ const VERSION: &str = env!("QUIRE_VERSION");
 #[derive(Facet)]
 struct Cli {
     /// Root directory for quire-ci data (default: /var/quire-ci).
-    #[facet(args::named, args::env_alias = "QUIRE_CI_BASE_DIR")]
-    base_dir: Option<PathBuf>,
+    #[facet(args::named, default = "/var/quire-ci")]
+    base_dir: PathBuf,
 
     /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
     #[facet(args::named, args::short = 'w', default = ".")]
@@ -298,10 +298,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Validate => validate(workspace),
         Commands::Serve => {
-            let quire = match cli.base_dir {
-                Some(ref dir) => quire::QuireCi::new(dir.clone()),
-                None => quire::QuireCi::default(),
-            };
+            let quire = quire::QuireCi::new(cli.base_dir);
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
