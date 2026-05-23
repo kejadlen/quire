@@ -1,3 +1,4 @@
+mod quire;
 mod server;
 mod sink;
 
@@ -46,6 +47,10 @@ const VERSION: &str = env!("QUIRE_VERSION");
 /// Run and validate quire CI pipelines.
 #[derive(Facet)]
 struct Cli {
+    /// Root directory for quire-ci data (default: /var/quire-ci).
+    #[facet(args::named, args::env_alias = "QUIRE_CI_BASE_DIR")]
+    base_dir: Option<PathBuf>,
+
     /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
     #[facet(args::named, args::short = 'w', default = ".")]
     workspace: PathBuf,
@@ -123,11 +128,7 @@ enum Commands {
     },
 
     /// Start the HTTP server.
-    Serve {
-        /// Port to listen on.
-        #[facet(args::named, default = 3000)]
-        port: u16,
-    },
+    Serve,
 }
 
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
@@ -296,12 +297,16 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Validate => validate(workspace),
-        Commands::Serve { port } => {
+        Commands::Serve => {
+            let quire = match cli.base_dir {
+                Some(ref dir) => quire::QuireCi::new(dir.clone()),
+                None => quire::QuireCi::default(),
+            };
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .into_diagnostic()?;
-            rt.block_on(server::run(port))
+            rt.block_on(server::run(quire))
         }
         Commands::Run {
             events,

@@ -3,9 +3,10 @@ use std::net::SocketAddr;
 use axum::Router;
 use axum::routing::get;
 use miette::{IntoDiagnostic, Result};
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use quire_core::telemetry::{self, FmtMode};
+use sentry::ClientInitGuard;
+
+use crate::quire::QuireCi;
 
 const VERSION: &str = env!("QUIRE_VERSION");
 
@@ -17,18 +18,44 @@ async fn index() -> String {
     format!("quire-ci {VERSION}\n")
 }
 
-pub async fn run(port: u16) -> Result<()> {
-    let filter = EnvFilter::builder()
-        .with_env_var("QUIRE_LOG")
-        .from_env()
-        .into_diagnostic()?;
+/// Initialize Sentry if the global config provides a DSN.
+fn init_sentry(quire: &QuireCi) -> Option<ClientInitGuard> {
+    let config = match quire.global_config() {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to load global config, skipping Sentry init"
+            );
+            return None;
+        }
+    };
 
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let sentry_config = config.sentry.as_ref()?;
+    let dsn = match sentry_config.dsn.reveal() {
+        Ok(dsn) => dsn,
+        Err(e) => {
+            tracing::warn!(
+                error = &e as &(dyn std::error::Error + 'static),
+                "failed to resolve Sentry DSN, skipping Sentry init"
+            );
+            return None;
+        }
+    };
 
-    tracing_subscriber::registry()
-        .with(fmt_layer)
-        .with(filter)
-        .init();
+    Some(sentry::init((
+        dsn,
+        telemetry::sentry_client_options(VERSION),
+    )))
+}
+
+pub async fn run(quire: QuireCi) -> Result<()> {
+    let config = quire.global_config().ok();
+    let port = config.as_ref().map(|c| c.port).unwrap_or(3000);
+
+    let _sentry = init_sentry(&quire);
+    let miette_layer = telemetry::MietteLayer::new();
+    let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::AutoJson)?;
 
     let app = Router::new()
         .route("/health", get(health))
@@ -42,8 +69,6 @@ pub async fn run(port: u16) -> Result<()> {
         .into_diagnostic()?;
 
     axum::serve(listener, app).await.into_diagnostic()?;
-
-    tracing::info!(version = %VERSION, "server shutdown complete");
 
     Ok(())
 }
