@@ -106,49 +106,82 @@ through a shared mount.
 
 ## Schema (new quire-ci/migrations/0001)
 
-Roughly the current `runs` / `jobs` / `sh` shape, minus the dropped
-columns and with `_ms` suffixes removed:
+Lifecycle is derived from column population, not stored. No `state`
+column. A row's stage is read off the timestamps and outcome:
+
+| `dispatched_at` | `outcome` | Stage |
+|---|---|---|
+| NULL | NULL | queued |
+| set  | NULL | active |
+| set  | set  | resolved (specific kind in `outcome`) |
 
 ```sql
 CREATE TABLE runs (
-  id            TEXT    PRIMARY KEY,
-  repo          TEXT    NOT NULL,
-  ref_name      TEXT    NOT NULL,
-  sha           TEXT    NOT NULL,
-  state         TEXT    NOT NULL,
-  failure_kind  TEXT,
-  created_at    INTEGER NOT NULL,
-  started_at    INTEGER,
-  finished_at   INTEGER,
-  traceparent   TEXT,
+  id             TEXT    PRIMARY KEY,
+  repo           TEXT    NOT NULL,
+  ref_name       TEXT    NOT NULL,
+  sha            TEXT    NOT NULL,
+  created_at     INTEGER NOT NULL,
+  dispatched_at  INTEGER,
+  resolved_at    INTEGER,
+  outcome        TEXT,
+  traceparent    TEXT,
 
-  CHECK (state IN ('queued', 'active', 'succeeded', 'failed', 'canceled')),
-  CHECK (started_at  IS NULL OR started_at  >= created_at),
-  CHECK (finished_at IS NULL OR finished_at >= created_at),
-  CHECK (finished_at IS NULL OR started_at IS NULL
-         OR finished_at >= started_at),
-  CHECK (CASE state
-    WHEN 'queued'    THEN started_at IS NULL     AND finished_at IS NULL
-    WHEN 'active'    THEN started_at IS NOT NULL AND finished_at IS NULL
-    WHEN 'succeeded' THEN started_at IS NOT NULL AND finished_at IS NOT NULL
-    WHEN 'failed'    THEN finished_at IS NOT NULL
-    WHEN 'canceled'  THEN finished_at IS NOT NULL
-  END)
+  -- timestamps move forward
+  CHECK (dispatched_at IS NULL OR dispatched_at >= created_at),
+  CHECK (resolved_at   IS NULL OR resolved_at   >= created_at),
+  CHECK (resolved_at   IS NULL OR dispatched_at IS NULL
+         OR resolved_at >= dispatched_at),
+
+  -- resolved_at and outcome travel together
+  CHECK ((resolved_at IS NULL) = (outcome IS NULL)),
+
+  -- outcome enum
+  CHECK (outcome IS NULL OR outcome IN (
+    'succeeded',
+    'failed-pipeline', 'failed-orphaned', 'failed-internal',
+    'superseded'
+  ))
 );
+
+-- Pending work: queue scans only touch unresolved rows.
+CREATE INDEX runs_pending ON runs(created_at) WHERE outcome IS NULL;
+
+-- Listing runs per repo, most recent first.
 CREATE INDEX runs_repo_created_at ON runs(repo, created_at DESC);
-CREATE INDEX runs_state           ON runs(state);
 ```
 
-`jobs` and `sh` follow the same `_ms` strip. `jobs.state` keeps
-`active | succeeded | failed`; `skipped` waits for a producer.
+A Rust-side `enum RunStage { Queued, Active, Resolved(Outcome) }` is
+computed from the columns rather than stored. The mapping is the table
+above.
+
+`jobs` and `sh` follow the same convention (drop state column, encode
+lifecycle through timestamp population, add an `outcome` enum where
+relevant). Spelling out their CHECK constraints can wait for the
+migration itself.
+
+Outcome values:
+
+| Value | Meaning |
+|---|---|
+| `succeeded` | Pipeline ran, all jobs passed. |
+| `failed-pipeline` | Pipeline ran, a job or `(sh ...)` reported failure. |
+| `failed-orphaned` | Runner restart found an unresolved row with no live runner — `reconcile_orphans` marked it. |
+| `failed-internal` | Runner task panicked or hit an unexpected error before the pipeline could report. |
+| `superseded` | A later push for the same `(repo, ref)` displaced this one. |
 
 Dropped from the current schema:
 
+- `runs.state` (derived from timestamps + `outcome` now).
+- `runs.failure_kind` (folded into `outcome` as `failed-*` variants).
 - `runs.run_token` (no API callback to authenticate).
 - `runs.git_dir` (derivable from `repo` plus a known base, and the base
   is per-process anyway).
 - `runs.pushed_at_ms` (the receive time on quire-ci's clock is the
   honest field; renamed to `created_at`).
+- `runs.started_at_ms` / `finished_at_ms` (renamed to `dispatched_at` /
+  `resolved_at` — neutral terms that don't overclaim like "finished"
+  does for a superseded run).
 
 Kept: `runs.traceparent`, populated from the webhook header rather than
 env vars.
