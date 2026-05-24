@@ -1,9 +1,10 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{MatchedPath, State};
 use axum::http::{HeaderMap, Request, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum_extra::TypedHeader;
 use axum_extra::headers::Authorization;
@@ -39,16 +40,31 @@ enum WebhookError {
     Db(#[from] rusqlite::Error),
 }
 
+/// Carries an error message through response extensions so TraceLayer can log it.
+#[derive(Clone)]
+struct RequestError(String);
+
 impl IntoResponse for WebhookError {
-    fn into_response(self) -> axum::response::Response {
-        match self {
+    fn into_response(self) -> Response {
+        let status = match &self {
             WebhookError::MissingSignature | WebhookError::InvalidSignature(_) => {
                 StatusCode::UNAUTHORIZED
             }
             WebhookError::InvalidPayload(_) => StatusCode::BAD_REQUEST,
             WebhookError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        // Auth failures are intentionally quiet; other errors get logged by TraceLayer.
+        if matches!(
+            self,
+            WebhookError::MissingSignature | WebhookError::InvalidSignature(_)
+        ) {
+            return status.into_response();
         }
-        .into_response()
+        let mut response = status.into_response();
+        response
+            .extensions_mut()
+            .insert(RequestError(self.to_string()));
+        response
     }
 }
 
@@ -103,8 +119,7 @@ async fn webhook(
     mac.update(&body);
     mac.verify_slice(&provided_bytes)?;
 
-    let event: PushEvent = serde_json::from_slice(&body)
-        .inspect_err(|e| tracing::warn!(error = %e, "invalid webhook payload"))?;
+    let event: PushEvent = serde_json::from_slice(&body)?;
 
     let traceparent = headers
         .get("traceparent")
@@ -127,8 +142,7 @@ async fn webhook(
                 now_ms,
                 traceparent,
             ],
-        )
-        .inspect_err(|e| tracing::error!(error = %e, "database error"))?;
+        )?;
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -164,13 +178,23 @@ pub async fn run(quire: QuireCi) -> Result<()> {
         .route("/", get(index))
         .route("/webhook", post(webhook))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
-                let matched_path = request
-                    .extensions()
-                    .get::<MatchedPath>()
-                    .map(MatchedPath::as_str);
-                info_span!("http_request", method = ?request.method(), matched_path)
-            }),
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let matched_path = request
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(MatchedPath::as_str);
+                    info_span!("http_request", method = ?request.method(), matched_path)
+                })
+                .on_response(|response: &Response, _: Duration, _: &tracing::Span| {
+                    if let Some(RequestError(error)) = response.extensions().get::<RequestError>() {
+                        if response.status().is_server_error() {
+                            tracing::error!(%error);
+                        } else {
+                            tracing::warn!(%error);
+                        }
+                    }
+                }),
         )
         .with_state(quire);
 
