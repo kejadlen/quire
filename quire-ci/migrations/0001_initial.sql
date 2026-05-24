@@ -1,7 +1,7 @@
 CREATE TABLE runs (
   id             TEXT    PRIMARY KEY,
   repo           TEXT    NOT NULL,
-  ref_name       TEXT    NOT NULL,
+  ref            TEXT    NOT NULL,
   sha            TEXT    NOT NULL,
   created_at     INTEGER NOT NULL,
   dispatched_at  INTEGER,
