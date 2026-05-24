@@ -1,11 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
-use rusqlite::Connection;
 
 use quire_core::fennel::Fennel;
 
-use crate::db;
+use crate::db::Db;
 
 /// Parsed global configuration (`<base-dir>/config.fnl`).
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -37,7 +36,7 @@ pub use quire_core::telemetry::SentryConfig;
 #[derive(Clone)]
 pub struct QuireCi {
     config: GlobalConfig,
-    db_path: PathBuf,
+    db: Db,
 }
 
 impl QuireCi {
@@ -49,22 +48,16 @@ impl QuireCi {
         } else {
             GlobalConfig::default()
         };
-        let db_path = base_dir.join("quire-ci.db");
-        let mut conn = db::open(&db_path).into_diagnostic()?;
-        db::migrate(&mut conn).into_diagnostic()?;
-        Ok(Self { config, db_path })
+        let db = Db::open(base_dir.join("quire-ci.db")).into_diagnostic()?;
+        Ok(Self { config, db })
     }
 
     pub fn config(&self) -> &GlobalConfig {
         &self.config
     }
 
-    pub fn db_path(&self) -> &Path {
-        &self.db_path
-    }
-
-    pub fn open_db(&self) -> Result<Connection, rusqlite::Error> {
-        db::open(self.db_path())
+    pub fn db(&self) -> &Db {
+        &self.db
     }
 }
 
@@ -135,7 +128,7 @@ mod tests {
     fn db_is_created_at_expected_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let q = QuireCi::new(dir.path().to_path_buf()).expect("should load");
-        assert_eq!(q.db_path(), dir.path().join("quire-ci.db"));
-        assert!(q.db_path().exists(), "db file should exist after new()");
+        assert_eq!(q.db().path(), dir.path().join("quire-ci.db"));
+        assert!(q.db().path().exists(), "db file should exist after new()");
     }
 }
