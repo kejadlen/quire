@@ -32,7 +32,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { version = "*", features = ["v7"] }
-hex = "0.4.3"
+hex = "*"
 
 [dev-dependencies]
 http-body-util = "*"
