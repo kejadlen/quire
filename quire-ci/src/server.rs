@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use axum::routing::get;
+use quire_core::telemetry::{self, FmtMode};
 
 use crate::quire::QuireCi;
 
@@ -20,11 +21,11 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("telemetry init error: {0}")]
-    Telemetry(#[from] quire_core::telemetry::Error),
-
-    #[error("secret error: {0}")]
+    #[error(transparent)]
     Secret(#[from] quire_core::secret::Error),
+
+    #[error(transparent)]
+    Telemetry(#[from] quire_core::telemetry::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -32,11 +33,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub async fn run(quire: QuireCi) -> Result<()> {
     let port = quire.config().port;
 
-    let _sentry = init_sentry(&quire)?;
-    let miette_layer = quire_core::telemetry::MietteLayer::new();
-    let _tracing_guard = quire_core::telemetry::init_tracing(
+    let miette_layer = telemetry::MietteLayer::new();
+    let (_tracing_guard, _sentry_guard) = telemetry::init_telemetry(
         miette_layer,
-        quire_core::telemetry::FmtMode::AutoJson,
+        FmtMode::AutoJson,
+        quire.config().sentry.as_ref(),
+        VERSION,
     )?;
 
     let app = Router::new()
@@ -51,16 +53,4 @@ pub async fn run(quire: QuireCi) -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-/// Initialize Sentry if the global config provides a DSN.
-fn init_sentry(quire: &QuireCi) -> Result<Option<sentry::ClientInitGuard>> {
-    let Some(sentry_config) = quire.config().sentry.as_ref() else {
-        return Ok(None);
-    };
-    let dsn = sentry_config.dsn.reveal()?;
-    Ok(Some(sentry::init((
-        dsn,
-        quire_core::telemetry::sentry_client_options(VERSION),
-    ))))
 }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 /// Errors produced by secret resolution.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
     /// Secret could not be resolved. The source error is preserved for
     /// diagnostics. `Arc` provides `Clone` without requiring the inner

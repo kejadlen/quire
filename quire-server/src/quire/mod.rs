@@ -8,6 +8,8 @@ pub mod web;
 
 use crate::ci::{Ci, Executor, Runs};
 use crate::{Error, Result as AppResult};
+pub use quire_core::telemetry::SentryConfig;
+
 use quire_core::fennel::Fennel;
 use quire_core::secret::SecretString;
 
@@ -43,11 +45,6 @@ pub struct CiConfig {
     /// out to the `quire-ci` binary via `Executor::Process`.
     #[serde(default)]
     pub executor: Executor,
-}
-
-#[derive(serde::Deserialize, Debug)]
-pub struct SentryConfig {
-    pub dsn: SecretString,
 }
 
 /// A resolved repository path.

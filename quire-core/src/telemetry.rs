@@ -1,16 +1,24 @@
 use std::cell::RefCell;
 use std::io::IsTerminal;
-use std::result::Result;
 use std::sync::Arc;
 
 use opentelemetry::trace::TracerProvider as _;
 use tracing_subscriber::EnvFilter;
 
-/// Errors that can occur during tracing initialization.
+/// Errors that can occur during telemetry initialization.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum Error {
-    #[error("invalid log filter: {0}")]
+    #[error("invalid log filter")]
     Filter(#[from] tracing_subscriber::filter::FromEnvError),
+
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
+}
+
+/// Sentry configuration extracted from the global config.
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct SentryConfig {
+    pub dsn: crate::secret::SecretString,
 }
 
 use tracing_subscriber::Layer;
@@ -217,7 +225,10 @@ impl Drop for TracingGuard {
 /// Layer ordering is baked in: `miette_layer` registers before
 /// `sentry_tracing::layer()` so its thread-local is populated when
 /// sentry-tracing's `on_event` calls `capture_event`.
-pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> Result<TracingGuard, Error> {
+pub fn init_tracing(
+    miette_layer: MietteLayer,
+    fmt_mode: FmtMode,
+) -> std::result::Result<TracingGuard, Error> {
     let filter = EnvFilter::builder().with_env_var("QUIRE_LOG").from_env()?;
 
     let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
@@ -250,6 +261,30 @@ pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> Result<Trac
         .init();
 
     Ok(TracingGuard { provider })
+}
+
+/// Initialize both tracing and Sentry.
+///
+/// Sets up the global tracing subscriber (OTEL + stderr fmt) and, if a
+/// Sentry config is provided, initializes the Sentry client. Returns both
+/// guards so the caller can control drop order.
+pub fn init_telemetry(
+    miette_layer: MietteLayer,
+    fmt_mode: FmtMode,
+    sentry_config: Option<&SentryConfig>,
+    release: &'static str,
+) -> std::result::Result<(TracingGuard, Option<sentry::ClientInitGuard>), Error> {
+    let tracing_guard = init_tracing(miette_layer, fmt_mode)?;
+
+    let sentry_guard = match sentry_config {
+        Some(config) => {
+            let dsn = config.dsn.reveal()?;
+            Some(sentry::init((dsn, sentry_client_options(release))))
+        }
+        None => None,
+    };
+
+    Ok((tracing_guard, sentry_guard))
 }
 
 #[cfg(test)]

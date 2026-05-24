@@ -19,10 +19,7 @@ fn default_port() -> u16 {
     3000
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct SentryConfig {
-    pub dsn: quire_core::secret::SecretString,
-}
+pub use quire_core::telemetry::SentryConfig;
 
 /// Application runtime context.
 ///

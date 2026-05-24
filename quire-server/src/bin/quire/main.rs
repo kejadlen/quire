@@ -7,7 +7,6 @@ use miette::IntoDiagnostic;
 use miette::Result;
 use quire::Quire;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
-use sentry::ClientInitGuard;
 
 const VERSION: &str = env!("QUIRE_VERSION");
 
@@ -101,40 +100,6 @@ enum CiCommands {
     },
 }
 
-/// Initialize Sentry if the global config provides a DSN.
-///
-/// Returns the guard if initialized, or None if Sentry is not configured.
-/// Logs a warning on failure but does not abort.
-fn init_sentry(quire: &Quire) -> Option<ClientInitGuard> {
-    let config = match quire.global_config() {
-        Ok(config) => config,
-        Err(e) => {
-            tracing::warn!(
-                error = &e as &(dyn std::error::Error + 'static),
-                "failed to load global config, skipping Sentry init"
-            );
-            return None;
-        }
-    };
-
-    let sentry_config = config.sentry.as_ref()?;
-    let dsn = match sentry_config.dsn.reveal() {
-        Ok(dsn) => dsn,
-        Err(e) => {
-            tracing::warn!(
-                error = &e as &(dyn std::error::Error + 'static),
-                "failed to resolve Sentry DSN, skipping Sentry init"
-            );
-            return None;
-        }
-    };
-
-    Some(sentry::init((
-        dsn,
-        telemetry::sentry_client_options(VERSION),
-    )))
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -143,12 +108,18 @@ async fn main() -> Result<()> {
         Some(ref dir) => Quire::new(dir.into()),
         None => Quire::default(),
     };
-    let _sentry = init_sentry(&quire);
+
+    let sentry_config = quire.global_config().ok().and_then(|c| c.sentry);
     let miette_layer = MietteLayer::new()
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
         .with_type::<quire_core::fennel::FennelError>();
-    telemetry::init_tracing(miette_layer, FmtMode::AutoJson)?;
+    let (_tracing_guard, _sentry_guard) = telemetry::init_telemetry(
+        miette_layer,
+        FmtMode::AutoJson,
+        sentry_config.as_ref(),
+        VERSION,
+    )?;
 
     if let Some(shell) = cli.completions {
         clap_complete::generate(shell, &mut Cli::command(), "quire", &mut std::io::stdout());
