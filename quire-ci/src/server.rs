@@ -36,22 +36,26 @@ enum WebhookError {
     Db(#[from] rusqlite::Error),
 }
 
+impl From<hex::FromHexError> for WebhookError {
+    fn from(_: hex::FromHexError) -> Self {
+        Self::InvalidSignature
+    }
+}
+
+impl From<hmac::digest::MacError> for WebhookError {
+    fn from(_: hmac::digest::MacError) -> Self {
+        Self::InvalidSignature
+    }
+}
+
 impl IntoResponse for WebhookError {
     fn into_response(self) -> axum::response::Response {
         match self {
             WebhookError::MissingSignature | WebhookError::InvalidSignature => {
                 StatusCode::UNAUTHORIZED
             }
-            WebhookError::InvalidPayload(e) => {
-                tracing::warn!(error = %e, "invalid webhook payload");
-                StatusCode::BAD_REQUEST
-            }
-            WebhookError::SecretUnavailable(e) => {
-                tracing::error!(error = %e, "failed to resolve webhook secret");
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-            WebhookError::Db(e) => {
-                tracing::error!(error = %e, "database error");
+            WebhookError::InvalidPayload(_) => StatusCode::BAD_REQUEST,
+            WebhookError::SecretUnavailable(_) | WebhookError::Db(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         }
@@ -59,29 +63,46 @@ impl IntoResponse for WebhookError {
     }
 }
 
+struct HmacSha256Auth(Vec<u8>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for HmacSha256Auth {
+    type Rejection = WebhookError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, WebhookError> {
+        let hex_str = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
+            .ok_or(WebhookError::MissingSignature)?;
+        Ok(Self(hex::decode(hex_str)?))
+    }
+}
+
 async fn webhook(
     State(quire): State<QuireCi>,
+    HmacSha256Auth(provided_bytes): HmacSha256Auth,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> std::result::Result<StatusCode, WebhookError> {
-    let secret_bytes = quire.config().webhook_secret.reveal()?.as_bytes().to_vec();
-
-    let auth_header = headers
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
-        .ok_or(WebhookError::MissingSignature)?
-        .to_string();
-
-    let provided_bytes = hex::decode(&auth_header).map_err(|_| WebhookError::InvalidSignature)?;
+    let secret_bytes = quire
+        .config()
+        .webhook_secret
+        .reveal()
+        .inspect_err(|e| tracing::error!(error = %e, "failed to resolve webhook secret"))?
+        .as_bytes()
+        .to_vec();
 
     let mut mac =
         Hmac::<Sha256>::new_from_slice(&secret_bytes).expect("HMAC accepts any key length");
     mac.update(&body);
-    mac.verify_slice(&provided_bytes)
-        .map_err(|_| WebhookError::InvalidSignature)?;
+    mac.verify_slice(&provided_bytes)?;
 
-    let event: PushEvent = serde_json::from_slice(&body)?;
+    let event: PushEvent = serde_json::from_slice(&body)
+        .inspect_err(|e| tracing::warn!(error = %e, "invalid webhook payload"))?;
 
     let traceparent = headers
         .get("traceparent")
@@ -104,7 +125,8 @@ async fn webhook(
                 now_ms,
                 traceparent,
             ],
-        )?;
+        )
+        .inspect_err(|e| tracing::error!(error = %e, "database error"))?;
     }
 
     Ok(StatusCode::NO_CONTENT)
