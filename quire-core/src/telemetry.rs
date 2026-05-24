@@ -204,23 +204,20 @@ pub enum FmtMode {
 pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
     sentry::ClientOptions {
         release: Some(release.into()),
-        before_send: Some(Arc::new(before_send)),
+        before_send: Some(std::sync::Arc::new(before_send)),
         ..Default::default()
     }
 }
 
 /// Returned by `init_telemetry`; shuts down both tracing and Sentry on drop.
+///
+/// Field order matters: `provider` is dropped first (flushing OTEL spans
+/// through the Sentry client), then `sentry` is dropped (flushing events
+/// to the Sentry server).
+#[allow(dead_code)]
 pub struct TelemetryGuard {
-    #[allow(dead_code)]
     provider: opentelemetry_sdk::trace::SdkTracerProvider,
     sentry: Option<sentry::ClientInitGuard>,
-}
-
-impl Drop for TelemetryGuard {
-    fn drop(&mut self) {
-        // Drop tracing first (flushes OTEL spans to Sentry), then Sentry.
-        self.sentry.take();
-    }
 }
 
 /// Initialize both tracing and Sentry.
