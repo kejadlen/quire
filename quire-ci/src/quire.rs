@@ -30,7 +30,7 @@ pub use quire_core::telemetry::SentryConfig;
 pub struct QuireCi {
     config: GlobalConfig,
     db: Db,
-    hmac_key: Vec<u8>,
+    webhook_secret: Vec<u8>,
 }
 
 impl QuireCi {
@@ -41,7 +41,7 @@ impl QuireCi {
         }
         let fennel = Fennel::new().into_diagnostic()?;
         let config: GlobalConfig = fennel.load_file(&config_path).into_diagnostic()?;
-        let hmac_key = config
+        let webhook_secret = config
             .webhook_secret
             .reveal()
             .into_diagnostic()?
@@ -51,7 +51,7 @@ impl QuireCi {
         Ok(Self {
             config,
             db,
-            hmac_key,
+            webhook_secret,
         })
     }
 
@@ -63,8 +63,8 @@ impl QuireCi {
         &self.db
     }
 
-    pub fn hmac_key(&self) -> &[u8] {
-        &self.hmac_key
+    pub fn webhook_secret(&self) -> &[u8] {
+        &self.webhook_secret
     }
 }
 

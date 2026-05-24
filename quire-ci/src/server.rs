@@ -115,7 +115,7 @@ async fn webhook(
     body: axum::body::Bytes,
 ) -> std::result::Result<StatusCode, WebhookError> {
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(quire.hmac_key()).expect("HMAC accepts any key length");
+        Hmac::<Sha256>::new_from_slice(quire.webhook_secret()).expect("HMAC accepts any key length");
     mac.update(&body);
     mac.verify_slice(&provided_bytes)?;
 
