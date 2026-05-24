@@ -2627,6 +2627,7 @@ name = "quire-ci"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "axum-extra",
  "facet",
  "figue",
  "fs-err",
@@ -2651,6 +2652,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -3728,6 +3730,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

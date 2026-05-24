@@ -1,14 +1,19 @@
 use std::net::SocketAddr;
 
 use axum::Router;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{MatchedPath, State};
+use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use axum_extra::TypedHeader;
+use axum_extra::headers::Authorization;
+use axum_extra::headers::authorization::Credentials;
 use hmac::{Hmac, KeyInit, Mac};
 use quire_core::event::PushEvent;
 use quire_core::telemetry::{self, FmtMode};
 use sha2::Sha256;
+use tower_http::trace::TraceLayer;
+use tracing::info_span;
 
 use crate::quire::QuireCi;
 
@@ -31,15 +36,7 @@ enum WebhookError {
     #[error(transparent)]
     InvalidPayload(#[from] serde_json::Error),
     #[error(transparent)]
-    SecretUnavailable(#[from] quire_core::secret::Error),
-    #[error(transparent)]
     Db(#[from] rusqlite::Error),
-}
-
-impl From<hex::FromHexError> for WebhookError {
-    fn from(_: hex::FromHexError) -> Self {
-        Self::InvalidSignature
-    }
 }
 
 impl From<hmac::digest::MacError> for WebhookError {
@@ -55,11 +52,25 @@ impl IntoResponse for WebhookError {
                 StatusCode::UNAUTHORIZED
             }
             WebhookError::InvalidPayload(_) => StatusCode::BAD_REQUEST,
-            WebhookError::SecretUnavailable(_) | WebhookError::Db(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            WebhookError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
         .into_response()
+    }
+}
+
+struct HmacSha256Sig(Vec<u8>);
+
+impl Credentials for HmacSha256Sig {
+    const SCHEME: &'static str = "HMAC-SHA256";
+
+    fn decode(value: &axum::http::HeaderValue) -> Option<Self> {
+        let hex_str = value.to_str().ok()?.strip_prefix("HMAC-SHA256 ")?;
+        hex::decode(hex_str).ok().map(Self)
+    }
+
+    fn encode(&self) -> axum::http::HeaderValue {
+        axum::http::HeaderValue::from_str(&format!("HMAC-SHA256 {}", hex::encode(&self.0)))
+            .expect("hex is always a valid header value")
     }
 }
 
@@ -70,15 +81,20 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for HmacSha256Auth {
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
-        _state: &S,
+        state: &S,
     ) -> std::result::Result<Self, WebhookError> {
-        let hex_str = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
-            .ok_or(WebhookError::MissingSignature)?;
-        Ok(Self(hex::decode(hex_str)?))
+        use axum::extract::FromRequestParts;
+
+        let Some(TypedHeader(Authorization(sig))) =
+            <TypedHeader<Authorization<HmacSha256Sig>> as FromRequestParts<S>>::from_request_parts(
+                parts, state,
+            )
+            .await
+            .ok()
+        else {
+            return Err(WebhookError::MissingSignature);
+        };
+        Ok(Self(sig.0))
     }
 }
 
@@ -88,16 +104,8 @@ async fn webhook(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> std::result::Result<StatusCode, WebhookError> {
-    let secret_bytes = quire
-        .config()
-        .webhook_secret
-        .reveal()
-        .inspect_err(|e| tracing::error!(error = %e, "failed to resolve webhook secret"))?
-        .as_bytes()
-        .to_vec();
-
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(&secret_bytes).expect("HMAC accepts any key length");
+        Hmac::<Sha256>::new_from_slice(quire.hmac_key()).expect("HMAC accepts any key length");
     mac.update(&body);
     mac.verify_slice(&provided_bytes)?;
 
@@ -161,6 +169,15 @@ pub async fn run(quire: QuireCi) -> Result<()> {
         .route("/health", get(health))
         .route("/", get(index))
         .route("/webhook", post(webhook))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                let matched_path = request
+                    .extensions()
+                    .get::<MatchedPath>()
+                    .map(MatchedPath::as_str);
+                info_span!("http_request", method = ?request.method(), matched_path)
+            }),
+        )
         .with_state(quire);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -205,7 +222,7 @@ mod tests {
             "pushed_at": "2026-05-01T00:00:00Z",
             "refs": [
                 {
-                    "ref_name": "refs/heads/main",
+                    "ref": "refs/heads/main",
                     "old_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "new_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 }

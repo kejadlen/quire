@@ -1,6 +1,7 @@
 /// A single ref update from a push.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct PushRef {
+    #[serde(rename = "ref")]
     pub ref_name: String,
     pub old_sha: String,
     pub new_sha: String,

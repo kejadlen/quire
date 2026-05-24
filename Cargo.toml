@@ -4,6 +4,8 @@ resolver = "3"
 
 [workspace.dependencies]
 axum = "*"
+axum-extra = { version = "*", features = ["typed-header"] }
+tower-http = { version = "*", features = ["trace"] }
 clap = { version = "*", features = ["derive", "env"] }
 facet = "*"
 fs-err = "*"
