@@ -22,12 +22,18 @@ async fn index() -> String {
     format!("quire-ci {VERSION}\n")
 }
 
+#[derive(Debug, thiserror::Error)]
 enum WebhookError {
+    #[error("missing or malformed Authorization header")]
     MissingSignature,
+    #[error("signature mismatch")]
     InvalidSignature,
-    InvalidPayload(serde_json::Error),
-    SecretUnavailable(quire_core::secret::Error),
-    Db(rusqlite::Error),
+    #[error(transparent)]
+    InvalidPayload(#[from] serde_json::Error),
+    #[error(transparent)]
+    SecretUnavailable(#[from] quire_core::secret::Error),
+    #[error(transparent)]
+    Db(#[from] rusqlite::Error),
 }
 
 impl IntoResponse for WebhookError {
@@ -58,13 +64,7 @@ async fn webhook(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> std::result::Result<StatusCode, WebhookError> {
-    let secret_bytes = quire
-        .config()
-        .webhook_secret
-        .reveal()
-        .map_err(WebhookError::SecretUnavailable)?
-        .as_bytes()
-        .to_vec();
+    let secret_bytes = quire.config().webhook_secret.reveal()?.as_bytes().to_vec();
 
     let auth_header = headers
         .get("Authorization")
@@ -81,7 +81,7 @@ async fn webhook(
     mac.verify_slice(&provided_bytes)
         .map_err(|_| WebhookError::InvalidSignature)?;
 
-    let event: PushEvent = serde_json::from_slice(&body).map_err(WebhookError::InvalidPayload)?;
+    let event: PushEvent = serde_json::from_slice(&body)?;
 
     let traceparent = headers
         .get("traceparent")
@@ -104,8 +104,7 @@ async fn webhook(
                 now_ms,
                 traceparent,
             ],
-        )
-        .map_err(WebhookError::Db)?;
+        )?;
     }
 
     Ok(StatusCode::NO_CONTENT)
