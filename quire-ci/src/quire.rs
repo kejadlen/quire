@@ -17,10 +17,6 @@ pub struct GlobalConfig {
     pub port: u16,
     #[serde(default)]
     pub webhook_secret: Option<quire_core::secret::SecretString>,
-    // Reserved for future use: quire-ci will clone from this URL.
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub server_url: Option<String>,
 }
 
 fn default_port() -> u16 {
@@ -67,7 +63,6 @@ impl Default for GlobalConfig {
             sentry: None,
             port: default_port(),
             webhook_secret: None,
-            server_url: None,
         }
     }
 }
