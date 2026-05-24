@@ -136,19 +136,21 @@ async fn main() -> Result<()> {
             #[cfg(feature = "dev")]
             seed,
         } => {
+            #[cfg(not(feature = "dev"))]
+            let seed = false;
+
             #[cfg(feature = "dev")]
             let quire = if seed { commands::dev::seed()? } else { quire };
-            #[cfg(not(feature = "dev"))]
-            let web_routes = quire::quire::web::router(quire.clone()).layer(
-                axum::middleware::from_fn(quire::quire::web::auth::require_auth),
-            );
-            #[cfg(feature = "dev")]
-            let web_routes = if seed {
-                quire::quire::web::router(quire.clone())
-            } else {
-                quire::quire::web::router(quire.clone()).layer(axum::middleware::from_fn(
-                    quire::quire::web::auth::require_auth,
-                ))
+
+            let web_routes = {
+                let r = quire::quire::web::router(quire.clone());
+                if seed {
+                    r
+                } else {
+                    r.layer(axum::middleware::from_fn(
+                        quire::quire::web::auth::require_auth,
+                    ))
+                }
             };
             let api_routes = quire::quire::web::api::router(quire.clone());
             commands::serve::run(&quire, web_routes, api_routes).await?
