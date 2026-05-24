@@ -32,23 +32,17 @@ enum WebhookError {
     #[error("missing or malformed Authorization header")]
     MissingSignature,
     #[error("signature mismatch")]
-    InvalidSignature,
+    InvalidSignature(#[from] hmac::digest::MacError),
     #[error(transparent)]
     InvalidPayload(#[from] serde_json::Error),
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
 }
 
-impl From<hmac::digest::MacError> for WebhookError {
-    fn from(_: hmac::digest::MacError) -> Self {
-        Self::InvalidSignature
-    }
-}
-
 impl IntoResponse for WebhookError {
     fn into_response(self) -> axum::response::Response {
         match self {
-            WebhookError::MissingSignature | WebhookError::InvalidSignature => {
+            WebhookError::MissingSignature | WebhookError::InvalidSignature(_) => {
                 StatusCode::UNAUTHORIZED
             }
             WebhookError::InvalidPayload(_) => StatusCode::BAD_REQUEST,
