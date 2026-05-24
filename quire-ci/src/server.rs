@@ -44,31 +44,31 @@ async fn webhook(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> std::result::Result<StatusCode, WebhookError> {
-    if let Some(secret) = quire.config().webhook_secret.as_ref() {
-        let secret_bytes = secret
-            .reveal()
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to resolve webhook secret");
-                WebhookError::Internal
-            })?
-            .as_bytes()
-            .to_vec();
+    let secret_bytes = quire
+        .config()
+        .webhook_secret
+        .reveal()
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to resolve webhook secret");
+            WebhookError::Internal
+        })?
+        .as_bytes()
+        .to_vec();
 
-        let auth_header = headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
-            .ok_or(WebhookError::Unauthorized)?
-            .to_string();
+    let auth_header = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
+        .ok_or(WebhookError::Unauthorized)?
+        .to_string();
 
-        let provided_bytes = hex::decode(&auth_header).map_err(|_| WebhookError::Unauthorized)?;
+    let provided_bytes = hex::decode(&auth_header).map_err(|_| WebhookError::Unauthorized)?;
 
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(&secret_bytes).expect("HMAC accepts any key length");
-        mac.update(&body);
-        mac.verify_slice(&provided_bytes)
-            .map_err(|_| WebhookError::Unauthorized)?;
-    }
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&secret_bytes).expect("HMAC accepts any key length");
+    mac.update(&body);
+    mac.verify_slice(&provided_bytes)
+        .map_err(|_| WebhookError::Unauthorized)?;
 
     let event: PushEvent = serde_json::from_slice(&body).map_err(|_| WebhookError::BadRequest)?;
 
@@ -77,18 +77,14 @@ async fn webhook(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let conn = quire.db().connect().map_err(|e| {
-        tracing::error!(error = %e, "failed to open database connection");
-        WebhookError::Internal
-    })?;
-
+    let conn = quire.db().lock();
     let now_ms = jiff::Timestamp::now().as_millisecond();
 
     for push_ref in event.updated_refs() {
         let id = uuid::Uuid::now_v7().to_string();
         conn.execute(
-            "INSERT INTO runs (id, repo, ref_name, sha, created_at, traceparent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            r#"INSERT INTO runs (id, repo, "ref", sha, created_at, traceparent)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
             rusqlite::params![
                 id,
                 event.repo,
@@ -164,12 +160,6 @@ mod tests {
             .with_state(quire)
     }
 
-    fn quire_without_secret() -> (tempfile::TempDir, QuireCi) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let quire = QuireCi::new(dir.path().to_path_buf()).expect("QuireCi::new");
-        (dir, quire)
-    }
-
     fn quire_with_secret(secret: &str) -> (tempfile::TempDir, QuireCi) {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.fnl");
@@ -224,33 +214,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-        let conn = db.connect().expect("connect");
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
-            .expect("count");
-        assert_eq!(count, 1);
-    }
-
-    #[tokio::test]
-    async fn no_secret_configured_allows_unsigned_post() {
-        let (_dir, quire) = quire_without_secret();
-        let db = quire.db().clone();
-        let app = make_app(quire);
-
-        let body = push_event_body();
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/webhook")
-            .header("content-type", "application/json")
-            .body(Body::from(body))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-        let conn = db.connect().expect("connect");
-        let count: i64 = conn
+        let count: i64 = db
+            .lock()
             .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
             .expect("count");
         assert_eq!(count, 1);

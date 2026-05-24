@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::Connection;
 use rusqlite_migration::{M, Migrations};
@@ -15,33 +16,28 @@ pub enum Error {
     Migration(#[from] rusqlite_migration::Error),
 }
 
-/// An opened, migrated SQLite database. Cheap to clone — holds only the path.
-#[derive(Clone, Debug)]
+/// An opened, migrated SQLite database.
+#[derive(Clone)]
 pub struct Db {
-    path: PathBuf,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Db {
-    /// Open the database at `path`, run pending migrations, and return a `Db`.
-    pub fn open(path: PathBuf) -> Result<Self, Error> {
-        let mut conn = connect(&path)?;
+    pub fn open(path: &Path) -> Result<Self, Error> {
+        tracing::debug!(path = %path.display(), "opening database");
+        let mut conn = open_connection(path)?;
         MIGRATIONS.to_latest(&mut conn)?;
-        let db = Self { path };
-        tracing::debug!(path = %db.path().display(), "database opened");
-        Ok(db)
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
-    /// Open a new connection to the database.
-    pub fn connect(&self) -> Result<Connection, rusqlite::Error> {
-        connect(&self.path)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
     }
 }
 
-fn connect(path: &Path) -> Result<Connection, rusqlite::Error> {
+fn open_connection(path: &Path) -> Result<Connection, rusqlite::Error> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -52,11 +48,13 @@ fn connect(path: &Path) -> Result<Connection, rusqlite::Error> {
 }
 
 #[cfg(test)]
-pub fn open_in_memory() -> Result<Connection, Error> {
+pub fn open_in_memory() -> Result<Db, Error> {
     let mut conn = Connection::open_in_memory()?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     MIGRATIONS.to_latest(&mut conn)?;
-    Ok(conn)
+    Ok(Db {
+        conn: Arc::new(Mutex::new(conn)),
+    })
 }
 
 #[cfg(test)]
@@ -70,7 +68,8 @@ mod tests {
 
     #[test]
     fn runs_table_has_expected_columns() {
-        let conn = open_in_memory().expect("open_in_memory");
+        let db = open_in_memory().expect("open_in_memory");
+        let conn = db.lock();
         let mut stmt = conn
             .prepare("PRAGMA table_info(runs)")
             .expect("prepare pragma");
@@ -83,7 +82,7 @@ mod tests {
         for expected in &[
             "id",
             "repo",
-            "ref_name",
+            "ref",
             "sha",
             "created_at",
             "dispatched_at",
