@@ -1,11 +1,18 @@
 use std::cell::RefCell;
-use std::error::Error;
 use std::io::IsTerminal;
+use std::result::Result;
 use std::sync::Arc;
 
-use miette::IntoDiagnostic;
 use opentelemetry::trace::TracerProvider as _;
 use tracing_subscriber::EnvFilter;
+
+/// Errors that can occur during tracing initialization.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum Error {
+    #[error("invalid log filter: {0}")]
+    Filter(#[from] tracing_subscriber::filter::FromEnvError),
+}
+
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -14,7 +21,7 @@ thread_local! {
     static MIETTE_RENDER: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-type RenderFn = Box<dyn (Fn(&(dyn Error + 'static)) -> Option<String>) + Send + Sync>;
+type RenderFn = Box<dyn (Fn(&(dyn std::error::Error + 'static)) -> Option<String>) + Send + Sync>;
 
 /// A [`tracing_subscriber::Layer`] that intercepts `record_error` calls,
 /// renders the error as a naratable miette diagnostic, and stashes the
@@ -82,8 +89,8 @@ impl MietteLayer {
     {
         Arc::get_mut(&mut self.renderers)
             .expect("no other Arc refs at construction time")
-            .push(Box::new(|err: &(dyn Error + 'static)| {
-                let mut cur: Option<&(dyn Error + 'static)> = Some(err);
+            .push(Box::new(|err: &(dyn std::error::Error + 'static)| {
+                let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
                 while let Some(e) = cur {
                     if let Some(diag) = e.downcast_ref::<T>() {
                         let mut buf = String::new();
@@ -102,7 +109,7 @@ impl MietteLayer {
         self
     }
 
-    fn try_render(&self, err: &(dyn Error + 'static)) -> Option<String> {
+    fn try_render(&self, err: &(dyn std::error::Error + 'static)) -> Option<String> {
         self.renderers.iter().find_map(|r| r(err))
     }
 }
@@ -112,7 +119,11 @@ struct ErrorVisitor<'a> {
 }
 
 impl tracing::field::Visit for ErrorVisitor<'_> {
-    fn record_error(&mut self, _field: &tracing::field::Field, value: &(dyn Error + 'static)) {
+    fn record_error(
+        &mut self,
+        _field: &tracing::field::Field,
+        value: &(dyn std::error::Error + 'static),
+    ) {
         if let Some(rendered) = self.layer.try_render(value) {
             MIETTE_RENDER.with(|cell| *cell.borrow_mut() = Some(rendered));
         }
@@ -206,11 +217,8 @@ impl Drop for TracingGuard {
 /// Layer ordering is baked in: `miette_layer` registers before
 /// `sentry_tracing::layer()` so its thread-local is populated when
 /// sentry-tracing's `on_event` calls `capture_event`.
-pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> miette::Result<TracingGuard> {
-    let filter = EnvFilter::builder()
-        .with_env_var("QUIRE_LOG")
-        .from_env()
-        .into_diagnostic()?;
+pub fn init_tracing(miette_layer: MietteLayer, fmt_mode: FmtMode) -> Result<TracingGuard, Error> {
+    let filter = EnvFilter::builder().with_env_var("QUIRE_LOG").from_env()?;
 
     let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
     let fmt_layer = match fmt_mode {
