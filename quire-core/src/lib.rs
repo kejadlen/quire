@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod ci;
+pub mod event;
 pub mod fennel;
 pub mod secret;
 pub mod telemetry;

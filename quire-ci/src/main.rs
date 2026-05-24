@@ -1,3 +1,4 @@
+mod db;
 mod quire;
 mod server;
 mod sink;

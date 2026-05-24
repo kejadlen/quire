@@ -70,7 +70,7 @@ fn post_receive(quire: &Quire) -> Result<()> {
         refs.push(quire::event::PushRef {
             old_sha: parts[0].to_string(),
             new_sha: parts[1].to_string(),
-            r#ref: parts[2].to_string(),
+            ref_name: parts[2].to_string(),
         });
     }
 

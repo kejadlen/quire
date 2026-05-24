@@ -13,7 +13,7 @@ const MIN_REDACT_LEN: usize = 8;
 #[hegel::composite]
 fn push_ref(tc: TestCase) -> PushRef {
     PushRef {
-        r#ref: tc.draw(text()),
+        ref_name: tc.draw(text()),
         old_sha: tc.draw(text()),
         // Mix in zero-shas so updated_refs() actually exercises its filter.
         new_sha: tc.draw(one_of![text(), just(ZERO_SHA.to_string())]),
@@ -113,7 +113,7 @@ fn push_event_updated_refs_is_subtractive(tc: TestCase) {
             event
                 .refs
                 .iter()
-                .any(|r| r.r#ref == kept_ref.r#ref && r.new_sha == kept_ref.new_sha)
+                .any(|r| r.ref_name == kept_ref.ref_name && r.new_sha == kept_ref.new_sha)
         );
     }
 }

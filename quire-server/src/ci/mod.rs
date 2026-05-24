@@ -219,7 +219,7 @@ fn run_ref_inner(
 
     let meta = RunMeta {
         sha: push_ref.new_sha.clone(),
-        r#ref: push_ref.r#ref.clone(),
+        r#ref: push_ref.ref_name.clone(),
         pushed_at,
     };
 
@@ -233,7 +233,7 @@ fn run_ref_inner(
     tracing::info!(
         run_id = %run.id(), // cov-excl-line
         sha = %push_ref.new_sha,
-        r#ref = %push_ref.r#ref,
+        ref_name = %push_ref.ref_name,
         "created CI run"
     );
 
@@ -487,7 +487,7 @@ exit 0
         let push_ref = PushRef {
             old_sha: "0000000000000000000000000000000000000000".to_string(),
             new_sha: sha.clone(),
-            r#ref: "refs/heads/main".to_string(),
+            ref_name: "refs/heads/main".to_string(),
         };
 
         let (_fake_dir, fake_path) = fake_quire_ci(0);
@@ -542,7 +542,7 @@ exit 0
         let push_ref = PushRef {
             old_sha: "0000000000000000000000000000000000000000".to_string(),
             new_sha: sha.clone(),
-            r#ref: "refs/heads/main".to_string(),
+            ref_name: "refs/heads/main".to_string(),
         };
 
         let (_fake_dir, fake_path) = fake_quire_ci(1);
@@ -588,7 +588,7 @@ exit 0
         let push_ref = PushRef {
             old_sha: "0000000000000000000000000000000000000000".to_string(),
             new_sha: sha,
-            r#ref: "refs/heads/main".to_string(),
+            ref_name: "refs/heads/main".to_string(),
         };
 
         let db_path = quire.db_path();
@@ -610,7 +610,7 @@ exit 0
             vec![PushRef {
                 old_sha: "0000000000000000000000000000000000000000".to_string(),
                 new_sha: sha.to_string(),
-                r#ref: "refs/heads/main".to_string(),
+                ref_name: "refs/heads/main".to_string(),
             }],
         )
     }
@@ -658,12 +658,12 @@ exit 0
                 PushRef {
                     old_sha: "0000000000000000000000000000000000000000".to_string(),
                     new_sha: sha.clone(),
-                    r#ref: "refs/heads/main".to_string(),
+                    ref_name: "refs/heads/main".to_string(),
                 },
                 PushRef {
                     old_sha: "0000000000000000000000000000000000000000".to_string(),
                     new_sha: sha.clone(),
-                    r#ref: "refs/tags/v1".to_string(),
+                    ref_name: "refs/tags/v1".to_string(),
                 },
             ],
         );
