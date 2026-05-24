@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use hmac::{Hmac, KeyInit, Mac};
 use quire_core::event::PushEvent;
@@ -21,59 +22,71 @@ async fn index() -> String {
     format!("quire-ci {VERSION}\n")
 }
 
+enum WebhookError {
+    Unauthorized,
+    BadRequest,
+    Internal,
+}
+
+impl IntoResponse for WebhookError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            WebhookError::Unauthorized => StatusCode::UNAUTHORIZED,
+            WebhookError::BadRequest => StatusCode::BAD_REQUEST,
+            WebhookError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .into_response()
+    }
+}
+
 async fn webhook(
     State(quire): State<QuireCi>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> StatusCode {
+) -> std::result::Result<StatusCode, WebhookError> {
     if let Some(secret) = quire.config().webhook_secret.as_ref() {
-        let secret_bytes = match secret.reveal() {
-            Ok(s) => s.as_bytes().to_vec(),
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
-        };
+        let secret_bytes = secret
+            .reveal()
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to resolve webhook secret");
+                WebhookError::Internal
+            })?
+            .as_bytes()
+            .to_vec();
 
-        let auth_header = match headers
+        let auth_header = headers
             .get("Authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
-        {
-            Some(hex) => hex.to_string(),
-            None => return StatusCode::UNAUTHORIZED,
-        };
+            .ok_or(WebhookError::Unauthorized)?
+            .to_string();
 
-        let provided_bytes = match hex::decode(&auth_header) {
-            Ok(b) => b,
-            Err(_) => return StatusCode::UNAUTHORIZED,
-        };
+        let provided_bytes = hex::decode(&auth_header).map_err(|_| WebhookError::Unauthorized)?;
 
         let mut mac =
             Hmac::<Sha256>::new_from_slice(&secret_bytes).expect("HMAC accepts any key length");
         mac.update(&body);
-        if mac.verify_slice(&provided_bytes).is_err() {
-            return StatusCode::UNAUTHORIZED;
-        }
+        mac.verify_slice(&provided_bytes)
+            .map_err(|_| WebhookError::Unauthorized)?;
     }
 
-    let event: PushEvent = match serde_json::from_slice(&body) {
-        Ok(e) => e,
-        Err(_) => return StatusCode::BAD_REQUEST,
-    };
+    let event: PushEvent = serde_json::from_slice(&body).map_err(|_| WebhookError::BadRequest)?;
 
     let traceparent = headers
         .get("traceparent")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let conn = match quire.db().connect() {
-        Ok(c) => c,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
-    };
+    let conn = quire.db().connect().map_err(|e| {
+        tracing::error!(error = %e, "failed to open database connection");
+        WebhookError::Internal
+    })?;
 
     let now_ms = jiff::Timestamp::now().as_millisecond();
 
     for push_ref in event.updated_refs() {
         let id = uuid::Uuid::now_v7().to_string();
-        let result = conn.execute(
+        conn.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, created_at, traceparent)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
@@ -84,13 +97,14 @@ async fn webhook(
                 now_ms,
                 traceparent,
             ],
-        );
-        if result.is_err() {
-            return StatusCode::INTERNAL_SERVER_ERROR;
-        }
+        )
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to insert run");
+            WebhookError::Internal
+        })?;
     }
 
-    StatusCode::NO_CONTENT
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
