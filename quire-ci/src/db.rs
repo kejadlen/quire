@@ -25,7 +25,12 @@ pub struct Db {
 impl Db {
     pub fn open(path: &Path) -> Result<Self, Error> {
         tracing::debug!(path = %path.display(), "opening database");
-        let mut conn = open_connection(path)?;
+        let mut conn = Connection::open(path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;",
+        )?;
         MIGRATIONS.to_latest(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -35,16 +40,6 @@ impl Db {
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
     }
-}
-
-fn open_connection(path: &Path) -> Result<Connection, rusqlite::Error> {
-    let conn = Connection::open(path)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;",
-    )?;
-    Ok(conn)
 }
 
 #[cfg(test)]
