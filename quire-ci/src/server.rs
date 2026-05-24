@@ -64,7 +64,7 @@ async fn webhook(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let conn = match quire.open_db() {
+    let conn = match quire.db().connect() {
         Ok(c) => c,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -193,7 +193,7 @@ mod tests {
     async fn valid_hmac_creates_run_row() {
         let secret = "test-secret-key";
         let (_dir, quire) = quire_with_secret(secret);
-        let db_path = quire.db_path().to_path_buf();
+        let db = quire.db().clone();
         let app = make_app(quire);
 
         let body = push_event_body();
@@ -210,7 +210,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-        let conn = crate::db::open(&db_path).expect("open db");
+        let conn = db.connect().expect("connect");
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
             .expect("count");
@@ -220,7 +220,7 @@ mod tests {
     #[tokio::test]
     async fn no_secret_configured_allows_unsigned_post() {
         let (_dir, quire) = quire_without_secret();
-        let db_path = quire.db_path().to_path_buf();
+        let db = quire.db().clone();
         let app = make_app(quire);
 
         let body = push_event_body();
@@ -235,7 +235,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-        let conn = crate::db::open(&db_path).expect("open db");
+        let conn = db.connect().expect("connect");
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
             .expect("count");
