@@ -34,7 +34,7 @@ fn push_event_round_trips_through_socket() {
         refs: vec![quire::event::PushRef {
             old_sha: "0000000000000000000000000000000000000000".to_string(),
             new_sha: "abc123".to_string(),
-            r#ref: "refs/heads/main".to_string(),
+            ref_name: "refs/heads/main".to_string(),
         }],
     };
 
@@ -63,7 +63,7 @@ fn push_event_round_trips_through_socket() {
     assert_eq!(parsed.r#type, "push");
     assert_eq!(parsed.repo, "test.git");
     assert_eq!(parsed.refs.len(), 1);
-    assert_eq!(parsed.refs[0].r#ref, "refs/heads/main");
+    assert_eq!(parsed.refs[0].ref_name, "refs/heads/main");
     assert_eq!(parsed.refs[0].new_sha, "abc123");
 }
 
@@ -82,12 +82,12 @@ fn push_event_multiple_refs_round_trip() {
             quire::event::PushRef {
                 old_sha: "aaa".to_string(),
                 new_sha: "bbb".to_string(),
-                r#ref: "refs/heads/main".to_string(),
+                ref_name: "refs/heads/main".to_string(),
             },
             quire::event::PushRef {
                 old_sha: "ccc".to_string(),
                 new_sha: "0000000000000000000000000000000000000000".to_string(),
-                r#ref: "refs/heads/feature".to_string(),
+                ref_name: "refs/heads/feature".to_string(),
             },
         ],
     };
@@ -111,8 +111,8 @@ fn push_event_multiple_refs_round_trip() {
     let parsed: quire::event::PushEvent = serde_json::from_str(&buf).expect("deserialize");
 
     assert_eq!(parsed.refs.len(), 2);
-    assert_eq!(parsed.refs[0].r#ref, "refs/heads/main");
-    assert_eq!(parsed.refs[1].r#ref, "refs/heads/feature");
+    assert_eq!(parsed.refs[0].ref_name, "refs/heads/main");
+    assert_eq!(parsed.refs[1].ref_name, "refs/heads/feature");
     // Deletion ref included in event (server decides how to handle).
     assert_eq!(
         parsed.refs[1].new_sha,
