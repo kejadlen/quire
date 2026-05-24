@@ -23,17 +23,31 @@ async fn index() -> String {
 }
 
 enum WebhookError {
-    Unauthorized,
-    BadRequest,
-    Internal,
+    MissingSignature,
+    InvalidSignature,
+    InvalidPayload(serde_json::Error),
+    SecretUnavailable(quire_core::secret::Error),
+    Db(rusqlite::Error),
 }
 
 impl IntoResponse for WebhookError {
     fn into_response(self) -> axum::response::Response {
         match self {
-            WebhookError::Unauthorized => StatusCode::UNAUTHORIZED,
-            WebhookError::BadRequest => StatusCode::BAD_REQUEST,
-            WebhookError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            WebhookError::MissingSignature | WebhookError::InvalidSignature => {
+                StatusCode::UNAUTHORIZED
+            }
+            WebhookError::InvalidPayload(e) => {
+                tracing::warn!(error = %e, "invalid webhook payload");
+                StatusCode::BAD_REQUEST
+            }
+            WebhookError::SecretUnavailable(e) => {
+                tracing::error!(error = %e, "failed to resolve webhook secret");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+            WebhookError::Db(e) => {
+                tracing::error!(error = %e, "database error");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
         .into_response()
     }
@@ -48,10 +62,7 @@ async fn webhook(
         .config()
         .webhook_secret
         .reveal()
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to resolve webhook secret");
-            WebhookError::Internal
-        })?
+        .map_err(WebhookError::SecretUnavailable)?
         .as_bytes()
         .to_vec();
 
@@ -59,18 +70,18 @@ async fn webhook(
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("HMAC-SHA256 "))
-        .ok_or(WebhookError::Unauthorized)?
+        .ok_or(WebhookError::MissingSignature)?
         .to_string();
 
-    let provided_bytes = hex::decode(&auth_header).map_err(|_| WebhookError::Unauthorized)?;
+    let provided_bytes = hex::decode(&auth_header).map_err(|_| WebhookError::InvalidSignature)?;
 
     let mut mac =
         Hmac::<Sha256>::new_from_slice(&secret_bytes).expect("HMAC accepts any key length");
     mac.update(&body);
     mac.verify_slice(&provided_bytes)
-        .map_err(|_| WebhookError::Unauthorized)?;
+        .map_err(|_| WebhookError::InvalidSignature)?;
 
-    let event: PushEvent = serde_json::from_slice(&body).map_err(|_| WebhookError::BadRequest)?;
+    let event: PushEvent = serde_json::from_slice(&body).map_err(WebhookError::InvalidPayload)?;
 
     let traceparent = headers
         .get("traceparent")
@@ -94,10 +105,7 @@ async fn webhook(
                 traceparent,
             ],
         )
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to insert run");
-            WebhookError::Internal
-        })?;
+        .map_err(WebhookError::Db)?;
     }
 
     Ok(StatusCode::NO_CONTENT)
