@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use axum::Router;
 use axum::routing::get;
-use miette::{IntoDiagnostic, Result};
 
 use crate::quire::QuireCi;
 
@@ -15,6 +14,20 @@ async fn health() -> &'static str {
 async fn index() -> String {
     format!("quire-ci {VERSION}\n")
 }
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum Error {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("telemetry init error: {0}")]
+    Telemetry(#[from] quire_core::telemetry::Error),
+
+    #[error("secret error: {0}")]
+    Secret(#[from] quire_core::secret::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 pub async fn run(quire: QuireCi) -> Result<()> {
     let port = quire.config().port;
@@ -33,11 +46,11 @@ pub async fn run(quire: QuireCi) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!(%addr, "starting HTTP server");
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .into_diagnostic()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    axum::serve(listener, app).await.into_diagnostic()
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
 
 /// Initialize Sentry if the global config provides a DSN.
@@ -45,7 +58,7 @@ fn init_sentry(quire: &QuireCi) -> Result<Option<sentry::ClientInitGuard>> {
     let Some(sentry_config) = quire.config().sentry.as_ref() else {
         return Ok(None);
     };
-    let dsn = sentry_config.dsn.reveal().into_diagnostic()?;
+    let dsn = sentry_config.dsn.reveal()?;
     Ok(Some(sentry::init((
         dsn,
         quire_core::telemetry::sentry_client_options(VERSION),

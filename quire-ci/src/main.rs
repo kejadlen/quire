@@ -303,7 +303,7 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .into_diagnostic()?;
-            rt.block_on(server::run(quire))
+            rt.block_on(server::run(quire)).into_diagnostic()
         }
         Commands::Run {
             events,
