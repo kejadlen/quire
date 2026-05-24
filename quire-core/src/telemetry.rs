@@ -15,6 +15,8 @@ pub enum Error {
     Secret(#[from] crate::secret::Error),
 }
 
+pub type Result<T> = std::result::Result<T, Error>;
+
 /// Sentry configuration extracted from the global config.
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct SentryConfig {
@@ -207,29 +209,36 @@ pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
     }
 }
 
-/// Returned by `init_tracing`; shuts down the OTEL TracerProvider on drop.
-pub struct TracingGuard {
+/// Returned by `init_telemetry`; shuts down both tracing and Sentry on drop.
+pub struct TelemetryGuard {
+    #[allow(dead_code)]
     provider: opentelemetry_sdk::trace::SdkTracerProvider,
+    sentry: Option<sentry::ClientInitGuard>,
 }
 
-impl Drop for TracingGuard {
+impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        let _ = self.provider.shutdown();
+        // Drop tracing first (flushes OTEL spans to Sentry), then Sentry.
+        self.sentry.take();
     }
 }
 
-/// Initialize the global tracing subscriber with `QUIRE_LOG`-driven filtering,
-/// a stderr fmt layer per `fmt_mode`, the `sentry-tracing` bridge, the
-/// supplied [`MietteLayer`], and an OTEL tracing layer wired to Sentry.
+/// Initialize both tracing and Sentry.
 ///
-/// Layer ordering is baked in: `miette_layer` registers before
-/// `sentry_tracing::layer()` so its thread-local is populated when
-/// sentry-tracing's `on_event` calls `capture_event`.
-pub fn init_tracing(
+/// Sets up the global tracing subscriber (OTEL + stderr fmt) and, if a
+/// Sentry config is provided, initializes the Sentry client.
+pub fn init_telemetry(
     miette_layer: MietteLayer,
     fmt_mode: FmtMode,
-) -> std::result::Result<TracingGuard, Error> {
+    sentry_config: Option<&SentryConfig>,
+    release: &'static str,
+) -> Result<TelemetryGuard> {
+    // Build the tracing subscriber first (same as init_tracing).
     let filter = EnvFilter::builder().with_env_var("QUIRE_LOG").from_env()?;
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_span_processor(sentry_opentelemetry::SentrySpanProcessor::new())
+        .build();
+    let tracer = provider.tracer("quire");
 
     let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
     let fmt_layer = match fmt_mode {
@@ -246,11 +255,7 @@ pub fn init_tracing(
     opentelemetry::global::set_text_map_propagator(
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_span_processor(sentry_opentelemetry::SentrySpanProcessor::new())
-        .build();
     opentelemetry::global::set_tracer_provider(provider.clone());
-    let tracer = provider.tracer("quire");
 
     tracing_subscriber::registry()
         .with(miette_layer)
@@ -260,23 +265,7 @@ pub fn init_tracing(
         .with(filter)
         .init();
 
-    Ok(TracingGuard { provider })
-}
-
-/// Initialize both tracing and Sentry.
-///
-/// Sets up the global tracing subscriber (OTEL + stderr fmt) and, if a
-/// Sentry config is provided, initializes the Sentry client. Returns both
-/// guards so the caller can control drop order.
-pub fn init_telemetry(
-    miette_layer: MietteLayer,
-    fmt_mode: FmtMode,
-    sentry_config: Option<&SentryConfig>,
-    release: &'static str,
-) -> std::result::Result<(TracingGuard, Option<sentry::ClientInitGuard>), Error> {
-    let tracing_guard = init_tracing(miette_layer, fmt_mode)?;
-
-    let sentry_guard = match sentry_config {
+    let sentry = match sentry_config {
         Some(config) => {
             let dsn = config.dsn.reveal()?;
             Some(sentry::init((dsn, sentry_client_options(release))))
@@ -284,7 +273,7 @@ pub fn init_telemetry(
         None => None,
     };
 
-    Ok((tracing_guard, sentry_guard))
+    Ok(TelemetryGuard { provider, sentry })
 }
 
 #[cfg(test)]

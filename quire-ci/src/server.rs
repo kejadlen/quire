@@ -34,7 +34,7 @@ pub async fn run(quire: QuireCi) -> Result<()> {
     let port = quire.config().port;
 
     let miette_layer = telemetry::MietteLayer::new();
-    let (_tracing_guard, _sentry_guard) = telemetry::init_telemetry(
+    let _guard = telemetry::init_telemetry(
         miette_layer,
         FmtMode::AutoJson,
         quire.config().sentry.as_ref(),

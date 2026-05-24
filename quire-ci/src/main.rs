@@ -367,7 +367,7 @@ fn main() -> Result<()> {
             // _tracing_guard must be declared AFTER _sentry so it drops
             // BEFORE _sentry — OTEL provider flushes spans to Sentry SDK
             // before the Sentry client flushes to the server.
-            let _tracing_guard = telemetry::init_tracing(miette_layer, FmtMode::Plain)?;
+            let _guard = telemetry::init_telemetry(miette_layer, FmtMode::Plain, None, VERSION)?;
 
             let (git_dir, meta, sentry_ctx) = if local {
                 let Some(git_dir) = git_dir else {
