@@ -1,6 +1,4 @@
-mod db;
 mod quire;
-mod server;
 mod sink;
 
 use std::cell::RefCell;
@@ -127,9 +125,6 @@ enum Commands {
         #[facet(args::named, default)]
         git_dir: Option<PathBuf>,
     },
-
-    /// Start the HTTP server.
-    Serve,
 }
 
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
@@ -298,14 +293,6 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Validate => validate(workspace),
-        Commands::Serve => {
-            let quire = quire::QuireCi::new(cli.base_dir)?;
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .into_diagnostic()?;
-            rt.block_on(server::run(quire)).into_diagnostic()
-        }
         Commands::Run {
             events,
             out_dir,
