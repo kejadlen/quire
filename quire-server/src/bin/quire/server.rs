@@ -1,12 +1,22 @@
 use std::net::SocketAddr;
 use std::os::unix::net::UnixListener as StdUnixListener;
+use std::time::Duration;
 
 use axum::Router;
+use axum::extract::MatchedPath;
+use axum::http::Request;
+use axum::response::Response;
 use axum::routing::get;
 use miette::{Context, IntoDiagnostic, Result};
 use quire::Quire;
 use quire::ci;
 use quire::event::PushEvent;
+use tower_http::trace::TraceLayer;
+use tracing::info_span;
+
+/// Carries an error message through response extensions so TraceLayer can log it.
+#[derive(Clone)]
+pub struct RequestError(pub String);
 
 async fn health() -> &'static str {
     "ok"
@@ -56,7 +66,26 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
         .route("/health", get(health))
         .route("/", get(index))
         .merge(web_routes)
-        .nest("/api", api_routes);
+        .nest("/api", api_routes)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let matched_path = request
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(MatchedPath::as_str);
+                    info_span!("http_request", method = ?request.method(), matched_path)
+                })
+                .on_response(|response: &Response, _: Duration, _: &tracing::Span| {
+                    if let Some(RequestError(error)) = response.extensions().get::<RequestError>() {
+                        if response.status().is_server_error() {
+                            tracing::error!(%error);
+                        } else {
+                            tracing::warn!(%error);
+                        }
+                    }
+                }),
+        );
 
     tracing::info!(%addr, "starting HTTP server");
 
