@@ -17,14 +17,14 @@ pub fn seed() -> Result<Quire> {
 }
 
 /// One run with its jobs. `pushed_delta_ms` is offset from "now" at seed time;
-/// `started_delta_ms` is offset from `pushed`; `duration_ms` is how long the
-/// run ran after starting.
+/// `dispatched_delta_ms` is offset from `pushed`; `duration_ms` is how long the
+/// run ran after dispatching.
 struct SeedRun {
-    state: &'static str,
+    outcome: Option<&'static str>,
     sha: &'static str,
     ref_name: &'static str,
     pushed_delta_ms: i64,
-    started_delta_ms: Option<i64>,
+    dispatched_delta_ms: Option<i64>,
     duration_ms: Option<i64>,
     jobs: Vec<SeedJob>,
 }
@@ -110,29 +110,29 @@ impl Seeder {
         let run_id = Uuid::now_v7().to_string();
 
         let pushed_at = self.base_ms + run.pushed_delta_ms;
-        let started_at = run.started_delta_ms.map(|d| pushed_at + d);
-        let finished_at = started_at.zip(run.duration_ms).map(|(s, d)| s + d);
+        let dispatched_at = run.dispatched_delta_ms.map(|d| pushed_at + d);
+        let resolved_at = dispatched_at.zip(run.duration_ms).map(|(s, d)| s + d);
 
         self.db
             .execute(
-                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                               queued_at_ms, started_at_ms, finished_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)",
+                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
+                               created_at, dispatched_at, resolved_at, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     run_id,
                     repo,
                     run.ref_name,
                     run.sha,
                     pushed_at,
-                    run.state,
-                    pushed_at, // queued_at_ms = pushed_at_ms
-                    started_at,
-                    finished_at,
+                    pushed_at, // created_at = pushed_at_ms
+                    dispatched_at,
+                    resolved_at,
+                    run.outcome,
                 ],
             )
             .into_diagnostic()?;
 
-        let Some(run_started_at) = started_at else {
+        let Some(run_dispatched_at) = dispatched_at else {
             return Ok(()); // queued run; no jobs to insert.
         };
 
@@ -144,7 +144,7 @@ impl Seeder {
             .join(&run_id);
 
         for job in &run.jobs {
-            let job_started_at = run_started_at + job.started_delta_ms;
+            let job_started_at = run_dispatched_at + job.started_delta_ms;
             let job_finished_at = job.duration_ms.map(|d| job_started_at + d);
 
             self.db
@@ -200,11 +200,11 @@ fn build_runs() -> Vec<SeedRun> {
     vec![
         // Run 1 — succeeded, all jobs passed.
         SeedRun {
-            state: "succeeded",
+            outcome: Some("succeeded"),
             sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             ref_name: "refs/heads/main",
             pushed_delta_ms: 0,
-            started_delta_ms: Some(1000),
+            dispatched_delta_ms: Some(1000),
             duration_ms: Some(4000),
             jobs: vec![
                 SeedJob {
@@ -248,11 +248,11 @@ fn build_runs() -> Vec<SeedRun> {
         },
         // Run 2 — failed, one job failed.
         SeedRun {
-            state: "failed",
+            outcome: Some("failed-pipeline"),
             sha: "cafebabecafebabecafebabecafebabecafebabe",
             ref_name: "refs/heads/main",
             pushed_delta_ms: -600_000,
-            started_delta_ms: Some(1000),
+            dispatched_delta_ms: Some(1000),
             duration_ms: Some(7000),
             jobs: vec![
                 SeedJob {
@@ -294,13 +294,13 @@ fn build_runs() -> Vec<SeedRun> {
                 },
             ],
         },
-        // Run 3 — canceled, pushed then rebased.
+        // Run 3 — superseded, pushed then rebased.
         SeedRun {
-            state: "canceled",
+            outcome: Some("superseded"),
             sha: "1111111111111111111111111111111111111111",
             ref_name: "refs/heads/feature",
             pushed_delta_ms: -1_200_000,
-            started_delta_ms: Some(1000),
+            dispatched_delta_ms: Some(1000),
             duration_ms: Some(1000),
             jobs: vec![SeedJob {
                 job_id: "build",
@@ -319,11 +319,11 @@ fn build_runs() -> Vec<SeedRun> {
         },
         // Run 4 — active, still running.
         SeedRun {
-            state: "active",
+            outcome: None,
             sha: "2222222222222222222222222222222222222222",
             ref_name: "refs/heads/main",
             pushed_delta_ms: -5000,
-            started_delta_ms: Some(1000),
+            dispatched_delta_ms: Some(1000),
             duration_ms: None,
             jobs: vec![SeedJob {
                 job_id: "build",
@@ -351,21 +351,21 @@ fn build_runs() -> Vec<SeedRun> {
         },
         // Run 5 — queued but not started.
         SeedRun {
-            state: "queued",
+            outcome: None,
             sha: "3333333333333333333333333333333333333333",
             ref_name: "refs/heads/main",
             pushed_delta_ms: -1000,
-            started_delta_ms: None,
+            dispatched_delta_ms: None,
             duration_ms: None,
             jobs: vec![],
         },
         // Run 6 — succeeded, multi-job: lint + build + test.
         SeedRun {
-            state: "succeeded",
+            outcome: Some("succeeded"),
             sha: "4444444444444444444444444444444444444444",
             ref_name: "refs/heads/v2",
             pushed_delta_ms: -3_600_000,
-            started_delta_ms: Some(2000),
+            dispatched_delta_ms: Some(2000),
             duration_ms: Some(10_000),
             jobs: vec![
                 SeedJob {
@@ -414,11 +414,11 @@ fn build_runs() -> Vec<SeedRun> {
         },
         // Run 7 — failed, orphaned (container died mid-run).
         SeedRun {
-            state: "failed",
+            outcome: Some("failed-orphaned"),
             sha: "5555555555555555555555555555555555555555",
             ref_name: "refs/heads/main",
             pushed_delta_ms: -7_200_000,
-            started_delta_ms: Some(1000),
+            dispatched_delta_ms: Some(1000),
             duration_ms: Some(59_000),
             jobs: vec![
                 SeedJob {

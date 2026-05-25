@@ -5,12 +5,23 @@ use crate::{Quire, Result};
 /// Raw run row from the database.
 pub struct RunRow {
     pub id: String,
-    pub state: String,
+    pub outcome: Option<String>,
     pub sha: String,
     pub ref_name: String,
-    pub queued_at_ms: i64,
-    pub started_at_ms: Option<i64>,
-    pub finished_at_ms: Option<i64>,
+    pub created_at: i64,
+    pub dispatched_at: Option<i64>,
+    pub resolved_at: Option<i64>,
+}
+
+impl RunRow {
+    pub fn derived_state(&self) -> &str {
+        match &self.outcome {
+            Some(o) if o.starts_with("failed") => "failed",
+            Some(o) => o.as_str(),
+            None if self.dispatched_at.is_some() => "active",
+            None => "queued",
+        }
+    }
 }
 
 /// Raw job row from the database.
@@ -37,9 +48,9 @@ pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
         .lock()
         .map_err(|_| crate::error::Error::Io(std::io::Error::other("db mutex poisoned")))?;
     let mut stmt = db.prepare(
-        "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
+        "SELECT id, outcome, sha, ref_name, created_at, dispatched_at, resolved_at
          FROM runs WHERE repo = ?1
-         ORDER BY queued_at_ms DESC
+         ORDER BY created_at DESC
          LIMIT 50",
     )?;
 
@@ -47,12 +58,12 @@ pub fn load_runs(quire: &Quire, repo: &str) -> Result<Vec<RunRow>> {
         .query_map(rusqlite::params![repo], |row| {
             Ok(RunRow {
                 id: row.get(0)?,
-                state: row.get(1)?,
+                outcome: row.get(1)?,
                 sha: row.get(2)?,
                 ref_name: row.get(3)?,
-                queued_at_ms: row.get(4)?,
-                started_at_ms: row.get(5)?,
-                finished_at_ms: row.get(6)?,
+                created_at: row.get(4)?,
+                dispatched_at: row.get(5)?,
+                resolved_at: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -74,18 +85,18 @@ pub fn load_run_detail(quire: &Quire, repo: &str, run_id: &str) -> Result<RunDet
         .map_err(|_| crate::error::Error::Io(std::io::Error::other("db mutex poisoned")))?;
 
     let run = db.query_row(
-        "SELECT id, state, sha, ref_name, queued_at_ms, started_at_ms, finished_at_ms
+        "SELECT id, outcome, sha, ref_name, created_at, dispatched_at, resolved_at
          FROM runs WHERE id = ?1 AND repo = ?2",
         rusqlite::params![run_id, repo],
         |row| {
             Ok(RunRow {
                 id: row.get(0)?,
-                state: row.get(1)?,
+                outcome: row.get(1)?,
                 sha: row.get(2)?,
                 ref_name: row.get(3)?,
-                queued_at_ms: row.get(4)?,
-                started_at_ms: row.get(5)?,
-                finished_at_ms: row.get(6)?,
+                created_at: row.get(4)?,
+                dispatched_at: row.get(5)?,
+                resolved_at: row.get(6)?,
             })
         },
     )?;

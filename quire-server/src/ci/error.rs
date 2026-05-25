@@ -3,7 +3,6 @@
 use miette::Diagnostic;
 
 use super::pipeline::{CompileError, PipelineError};
-use super::run::RunState;
 use super::runtime::RuntimeError;
 use quire_core::fennel::FennelError;
 use quire_core::secret;
@@ -22,8 +21,11 @@ pub enum Error {
     #[diagnostic(transparent)]
     Pipeline(Box<PipelineError>),
 
-    #[error("invalid run transition: {from:?} -> {to:?}")]
-    InvalidTransition { from: RunState, to: RunState },
+    #[error("run already dispatched")]
+    AlreadyDispatched,
+
+    #[error("run already resolved")]
+    AlreadyResolved,
 
     #[error(transparent)]
     Lua(Box<mlua::Error>),

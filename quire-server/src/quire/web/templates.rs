@@ -51,17 +51,26 @@ impl RunListTemplate {
 
 pub struct RunListRow {
     pub id: String,
-    pub state: String,
+    pub outcome: Option<String>,
     pub sha: String,
     pub ref_name: String,
-    pub queued_at_ms: i64,
-    pub started_at_ms: Option<i64>,
-    pub finished_at_ms: Option<i64>,
+    pub created_at: i64,
+    pub dispatched_at: Option<i64>,
+    pub resolved_at: Option<i64>,
 }
 
 impl RunListRow {
+    pub fn state(&self) -> &str {
+        match &self.outcome {
+            Some(o) if o.starts_with("failed") => "failed",
+            Some(o) => o.as_str(),
+            None if self.dispatched_at.is_some() => "active",
+            None => "queued",
+        }
+    }
+
     pub fn state_class(&self) -> &'static str {
-        format::state_class(&self.state)
+        format::state_class(self.state())
     }
 
     pub fn sha_short(&self) -> &str {
@@ -73,15 +82,15 @@ impl RunListRow {
     }
 
     pub fn queued_relative(&self) -> String {
-        format::format_timestamp_relative(self.queued_at_ms)
+        format::format_timestamp_relative(self.created_at)
     }
 
     pub fn queued_iso(&self) -> String {
-        format::format_timestamp_iso(self.queued_at_ms)
+        format::format_timestamp_iso(self.created_at)
     }
 
     pub fn duration_display(&self) -> String {
-        format::format_duration(self.started_at_ms, self.finished_at_ms)
+        format::format_duration(self.dispatched_at, self.resolved_at)
     }
 }
 
@@ -104,17 +113,26 @@ impl RunDetailTemplate {
 }
 
 pub struct DetailRun {
-    pub state: String,
+    pub outcome: Option<String>,
     pub sha: String,
     pub ref_name: String,
-    pub queued_at_ms: i64,
-    pub started_at_ms: Option<i64>,
-    pub finished_at_ms: Option<i64>,
+    pub created_at: i64,
+    pub dispatched_at: Option<i64>,
+    pub resolved_at: Option<i64>,
 }
 
 impl DetailRun {
+    pub fn state(&self) -> &str {
+        match &self.outcome {
+            Some(o) if o.starts_with("failed") => "failed",
+            Some(o) => o.as_str(),
+            None if self.dispatched_at.is_some() => "active",
+            None => "queued",
+        }
+    }
+
     pub fn state_class(&self) -> &'static str {
-        format::state_class(&self.state)
+        format::state_class(self.state())
     }
 
     pub fn sha_short(&self) -> &str {
@@ -126,51 +144,55 @@ impl DetailRun {
     }
 
     pub fn queued_relative(&self) -> String {
-        format::format_timestamp_relative(self.queued_at_ms)
+        format::format_timestamp_relative(self.created_at)
     }
 
     pub fn queued_iso(&self) -> String {
-        format::format_timestamp_iso(self.queued_at_ms)
+        format::format_timestamp_iso(self.created_at)
     }
 
     pub fn started_display(&self) -> String {
-        self.started_at_ms
+        self.dispatched_at
             .map(format::format_timestamp_relative)
             .unwrap_or_else(|| "—".to_string())
     }
 
     pub fn started_iso(&self) -> String {
-        self.started_at_ms
+        self.dispatched_at
             .map(format::format_timestamp_iso)
             .unwrap_or_default()
     }
 
     pub fn has_started(&self) -> bool {
-        self.started_at_ms.is_some()
+        self.dispatched_at.is_some()
     }
 
     pub fn finished_display(&self) -> String {
-        self.finished_at_ms
+        self.resolved_at
             .map(format::format_timestamp_relative)
             .unwrap_or_else(|| "—".to_string())
     }
 
     pub fn finished_iso(&self) -> String {
-        self.finished_at_ms
+        self.resolved_at
             .map(format::format_timestamp_iso)
             .unwrap_or_default()
     }
 
     pub fn has_finished(&self) -> bool {
-        self.finished_at_ms.is_some()
+        self.resolved_at.is_some()
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        self.outcome.is_some()
     }
 
     pub fn is_terminal(&self) -> bool {
-        self.state == "succeeded" || self.state == "failed"
+        self.is_resolved()
     }
 
     pub fn duration_display(&self) -> String {
-        format::format_duration(self.started_at_ms, self.finished_at_ms)
+        format::format_duration(self.dispatched_at, self.resolved_at)
     }
 }
 

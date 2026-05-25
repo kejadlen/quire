@@ -155,20 +155,20 @@ async fn get_bootstrap(
                 pushed_at_ms: i64,
                 git_dir: Option<String>,
                 traceparent: Option<String>,
-                state: String,
+                dispatched_at: Option<i64>,
                 repo: String,
             }
 
             let row: RunRow = db
                 .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, state, repo
+                    "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, dispatched_at, repo
                      FROM runs WHERE id = ?1",
                 )?
                 .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
                 .next()
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
 
-            if row.state != "queued" {
+            if row.dispatched_at.is_some() {
                 return Err(ApiError::Gone);
             }
 
@@ -181,10 +181,10 @@ async fn get_bootstrap(
                     .expect("db stores valid timestamps"),
             };
 
-            let started_at_ms = jiff::Timestamp::now().as_millisecond();
+            let dispatched_at_ms = jiff::Timestamp::now().as_millisecond();
             db.execute(
-                "UPDATE runs SET state = 'active', started_at_ms = ?1 WHERE id = ?2",
-                rusqlite::params![started_at_ms, run_id],
+                "UPDATE runs SET dispatched_at = ?1 WHERE id = ?2",
+                rusqlite::params![dispatched_at_ms, run_id],
             )?;
 
             Ok(Bootstrap {

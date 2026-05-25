@@ -116,12 +116,12 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
         .into_iter()
         .map(|r| RunListRow {
             id: r.id,
-            state: r.state,
+            outcome: r.outcome,
             sha: r.sha,
             ref_name: r.ref_name,
-            queued_at_ms: r.queued_at_ms,
-            started_at_ms: r.started_at_ms,
-            finished_at_ms: r.finished_at_ms,
+            created_at: r.created_at,
+            dispatched_at: r.dispatched_at,
+            resolved_at: r.resolved_at,
         })
         .collect();
 
@@ -170,12 +170,12 @@ pub async fn run_detail(
     };
 
     let detail_run = DetailRun {
-        state: detail.run.state,
+        outcome: detail.run.outcome,
         sha: detail.run.sha,
         ref_name: detail.run.ref_name,
-        queued_at_ms: detail.run.queued_at_ms,
-        started_at_ms: detail.run.started_at_ms,
-        finished_at_ms: detail.run.finished_at_ms,
+        created_at: detail.run.created_at,
+        dispatched_at: detail.run.dispatched_at,
+        resolved_at: detail.run.resolved_at,
     };
 
     // Group sh events by job_id, preserving DB order so positional index
@@ -315,20 +315,20 @@ mod tests {
         fn insert_run(
             &self,
             id: &str,
-            state: &str,
+            outcome: Option<&str>,
             sha: &str,
             ref_name: &str,
-            queued: i64,
-            started: Option<i64>,
-            finished: Option<i64>,
+            created: i64,
+            dispatched: Option<i64>,
+            resolved: Option<i64>,
         ) {
             let pool = self.quire.db_pool();
             let db = pool.lock().expect("lock");
             db.execute(
-                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-                                  queued_at_ms, started_at_ms, finished_at_ms)
-                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?5, NULL, ?4, ?6, ?7)",
-                rusqlite::params![id, ref_name, sha, queued, state, started, finished],
+                "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
+                                  created_at, dispatched_at, resolved_at, outcome)
+                 VALUES (?1, 'example.git', ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
+                rusqlite::params![id, ref_name, sha, created, dispatched, resolved, outcome],
             )
             .expect("insert run");
         }
@@ -393,7 +393,7 @@ mod tests {
         let env = TestEnv::new();
         env.insert_run(
             UUID1,
-            "succeeded",
+            Some("succeeded"),
             SHA1,
             "refs/heads/main",
             1000,
@@ -426,7 +426,7 @@ mod tests {
         let env = TestEnv::new();
         env.insert_run(
             UUID1,
-            "succeeded",
+            Some("succeeded"),
             SHA1,
             "refs/heads/main",
             1000,

@@ -11,7 +11,7 @@
   <div class="ci-meta-primary">
     <span class="c-accent">{{ run.sha_short() }}</span>
     · {{ run.branch_short() }}
-    · <span class="ci-state-label {{ run.state_class() }}"><span class="ci-status-dot {{ run.state_class() }}"></span> {{ run.state }}</span>
+    · <span class="ci-state-label {{ run.state_class() }}"><span class="ci-status-dot {{ run.state_class() }}"></span> {{ run.state() }}</span>
   </div>
   <div class="ci-meta-secondary">
     {% if run.is_terminal() %}
