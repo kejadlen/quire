@@ -1,4 +1,3 @@
-mod quire;
 mod sink;
 
 use std::cell::RefCell;

@@ -11,7 +11,7 @@ pub use quire_core::ci::pipeline::{
 pub use quire_core::ci::run::ApiSession;
 pub use quire_core::ci::run::RunMeta;
 pub use quire_core::ci::{pipeline, registration, runtime};
-pub use run::{Executor, Run, RunState, Runs, materialize_workspace, reconcile_orphans};
+pub use run::{Executor, Run, Runs, materialize_workspace, reconcile_orphans};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 /// A resolved commit reference.
@@ -508,22 +508,23 @@ exit 0
 
         // The run should have reached succeeded.
         let conn = crate::db::open(&quire.db_path()).expect("db");
-        let state: String = conn
+        let outcome: Option<String> = conn
             .query_row(
-                "SELECT state FROM runs WHERE sha = ?1",
+                "SELECT outcome FROM runs WHERE sha = ?1",
                 rusqlite::params![&sha],
                 |row| row.get(0),
             )
             .expect("should have a run");
         assert_eq!(
-            state, "succeeded",
+            outcome.as_deref(),
+            Some("succeeded"),
             "run should be succeeded after fake quire-ci exits 0"
         );
 
-        // No queued or active rows left behind.
+        // No unresolved rows left behind.
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM runs WHERE state IN ('queued', 'active')",
+                "SELECT COUNT(*) FROM runs WHERE outcome IS NULL",
                 [],
                 |row| row.get(0),
             )
@@ -566,16 +567,19 @@ exit 0
         );
 
         let conn = crate::db::open(&quire.db_path()).expect("db");
-        let state: String = conn
+        let outcome: Option<String> = conn
             .query_row(
-                "SELECT state FROM runs WHERE sha = ?1",
+                "SELECT outcome FROM runs WHERE sha = ?1",
                 rusqlite::params![&sha],
                 |row| row.get(0),
             )
             .expect("should have a run");
-        assert_eq!(
-            state, "failed",
-            "run should be failed after quire-ci exits 1"
+        assert!(
+            outcome
+                .as_deref()
+                .map(|o| o.starts_with("failed"))
+                .unwrap_or(false),
+            "run should be failed after quire-ci exits 1, got: {outcome:?}"
         );
     }
 
