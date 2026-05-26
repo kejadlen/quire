@@ -61,12 +61,7 @@ pub struct RunListRow {
 
 impl RunListRow {
     pub fn state(&self) -> &str {
-        match &self.outcome {
-            Some(o) if o.starts_with("failed") => "failed",
-            Some(o) => o.as_str(),
-            None if self.dispatched_at.is_some() => "active",
-            None => "queued",
-        }
+        format::derive_run_state(self.outcome.as_deref(), self.dispatched_at)
     }
 
     pub fn state_class(&self) -> &'static str {
@@ -123,12 +118,7 @@ pub struct DetailRun {
 
 impl DetailRun {
     pub fn state(&self) -> &str {
-        match &self.outcome {
-            Some(o) if o.starts_with("failed") => "failed",
-            Some(o) => o.as_str(),
-            None if self.dispatched_at.is_some() => "active",
-            None => "queued",
-        }
+        format::derive_run_state(self.outcome.as_deref(), self.dispatched_at)
     }
 
     pub fn state_class(&self) -> &'static str {

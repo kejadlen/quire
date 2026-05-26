@@ -77,10 +77,18 @@ fn format_ms_duration(ms: i64) -> String {
     format!("{secs}s")
 }
 
+/// Derive a display state string from outcome and dispatched_at.
+pub fn derive_run_state(outcome: Option<&str>, dispatched_at: Option<i64>) -> &'static str {
+    match outcome {
+        Some("succeeded") => "succeeded",
+        Some("superseded") => "superseded",
+        Some(_) => "failed",
+        None if dispatched_at.is_some() => "active",
+        None => "queued",
+    }
+}
+
 /// Map a CI run/job state string to a CSS colour class.
-///
-/// Centralised here so `RunListRow`, `DetailRun`, and `DetailJob`
-/// don't each carry their own identical match.
 pub fn state_class(state: &str) -> &'static str {
     match state {
         "succeeded" => "c-ok",
@@ -185,5 +193,16 @@ mod tests {
         assert_eq!(state_class("queued"), "c-muted");
         assert_eq!(state_class("active"), "c-muted");
         assert_eq!(state_class(""), "c-muted");
+    }
+
+    #[test]
+    fn derive_run_state_covers_all_outcomes() {
+        assert_eq!(derive_run_state(Some("succeeded"), Some(1)), "succeeded");
+        assert_eq!(derive_run_state(Some("superseded"), Some(1)), "superseded");
+        assert_eq!(derive_run_state(Some("failed-pipeline"), Some(1)), "failed");
+        assert_eq!(derive_run_state(Some("failed-orphaned"), Some(1)), "failed");
+        assert_eq!(derive_run_state(Some("failed-internal"), Some(1)), "failed");
+        assert_eq!(derive_run_state(None, Some(1)), "active");
+        assert_eq!(derive_run_state(None, None), "queued");
     }
 }
