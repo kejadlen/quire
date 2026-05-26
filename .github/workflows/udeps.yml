@@ -28,5 +28,5 @@ jobs:
             target/
           key: ${{ runner.os }}-udeps-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-udeps-
-      - run: cargo install cargo-udeps --locked
+      - run: which cargo-udeps || cargo install cargo-udeps --locked
       - run: cargo +nightly udeps --workspace
