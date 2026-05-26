@@ -13,16 +13,6 @@ pub struct RunRow {
     pub resolved_at: Option<i64>,
 }
 
-impl RunRow {
-    pub fn derived_state(&self) -> &str {
-        match &self.outcome {
-            Some(o) if o.starts_with("failed") => "failed",
-            Some(o) => o.as_str(),
-            None if self.dispatched_at.is_some() => "active",
-            None => "queued",
-        }
-    }
-}
 
 /// Raw job row from the database.
 pub struct JobRow {
