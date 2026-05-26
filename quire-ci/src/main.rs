@@ -45,10 +45,6 @@ const VERSION: &str = env!("QUIRE_VERSION");
 /// Run and validate quire CI pipelines.
 #[derive(Facet)]
 struct Cli {
-    /// Root directory for quire-ci data (default: /var/quire-ci).
-    #[facet(args::named, default = "/var/quire-ci")]
-    base_dir: PathBuf,
-
     /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
     #[facet(args::named, args::short = 'w', default = ".")]
     workspace: PathBuf,
