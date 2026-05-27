@@ -2,12 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use miette::{Context, IntoDiagnostic, Result, ensure};
-
 pub mod web;
 
 use crate::ci::{Ci, Executor, Runs};
-use crate::{Error, Result as AppResult};
+use crate::{Error, Result};
 pub use quire_core::telemetry::SentryConfig;
 
 use quire_core::fennel::Fennel;
@@ -87,13 +85,12 @@ impl Repo {
     /// Verifies the path falls under `base` and passes name validation.
     /// Used by hooks that receive `GIT_DIR` from git.
     pub fn from_path(repos_base: &Path, path: &Path) -> Result<Self> {
-        let relative = path
-            .strip_prefix(repos_base)
-            .into_diagnostic()
-            .context(format!(
+        let relative = path.strip_prefix(repos_base).map_err(|_| {
+            Error::InvalidRepoName(format!(
                 "path is not under repos directory: {}",
                 path.display()
-            ))?;
+            ))
+        })?;
         let name = relative.to_string_lossy();
         Self::validate_name(&name)?;
         Ok(Self {
@@ -103,26 +100,40 @@ impl Repo {
     }
 
     fn validate_name(name: &str) -> Result<()> {
-        ensure!(!name.is_empty(), "repository name cannot be empty");
-        ensure!(!name.contains(".."), "invalid repository name: {name}");
-        ensure!(
-            name.ends_with(".git"),
-            "repository name must end in .git: {name}"
-        );
-        ensure!(!name.contains("//"), "invalid repository name: {name}");
+        if name.is_empty() {
+            return Err(Error::InvalidRepoName(
+                "repository name cannot be empty".to_string(),
+            ));
+        }
+        if name.contains("..") {
+            return Err(Error::InvalidRepoName(format!(
+                "invalid repository name: {name}"
+            )));
+        }
+        if !name.ends_with(".git") {
+            return Err(Error::InvalidRepoName(format!(
+                "repository name must end in .git: {name}"
+            )));
+        }
+        if name.contains("//") {
+            return Err(Error::InvalidRepoName(format!(
+                "invalid repository name: {name}"
+            )));
+        }
 
         let segments = name.split('/').collect::<Vec<_>>();
-        ensure!(
-            segments.len() <= 2,
-            "repository name allows at most one level of grouping: {name}"
-        );
+        if segments.len() > 2 {
+            return Err(Error::InvalidRepoName(format!(
+                "repository name allows at most one level of grouping: {name}"
+            )));
+        }
 
         for seg in &segments {
-            ensure!(!seg.is_empty(), "invalid repository name: {name}");
-            ensure!(
-                *seg != "." && *seg != ".." && *seg != ".git",
-                "invalid repository name: {name}"
-            );
+            if seg.is_empty() || *seg == "." || *seg == ".." || *seg == ".git" {
+                return Err(Error::InvalidRepoName(format!(
+                    "invalid repository name: {name}"
+                )));
+            }
         }
 
         Ok(())
@@ -266,7 +277,7 @@ impl Quire {
     ///
     /// Re-reads on every call. Cheap at current call volume; revisit if
     /// `quire serve` ends up loading per-request.
-    pub fn global_config(&self) -> AppResult<GlobalConfig> {
+    pub fn global_config(&self) -> Result<GlobalConfig> {
         let config_path = self.config_path();
         if !config_path.exists() {
             return Err(Error::ConfigNotFound(config_path.display().to_string()));
