@@ -10,6 +10,7 @@ use crate::ci::{Ci, Executor, Runs};
 use crate::{Error, Result as AppResult};
 pub use quire_core::telemetry::SentryConfig;
 
+use quire_core::fennel::Fennel;
 use quire_core::secret::SecretString;
 
 /// Parsed global configuration (`/var/quire/config.fnl`).
@@ -223,7 +224,7 @@ impl Quire {
         if !config_path.exists() {
             return Err(Error::ConfigNotFound(config_path.display().to_string()));
         }
-        Ok(quire_core::fennel::load_config(&config_path)?)
+        Ok(Fennel::load_config(&config_path)?)
     }
 
     /// Validate a repository name and return its resolved path.
