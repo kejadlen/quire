@@ -178,17 +178,17 @@ impl Fennel {
         let source = fs_err::read_to_string(path)?;
         self.load_string(&source, &path.display().to_string())
     }
-}
 
-/// Create a fresh Fennel VM and load `path` into `T`.
-///
-/// Convenience wrapper for callers that only need a one-shot config load
-/// and don't need to reuse the VM.
-pub fn load_config<T>(path: &Path) -> Result<T, FennelError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    Fennel::new()?.load_file(path)
+    /// Create a fresh Fennel VM and load `path` into `T`.
+    ///
+    /// Convenience wrapper for callers that only need a one-shot config load
+    /// and don't need to reuse the VM.
+    pub fn load_config<T>(path: &Path) -> Result<T, FennelError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        Self::new()?.load_file(path)
+    }
 }
 
 impl FennelError {
