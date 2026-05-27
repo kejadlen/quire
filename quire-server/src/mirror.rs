@@ -9,11 +9,10 @@ use thiserror::Error;
 use crate::quire::Quire;
 
 #[derive(Debug, Error, Diagnostic)]
-#[error("mirror: {count} ref(s) failed")]
+#[error("mirror: {} ref(s) failed", errors.len())]
 struct MirrorErrors {
-    count: usize,
     #[related]
-    errors: Vec<miette::Report>,
+    errors: Vec<MirrorError>,
 }
 
 #[derive(Debug, Error, Diagnostic)]
@@ -56,19 +55,16 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
         .transpose()
         .into_diagnostic()?;
 
-    let mut errors: Vec<miette::Report> = vec![];
-
-    for push_ref in event.updated_refs() {
-        if let Err(e) = mirror_ref(&repo, push_ref, mirror_token.as_deref()) {
-            errors.push(miette::Report::from(e));
-        }
-    }
+    let errors: Vec<MirrorError> = event
+        .updated_refs()
+        .into_iter()
+        .filter_map(|push_ref| mirror_ref(&repo, push_ref, mirror_token.as_deref()).err())
+        .collect();
 
     if errors.is_empty() {
         Ok(())
     } else {
-        let count = errors.len();
-        Err(MirrorErrors { count, errors }.into())
+        Err(MirrorErrors { errors }.into())
     }
 }
 
