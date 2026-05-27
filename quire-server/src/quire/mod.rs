@@ -43,8 +43,6 @@ pub struct GlobalConfig {
 #[serde(rename_all = "kebab-case")]
 pub struct GlobalGithubConfig {
     /// Bearer token used to authenticate push access to the mirror remote.
-    /// Exposed to the built-in `quire/mirror` job as the
-    /// `"github/mirror-token"` secret.
     #[serde(default)]
     pub mirror_token: Option<SecretString>,
 }
@@ -161,10 +159,7 @@ impl Repo {
     /// Read and parse `.quire/config.fnl` at the given commit SHA.
     ///
     /// Returns defaults if the file does not exist at that commit.
-    pub fn repo_config(
-        &self,
-        sha: &str,
-    ) -> AppResult<quire_core::ci::repo_config::RepoConfig> {
+    pub fn repo_config(&self, sha: &str) -> AppResult<quire_core::ci::repo_config::RepoConfig> {
         let output = self
             .git(&["show", &format!("{sha}:.quire/config.fnl")])
             .stdout(std::process::Stdio::piped())
