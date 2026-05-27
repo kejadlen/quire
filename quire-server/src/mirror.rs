@@ -2,25 +2,20 @@
 //!
 //! Triggered from the push event handler, independent of CI.
 
+use miette::{Diagnostic, IntoDiagnostic as _};
 use quire_core::event::{PushEvent, PushRef};
 use thiserror::Error;
 
 use crate::quire::Quire;
 
-#[derive(Debug, Error, miette::Diagnostic)]
+#[derive(Debug, Error, Diagnostic)]
 #[error("mirror: {} ref(s) failed", errors.len())]
 struct MirrorErrors {
     #[related]
     errors: Vec<MirrorError>,
 }
 
-impl From<MirrorError> for MirrorErrors {
-    fn from(e: MirrorError) -> Self {
-        MirrorErrors { errors: vec![e] }
-    }
-}
-
-#[derive(Debug, Error, miette::Diagnostic)]
+#[derive(Debug, Error, Diagnostic)]
 enum MirrorError {
     #[error("repo not found on disk: {0}")]
     RepoNotFound(String),
@@ -35,14 +30,7 @@ enum MirrorError {
     App(#[from] crate::Error),
 
     #[error(transparent)]
-    Secret(#[from] quire_core::secret::Error),
-
-    #[error(transparent)]
     Io(#[from] std::io::Error),
-
-    #[error("{0}")]
-    #[diagnostic(transparent)]
-    Quire(miette::Report),
 }
 
 /// Mirror updated refs to a configured remote.
@@ -50,22 +38,19 @@ enum MirrorError {
 /// Reads `github.mirror-token` from global config for auth. For each updated
 /// ref, reads `.quire/config.fnl` at the new SHA to obtain the `github.mirror`
 /// URL. Skips repos with no mirror URL configured.
-pub fn trigger(
-    quire: &Quire,
-    event: &PushEvent,
-) -> Result<(), impl miette::Diagnostic + Send + Sync + 'static> {
-    let repo = quire.repo(&event.repo).map_err(MirrorError::Quire)?;
+pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
+    let repo = quire.repo(&event.repo)?;
     if !repo.exists() {
         return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
     }
 
-    let config = quire.global_config().map_err(MirrorError::App)?;
+    let config = quire.global_config().into_diagnostic()?;
     let mirror_token = config
         .github
         .mirror_token
         .map(|s| s.reveal().map(str::to_owned))
         .transpose()
-        .map_err(MirrorError::Secret)?;
+        .into_diagnostic()?;
 
     let errors: Vec<MirrorError> = event
         .updated_refs()
@@ -76,7 +61,7 @@ pub fn trigger(
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(MirrorErrors { errors })
+        Err(MirrorErrors { errors }.into())
     }
 }
 
