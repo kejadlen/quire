@@ -11,44 +11,24 @@ use crate::quire::Quire;
 /// Reads `github.mirror-token` from global config for auth. For each updated
 /// ref, reads `.quire/config.fnl` at the new SHA to obtain the `github.mirror`
 /// URL. Skips repos with no mirror URL configured.
-pub fn trigger(quire: &Quire, event: &PushEvent) {
+pub fn trigger(quire: &Quire, event: &PushEvent) -> crate::Result<()> {
     let repo = match quire.repo(&event.repo) {
         Ok(r) if r.exists() => r,
         Ok(_) => {
             tracing::warn!(repo = %event.repo, "mirror: repo not found on disk");
-            return;
+            return Ok(());
         }
         Err(e) => {
-            tracing::error!(repo = %event.repo, error = %e, "mirror: invalid repo name");
-            return;
+            return Err(crate::Error::Io(std::io::Error::other(e.to_string())));
         }
     };
 
-    let config = match quire.global_config() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(
-                repo = %event.repo,
-                error = &e as &(dyn std::error::Error + 'static),
-                "mirror: failed to load global config",
-            );
-            return;
-        }
-    };
-
-    let mirror_token = match config.github.mirror_token {
-        None => None,
-        Some(ref secret) => match secret.reveal() {
-            Ok(t) => Some(t.to_string()),
-            Err(e) => {
-                tracing::error!(
-                    error = &e as &(dyn std::error::Error + 'static),
-                    "mirror: failed to reveal mirror token",
-                );
-                return;
-            }
-        },
-    };
+    let config = quire.global_config()?;
+    let mirror_token = config
+        .github
+        .mirror_token
+        .map(|s| s.reveal().map(str::to_owned))
+        .transpose()?;
 
     for push_ref in event.updated_refs() {
         let repo_config = match repo.repo_config(&push_ref.new_sha) {
@@ -75,6 +55,8 @@ pub fn trigger(quire: &Quire, event: &PushEvent) {
             mirror_token.as_deref(),
         );
     }
+
+    Ok(())
 }
 
 fn push_to_mirror(
