@@ -20,9 +20,6 @@ enum MirrorError {
     #[error("repo not found on disk: {0}")]
     RepoNotFound(String),
 
-    #[error("mirror-token not configured")]
-    TokenNotConfigured,
-
     #[error("git push to {url} failed: {stderr}")]
     PushFailed { url: String, stderr: String },
 
@@ -37,7 +34,8 @@ enum MirrorError {
 ///
 /// Reads `github.mirror-token` from global config for auth. For each updated
 /// ref, reads `.quire/config.fnl` at the new SHA to obtain the `github.mirror`
-/// URL. Skips repos with no mirror URL configured.
+/// URL. Skips repos with no mirror URL configured. If no token is configured,
+/// mirroring is skipped entirely.
 pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
     let repo = quire.repo(&event.repo)?;
     if !repo.exists() {
@@ -45,17 +43,20 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
     }
 
     let config = quire.global_config().into_diagnostic()?;
-    let mirror_token = config
+    let Some(mirror_token) = config
         .github
         .mirror_token
         .map(|s| s.reveal().map(str::to_owned))
         .transpose()
-        .into_diagnostic()?;
+        .into_diagnostic()?
+    else {
+        return Ok(());
+    };
 
     let errors: Vec<MirrorError> = event
         .updated_refs()
         .into_iter()
-        .filter_map(|push_ref| mirror_ref(&repo, push_ref, mirror_token.as_deref()).err())
+        .filter_map(|push_ref| mirror_ref(&repo, push_ref, &mirror_token).err())
         .collect();
 
     if errors.is_empty() {
@@ -68,13 +69,12 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
 fn mirror_ref(
     repo: &crate::quire::Repo,
     push_ref: &PushRef,
-    token: Option<&str>,
+    token: &str,
 ) -> Result<(), MirrorError> {
     let repo_config = repo.repo_config(&push_ref.new_sha)?;
     let Some(mirror_url) = repo_config.github.mirror else {
         return Ok(());
     };
-    let token = token.ok_or(MirrorError::TokenNotConfigured)?;
 
     // Force-push the ref to the mirror. The `+` prefix allows rewrites.
     let refspec = format!("+{r}:{r}", r = push_ref.ref_name);
