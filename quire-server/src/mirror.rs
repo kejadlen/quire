@@ -39,13 +39,10 @@ enum MirrorError {
 /// ref, reads `.quire/config.fnl` at the new SHA to obtain the `github.mirror`
 /// URL. Skips repos with no mirror URL configured.
 pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
-    let repo = match quire.repo(&event.repo) {
-        Ok(r) if r.exists() => r,
-        Ok(_) => {
-            return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
-        }
-        Err(e) => return Err(e),
-    };
+    let repo = quire.repo(&event.repo)?;
+    if !repo.exists() {
+        return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
+    }
 
     let config = quire.global_config().into_diagnostic()?;
     let mirror_token = config
