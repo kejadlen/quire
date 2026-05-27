@@ -11,6 +11,7 @@ use miette::{Context, IntoDiagnostic, Result};
 use quire::Quire;
 use quire::ci;
 use quire::event::PushEvent;
+use quire::mirror;
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
 
@@ -156,4 +157,5 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
     }
 
     ci::trigger(&quire, &event);
+    mirror::trigger(&quire, &event);
 }

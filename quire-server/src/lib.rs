@@ -2,6 +2,7 @@ pub mod ci;
 pub mod db;
 mod error;
 pub mod event;
+pub mod mirror;
 pub mod quire;
 
 pub use quire_core::telemetry::SentryConfig;
