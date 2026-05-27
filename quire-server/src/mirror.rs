@@ -31,8 +31,9 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> crate::Result<()> {
         .transpose()?;
 
     for push_ref in event.updated_refs() {
-        let repo_config = match repo.repo_config(&push_ref.new_sha) {
-            Ok(c) => c,
+        let mirror_url = match repo.mirror_url(&push_ref.new_sha) {
+            Ok(Some(url)) => url,
+            Ok(None) => continue,
             Err(e) => {
                 tracing::warn!(
                     ref_name = %push_ref.ref_name,
@@ -42,10 +43,6 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> crate::Result<()> {
                 );
                 continue;
             }
-        };
-
-        let Some(mirror_url) = repo_config.github.mirror else {
-            continue;
         };
 
         let Some(token) = mirror_token.as_deref() else {
