@@ -2,68 +2,70 @@
 //!
 //! Triggered from the push event handler, independent of CI.
 
-use quire_core::event::PushEvent;
+use miette::{Diagnostic, IntoDiagnostic as _};
+use quire_core::event::{PushEvent, PushRef};
+use thiserror::Error;
 
 use crate::quire::Quire;
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("mirror: {count} ref(s) failed")]
+struct MirrorErrors {
+    count: usize,
+    #[related]
+    errors: Vec<miette::Report>,
+}
 
 /// Mirror updated refs to a configured remote.
 ///
 /// Reads `github.mirror-token` from global config for auth. For each updated
 /// ref, reads `.quire/config.fnl` at the new SHA to obtain the `github.mirror`
 /// URL. Skips repos with no mirror URL configured.
-pub fn trigger(quire: &Quire, event: &PushEvent) -> crate::Result<()> {
+pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
     let repo = match quire.repo(&event.repo) {
         Ok(r) if r.exists() => r,
         Ok(_) => {
-            tracing::warn!(repo = %event.repo, "mirror: repo not found on disk");
-            return Ok(());
+            return Err(miette::miette!("repo not found on disk: {}", event.repo));
         }
-        Err(e) => {
-            return Err(crate::Error::Io(std::io::Error::other(e.to_string())));
-        }
+        Err(e) => return Err(e),
     };
 
-    let config = quire.global_config()?;
+    let config = quire.global_config().into_diagnostic()?;
     let mirror_token = config
         .github
         .mirror_token
         .map(|s| s.reveal().map(str::to_owned))
-        .transpose()?;
+        .transpose()
+        .into_diagnostic()?;
+
+    let mut errors: Vec<miette::Report> = vec![];
 
     for push_ref in event.updated_refs() {
-        let mirror_url = match repo.mirror_url(&push_ref.new_sha) {
-            Ok(Some(url)) => url,
-            Ok(None) => continue,
-            Err(e) => {
-                tracing::warn!(
-                    ref_name = %push_ref.ref_name,
-                    sha = %push_ref.new_sha,
-                    error = &e as &(dyn std::error::Error + 'static),
-                    "mirror: failed to read repo config, skipping ref",
-                );
-                continue;
-            }
-        };
-
-        let Some(token) = mirror_token.as_deref() else {
-            tracing::warn!(
-                ref_name = %push_ref.ref_name,
-                "mirror: mirror-token not configured, skipping ref",
-            );
-            continue;
-        };
-
-        if let Err(e) = push_to_mirror(&repo, &push_ref.ref_name, &mirror_url, token) {
-            tracing::error!(
-                ref_name = %push_ref.ref_name,
-                mirror_url,
-                error = &e as &(dyn std::error::Error + 'static),
-                "mirror: push failed",
-            );
+        if let Err(e) = mirror_ref(&repo, push_ref, mirror_token.as_deref()) {
+            errors.push(miette::miette!("{}: {e}", push_ref.ref_name));
         }
     }
 
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let count = errors.len();
+        Err(MirrorErrors { count, errors }.into())
+    }
+}
+
+fn mirror_ref(
+    repo: &crate::quire::Repo,
+    push_ref: &PushRef,
+    token: Option<&str>,
+) -> crate::Result<()> {
+    let repo_config = repo.repo_config(&push_ref.new_sha)?;
+    let Some(mirror_url) = repo_config.github.mirror else {
+        return Ok(());
+    };
+    let token = token
+        .ok_or_else(|| crate::Error::Io(std::io::Error::other("mirror-token not configured")))?;
+    push_to_mirror(repo, &push_ref.ref_name, &mirror_url, token)
 }
 
 fn push_to_mirror(
