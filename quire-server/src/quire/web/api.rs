@@ -217,10 +217,12 @@ async fn get_secret(
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         let config = quire.global_config()?;
-        if let Some(s) = config.secrets.get(&name) {
-            return Ok(s.reveal()?.to_string());
-        }
-        Err(ApiError::NotFound)
+        Ok(config
+            .secrets
+            .get(&name)
+            .ok_or(ApiError::NotFound)?
+            .reveal()?
+            .to_string())
     })
     .await
     .expect("blocking task panicked")?;
