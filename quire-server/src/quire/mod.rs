@@ -156,21 +156,10 @@ impl Repo {
         Ci::new(self.path())
     }
 
-    /// Read `github.mirror` URL from `.quire/config.fnl` at the given commit SHA.
+    /// Read and parse `.quire/config.fnl` at the given commit SHA.
     ///
-    /// Returns `None` if unconfigured or the file does not exist at that commit.
-    pub fn mirror_url(&self, sha: &str) -> AppResult<Option<String>> {
-        #[derive(serde::Deserialize, Default)]
-        #[serde(default, rename_all = "kebab-case")]
-        struct Config {
-            github: Github,
-        }
-        #[derive(serde::Deserialize, Default)]
-        #[serde(default, rename_all = "kebab-case")]
-        struct Github {
-            mirror: Option<String>,
-        }
-
+    /// Returns defaults if the file does not exist at that commit.
+    pub fn repo_config(&self, sha: &str) -> AppResult<RepoConfig> {
         let output = self
             .git(&["show", &format!("{sha}:.quire/config.fnl")])
             .stdout(std::process::Stdio::piped())
@@ -180,7 +169,7 @@ impl Repo {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("does not exist") || stderr.contains("not found") {
-                return Ok(None);
+                return Ok(RepoConfig::default());
             }
             return Err(Error::Io(std::io::Error::other(format!(
                 "failed to read .quire/config.fnl at {sha}: {stderr}"
@@ -188,8 +177,7 @@ impl Repo {
         }
 
         let source = String::from_utf8(output.stdout)?;
-        let cfg: Config = Fennel::new()?.load_string(&source, ".quire/config.fnl")?;
-        Ok(cfg.github.mirror)
+        Ok(Fennel::new()?.load_string(&source, ".quire/config.fnl")?)
     }
 
     /// The base directory for CI runs (`runs/<repo>/`).
@@ -205,6 +193,22 @@ impl Repo {
             self.runs_base(),
         )
     }
+}
+
+/// Per-repo CI configuration parsed from `.quire/config.fnl`.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RepoConfig {
+    pub github: RepoGithubConfig,
+}
+
+/// Per-repo GitHub configuration.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RepoGithubConfig {
+    /// Remote URL to mirror every pushed ref to.
+    /// E.g. `"https://github.com/user/repo.git"`.
+    pub mirror: Option<String>,
 }
 
 /// Application runtime context.
