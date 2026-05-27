@@ -160,17 +160,22 @@ impl Repo {
     ///
     /// Returns defaults if the file does not exist at that commit.
     pub fn repo_config(&self, sha: &str) -> AppResult<RepoConfig> {
+        let path = format!("{sha}:.quire/config.fnl");
+
+        // cat-file -e: exit 0 if the object exists, non-zero if absent.
+        let exists = self.git(&["cat-file", "-e", &path]).status()?.success();
+        if !exists {
+            return Ok(RepoConfig::default());
+        }
+
         let output = self
-            .git(&["show", &format!("{sha}:.quire/config.fnl")])
+            .git(&["show", &path])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("does not exist") || stderr.contains("not found") {
-                return Ok(RepoConfig::default());
-            }
             return Err(Error::Io(std::io::Error::other(format!(
                 "failed to read .quire/config.fnl at {sha}: {stderr}"
             ))));
