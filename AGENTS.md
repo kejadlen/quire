@@ -12,10 +12,20 @@ The backlog shifts between sessions and even within a session — tasks get reor
 
 ## Error handling
 
-Prefer `bail!` and `ensure!` from miette over constructing errors manually with
-`miette::miette!()` and `.ok_or_else()`. Use `bail!` for early returns and
-`ensure!` for precondition checks. `IntoDiagnostic` (via `.into_diagnostic()`)
-is the right bridge for non-miette error types.
+**Library code** (anything that isn't a binary entry point or CLI command handler)
+must use typed error enums derived with `thiserror`. Return `Result<T, SomeError>`
+— never `miette::Result`. Do not use `bail!`, `ensure!`, or `IntoDiagnostic` in
+library code; construct errors explicitly.
+
+**CLI and binary entry points** (`main.rs`, `commands/`) are the miette boundary.
+Use `bail!` and `ensure!` for ad-hoc checks. Use `?` to propagate typed errors
+upward — it converts them to `miette::Report` automatically because every typed
+error in this codebase implements `miette::Diagnostic`. Use `IntoDiagnostic` (via
+`.into_diagnostic()`) only to bridge non-miette, non-`Diagnostic` error types like
+`std::io::Error` from third-party calls.
+
+`miette::Context` (`.context()`, `.with_context()`) is available in CLI code to
+add human-readable narrative around propagated errors.
 
 ## Before committing
 

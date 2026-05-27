@@ -12,6 +12,9 @@ pub enum Error {
     #[error("config not found: {0}")]
     ConfigNotFound(String),
 
+    #[error("{0}")]
+    InvalidRepoName(String),
+
     #[error(transparent)]
     #[diagnostic(transparent)]
     Fennel(#[from] Box<FennelError>),
