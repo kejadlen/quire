@@ -51,6 +51,22 @@ fn default_port() -> u16 {
     3000
 }
 
+/// Per-repo CI configuration parsed from `.quire/config.fnl`.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RepoConfig {
+    pub github: RepoGithubConfig,
+}
+
+/// Per-repo GitHub configuration.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RepoGithubConfig {
+    /// Remote URL to mirror every pushed ref to.
+    /// E.g. `"https://github.com/user/repo.git"`.
+    pub mirror: Option<String>,
+}
+
 #[derive(serde::Deserialize, Debug, Default)]
 pub struct CiConfig {
     /// How the orchestrator dispatches CI runs. Defaults to shelling
@@ -159,7 +175,7 @@ impl Repo {
     /// Read and parse `.quire/config.fnl` at the given commit SHA.
     ///
     /// Returns defaults if the file does not exist at that commit.
-    pub fn repo_config(&self, sha: &str) -> AppResult<quire_core::ci::repo_config::RepoConfig> {
+    pub fn repo_config(&self, sha: &str) -> AppResult<RepoConfig> {
         let output = self
             .git(&["show", &format!("{sha}:.quire/config.fnl")])
             .stdout(std::process::Stdio::piped())
@@ -169,7 +185,7 @@ impl Repo {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("does not exist") || stderr.contains("not found") {
-                return Ok(quire_core::ci::repo_config::RepoConfig::default());
+                return Ok(RepoConfig::default());
             }
             return Err(Error::Io(std::io::Error::other(format!(
                 "failed to read .quire/config.fnl at {sha}: {stderr}"
