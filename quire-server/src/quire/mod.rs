@@ -163,26 +163,16 @@ impl Repo {
         let path = format!("{sha}:.quire/config.fnl");
 
         // cat-file -e: exit 0 if the object exists, non-zero if absent.
-        let exists = self.git(&["cat-file", "-e", &path]).status()?.success();
-        if !exists {
+        if !self.git(&["cat-file", "-e", &path]).status()?.success() {
             return Ok(RepoConfig::default());
         }
 
-        let output = self
+        let out = self
             .git(&["show", &path])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
             .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Io(std::io::Error::other(format!(
-                "failed to read .quire/config.fnl at {sha}: {stderr}"
-            ))));
-        }
-
-        let source = String::from_utf8(output.stdout)?;
-        Ok(Fennel::new()?.load_string(&source, ".quire/config.fnl")?)
+        let source = String::from_utf8(out.stdout)?;
+        Ok(Fennel::load_config_str(&source, ".quire/config.fnl")?)
     }
 
     /// The base directory for CI runs (`runs/<repo>/`).

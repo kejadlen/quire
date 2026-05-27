@@ -16,6 +16,24 @@ struct MirrorErrors {
     errors: Vec<miette::Report>,
 }
 
+#[derive(Debug, Error, Diagnostic)]
+enum MirrorError {
+    #[error("repo not found on disk: {0}")]
+    RepoNotFound(String),
+
+    #[error("mirror-token not configured")]
+    TokenNotConfigured,
+
+    #[error("git push to {url} failed: {stderr}")]
+    PushFailed { url: String, stderr: String },
+
+    #[error(transparent)]
+    App(#[from] crate::Error),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
 /// Mirror updated refs to a configured remote.
 ///
 /// Reads `github.mirror-token` from global config for auth. For each updated
@@ -25,7 +43,7 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
     let repo = match quire.repo(&event.repo) {
         Ok(r) if r.exists() => r,
         Ok(_) => {
-            return Err(miette::miette!("repo not found on disk: {}", event.repo));
+            return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
         }
         Err(e) => return Err(e),
     };
@@ -42,7 +60,7 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
 
     for push_ref in event.updated_refs() {
         if let Err(e) = mirror_ref(&repo, push_ref, mirror_token.as_deref()) {
-            errors.push(miette::miette!("{}: {e}", push_ref.ref_name));
+            errors.push(miette::Report::from(e));
         }
     }
 
@@ -58,13 +76,12 @@ fn mirror_ref(
     repo: &crate::quire::Repo,
     push_ref: &PushRef,
     token: Option<&str>,
-) -> crate::Result<()> {
+) -> Result<(), MirrorError> {
     let repo_config = repo.repo_config(&push_ref.new_sha)?;
     let Some(mirror_url) = repo_config.github.mirror else {
         return Ok(());
     };
-    let token = token
-        .ok_or_else(|| crate::Error::Io(std::io::Error::other("mirror-token not configured")))?;
+    let token = token.ok_or(MirrorError::TokenNotConfigured)?;
     push_to_mirror(repo, &push_ref.ref_name, &mirror_url, token)
 }
 
@@ -73,7 +90,7 @@ fn push_to_mirror(
     ref_name: &str,
     mirror_url: &str,
     token: &str,
-) -> crate::Result<()> {
+) -> Result<(), MirrorError> {
     // Force-push the ref to the mirror. The `+` prefix allows rewrites.
     let refspec = format!("+{ref_name}:{ref_name}");
 
@@ -91,10 +108,10 @@ fn push_to_mirror(
         .output()?;
 
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(crate::Error::Io(std::io::Error::other(format!(
-            "git push to {mirror_url} failed: {stderr}"
-        ))));
+        return Err(MirrorError::PushFailed {
+            url: mirror_url.to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
     }
 
     tracing::info!(ref_name, mirror_url, "mirror: push succeeded");

@@ -189,6 +189,17 @@ impl Fennel {
     {
         Self::new()?.load_file(path)
     }
+
+    /// Create a fresh Fennel VM and parse `source` into `T`.
+    ///
+    /// Like [`load_config`] but reads from a string rather than a file.
+    /// `name` is used in error messages (e.g. `".quire/config.fnl"`).
+    pub fn load_config_str<T>(source: &str, name: &str) -> Result<T, FennelError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        Self::new()?.load_string(source, name)
+    }
 }
 
 impl FennelError {
