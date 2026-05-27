@@ -48,12 +48,22 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> crate::Result<()> {
             continue;
         };
 
-        push_to_mirror(
-            &repo,
-            &push_ref.ref_name,
-            &mirror_url,
-            mirror_token.as_deref(),
-        );
+        let Some(token) = mirror_token.as_deref() else {
+            tracing::warn!(
+                ref_name = %push_ref.ref_name,
+                "mirror: mirror-token not configured, skipping ref",
+            );
+            continue;
+        };
+
+        if let Err(e) = push_to_mirror(&repo, &push_ref.ref_name, &mirror_url, token) {
+            tracing::error!(
+                ref_name = %push_ref.ref_name,
+                mirror_url,
+                error = &e as &(dyn std::error::Error + 'static),
+                "mirror: push failed",
+            );
+        }
     }
 
     Ok(())
@@ -63,45 +73,31 @@ fn push_to_mirror(
     repo: &crate::quire::Repo,
     ref_name: &str,
     mirror_url: &str,
-    token: Option<&str>,
-) {
+    token: &str,
+) -> crate::Result<()> {
     // Force-push the ref to the mirror. The `+` prefix allows rewrites.
     let refspec = format!("+{ref_name}:{ref_name}");
-    let mut cmd = repo.git(&["push", "--porcelain", mirror_url, &refspec]);
 
     // Pass the auth token via git config env vars so it never appears in argv.
-    if let Some(token) = token {
-        cmd.env("GIT_CONFIG_COUNT", "1")
-            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-            .env(
-                "GIT_CONFIG_VALUE_0",
-                format!("Authorization: Bearer {token}"),
-            );
-    }
-
-    match cmd
+    let out = repo
+        .git(&["push", "--porcelain", mirror_url, &refspec])
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+        .env(
+            "GIT_CONFIG_VALUE_0",
+            format!("Authorization: Bearer {token}"),
+        )
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            tracing::info!(ref_name, mirror_url, "mirror: push succeeded");
-        }
-        Ok(out) => {
-            tracing::error!(
-                ref_name,
-                mirror_url,
-                stderr = %String::from_utf8_lossy(&out.stderr),
-                "mirror: push failed",
-            );
-        }
-        Err(e) => {
-            tracing::error!(
-                ref_name,
-                mirror_url,
-                error = %e,
-                "mirror: failed to run git push",
-            );
-        }
+        .output()?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(crate::Error::Io(std::io::Error::other(format!(
+            "git push to {mirror_url} failed: {stderr}"
+        ))));
     }
+
+    tracing::info!(ref_name, mirror_url, "mirror: push succeeded");
+    Ok(())
 }
