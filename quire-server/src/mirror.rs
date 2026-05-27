@@ -75,21 +75,13 @@ fn mirror_ref(
         return Ok(());
     };
     let token = token.ok_or(MirrorError::TokenNotConfigured)?;
-    push_to_mirror(repo, &push_ref.ref_name, &mirror_url, token)
-}
 
-fn push_to_mirror(
-    repo: &crate::quire::Repo,
-    ref_name: &str,
-    mirror_url: &str,
-    token: &str,
-) -> Result<(), MirrorError> {
     // Force-push the ref to the mirror. The `+` prefix allows rewrites.
-    let refspec = format!("+{ref_name}:{ref_name}");
+    let refspec = format!("+{r}:{r}", r = push_ref.ref_name);
 
     // Pass the auth token via git config env vars so it never appears in argv.
     let out = repo
-        .git(&["push", "--porcelain", mirror_url, &refspec])
+        .git(&["push", "--porcelain", &mirror_url, &refspec])
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
         .env(
@@ -102,11 +94,15 @@ fn push_to_mirror(
 
     if !out.status.success() {
         return Err(MirrorError::PushFailed {
-            url: mirror_url.to_string(),
+            url: mirror_url,
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         });
     }
 
-    tracing::info!(ref_name, mirror_url, "mirror: push succeeded");
+    tracing::info!(
+        ref_name = push_ref.ref_name,
+        mirror_url,
+        "mirror: push succeeded"
+    );
     Ok(())
 }
