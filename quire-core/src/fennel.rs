@@ -180,6 +180,17 @@ impl Fennel {
     }
 }
 
+/// Create a fresh Fennel VM and load `path` into `T`.
+///
+/// Convenience wrapper for callers that only need a one-shot config load
+/// and don't need to reuse the VM.
+pub fn load_config<T>(path: &Path) -> Result<T, FennelError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    Fennel::new()?.load_file(path)
+}
+
 impl FennelError {
     /// Construct an `Eval` error from an mlua error, extracting line
     /// information when available.
