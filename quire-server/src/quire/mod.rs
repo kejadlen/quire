@@ -33,6 +33,20 @@ pub struct GlobalConfig {
     /// CI configuration.
     #[serde(default)]
     pub ci: CiConfig,
+    /// GitHub integration settings.
+    #[serde(default)]
+    pub github: GlobalGithubConfig,
+}
+
+/// Global GitHub integration configuration.
+#[derive(serde::Deserialize, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct GlobalGithubConfig {
+    /// Bearer token used to authenticate push access to the mirror remote.
+    /// Exposed to the built-in `quire/mirror` job as the
+    /// `"github/mirror-token"` secret.
+    #[serde(default)]
+    pub mirror_token: Option<SecretString>,
 }
 
 fn default_port() -> u16 {
@@ -142,6 +156,33 @@ impl Repo {
     /// Access CI operations for this repo.
     pub fn ci(&self) -> Ci {
         Ci::new(self.path())
+    }
+
+    /// Read and parse `.quire/config.fnl` at the given commit SHA.
+    ///
+    /// Returns defaults if the file does not exist at that commit.
+    pub fn repo_config(
+        &self,
+        sha: &str,
+    ) -> AppResult<quire_core::ci::repo_config::RepoConfig> {
+        let output = self
+            .git(&["show", &format!("{sha}:.quire/config.fnl")])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("does not exist") || stderr.contains("not found") {
+                return Ok(quire_core::ci::repo_config::RepoConfig::default());
+            }
+            return Err(Error::Io(std::io::Error::other(format!(
+                "failed to read .quire/config.fnl at {sha}: {stderr}"
+            ))));
+        }
+
+        let source = String::from_utf8(output.stdout)?;
+        Ok(Fennel::new()?.load_string(&source, ".quire/config.fnl")?)
     }
 
     /// The base directory for CI runs (`runs/<repo>/`).

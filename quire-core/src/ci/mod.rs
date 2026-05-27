@@ -10,5 +10,6 @@ pub mod event;
 pub mod logs;
 pub mod pipeline;
 pub mod registration;
+pub mod repo_config;
 pub mod run;
 pub mod runtime;

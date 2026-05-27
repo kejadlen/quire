@@ -28,7 +28,7 @@ use crate::Quire;
 pub fn router(quire: Quire) -> axum::Router {
     let run_routes = axum::Router::new()
         .route("/bootstrap", axum::routing::get(get_bootstrap))
-        .route("/secrets/{name}", axum::routing::get(get_secret))
+        .route("/secrets/{*name}", axum::routing::get(get_secret))
         .layer(axum::middleware::from_fn_with_state(
             quire.clone(),
             verify_run_token,
@@ -204,7 +204,8 @@ async fn get_bootstrap(
 /// `GET /api/run/secrets/:name`
 ///
 /// Returns the plain-text value of a named secret from the global config.
-/// Auth is handled by [`verify_run_token`] middleware before this handler runs.
+/// Supports slash-separated names via the `{*name}` wildcard route.
+/// Auth is handled by [`verify_run_token`] middleware.
 /// Returns 404 if the secret is not declared in config.
 #[derive(serde::Deserialize)]
 struct SecretPath {
@@ -217,10 +218,10 @@ async fn get_secret(
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         let config = quire.global_config()?;
-        match config.secrets.get(&name) {
-            Some(s) => Ok(s.reveal()?.to_string()),
-            None => Err(ApiError::NotFound),
+        if let Some(s) = config.secrets.get(&name) {
+            return Ok(s.reveal()?.to_string());
         }
+        Err(ApiError::NotFound)
     })
     .await
     .expect("blocking task panicked")?;
