@@ -13,7 +13,6 @@ pub struct RunRow {
     pub resolved_at: Option<i64>,
 }
 
-
 /// Raw job row from the database.
 pub struct JobRow {
     pub job_id: String,
