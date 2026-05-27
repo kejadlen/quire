@@ -158,6 +158,6 @@ async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quir
 
     ci::trigger(&quire, &event);
     if let Err(e) = mirror::trigger(&quire, &event) {
-        tracing::error!(repo = %event.repo, error = %e, "mirror failed");
+        tracing::error!(repo = %event.repo, error = %miette::Report::from(e), "mirror failed");
     }
 }
