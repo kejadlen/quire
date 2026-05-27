@@ -28,7 +28,7 @@ use crate::Quire;
 pub fn router(quire: Quire) -> axum::Router {
     let run_routes = axum::Router::new()
         .route("/bootstrap", axum::routing::get(get_bootstrap))
-        .route("/secrets/{*name}", axum::routing::get(get_secret))
+        .route("/secrets/{name}", axum::routing::get(get_secret))
         .layer(axum::middleware::from_fn_with_state(
             quire.clone(),
             verify_run_token,
@@ -204,7 +204,6 @@ async fn get_bootstrap(
 /// `GET /api/run/secrets/:name`
 ///
 /// Returns the plain-text value of a named secret from the global config.
-/// Supports slash-separated names via the `{*name}` wildcard route.
 /// Auth is handled by [`verify_run_token`] middleware.
 /// Returns 404 if the secret is not declared in config.
 #[derive(serde::Deserialize)]

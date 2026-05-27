@@ -51,22 +51,6 @@ fn default_port() -> u16 {
     3000
 }
 
-/// Per-repo CI configuration parsed from `.quire/config.fnl`.
-#[derive(serde::Deserialize, Debug, Default, Clone)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct RepoConfig {
-    pub github: RepoGithubConfig,
-}
-
-/// Per-repo GitHub configuration.
-#[derive(serde::Deserialize, Debug, Default, Clone)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct RepoGithubConfig {
-    /// Remote URL to mirror every pushed ref to.
-    /// E.g. `"https://github.com/user/repo.git"`.
-    pub mirror: Option<String>,
-}
-
 #[derive(serde::Deserialize, Debug, Default)]
 pub struct CiConfig {
     /// How the orchestrator dispatches CI runs. Defaults to shelling
@@ -209,6 +193,22 @@ impl Repo {
             self.runs_base(),
         )
     }
+}
+
+/// Per-repo CI configuration parsed from `.quire/config.fnl`.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RepoConfig {
+    pub github: RepoGithubConfig,
+}
+
+/// Per-repo GitHub configuration.
+#[derive(serde::Deserialize, Debug, Default, Clone)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RepoGithubConfig {
+    /// Remote URL to mirror every pushed ref to.
+    /// E.g. `"https://github.com/user/repo.git"`.
+    pub mirror: Option<String>,
 }
 
 /// Application runtime context.
