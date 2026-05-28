@@ -13,7 +13,6 @@ pub enum Error {
     ConfigNotFound(String),
 
     #[error(transparent)]
-    #[diagnostic(transparent)]
     Repo(#[from] RepoNameError),
 
     #[error(transparent)]
