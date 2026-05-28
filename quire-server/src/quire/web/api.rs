@@ -39,7 +39,7 @@ pub fn router(quire: Quire) -> axum::Router {
         .with_state(quire)
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 enum ApiError {
     #[error("not found")]
     NotFound,

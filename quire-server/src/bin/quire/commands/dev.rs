@@ -78,9 +78,7 @@ impl Seeder {
         let mut db = quire::db::open(&quire.db_path())
             .into_diagnostic()
             .context("failed to open database")?;
-        quire::db::migrate(&mut db)
-            .into_diagnostic()
-            .context("failed to run migrations")?;
+        quire::db::migrate(&mut db).context("failed to run migrations")?;
 
         Ok(Self {
             quire,

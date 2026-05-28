@@ -2,7 +2,7 @@
 //!
 //! Triggered from the push event handler, independent of CI.
 
-use miette::{Diagnostic, IntoDiagnostic as _};
+use miette::Diagnostic;
 use quire_core::event::{PushEvent, PushRef};
 use thiserror::Error;
 
@@ -42,13 +42,12 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
         return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
     }
 
-    let config = quire.global_config().into_diagnostic()?;
+    let config = quire.global_config()?;
     let Some(mirror_token) = config
         .github
         .mirror_token
         .map(|s| s.reveal().map(str::to_owned))
-        .transpose()
-        .into_diagnostic()?
+        .transpose()?
     else {
         return Ok(());
     };

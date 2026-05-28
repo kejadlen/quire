@@ -51,8 +51,8 @@ fn post_receive(quire: &Quire) -> Result<()> {
         .context("hook running in unrecognized repo")?;
     ensure!(
         repo.exists(),
-        "GIT_DIR points to a non-existent repo: {}",
-        git_dir.display()
+        "GIT_DIR points to a non-existent repo: {:?}",
+        git_dir
     );
 
     // Parse pushed refs from stdin. Each line is:

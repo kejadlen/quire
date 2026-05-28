@@ -49,7 +49,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     match quire.global_config() {
         Ok(_) => {}
         Err(quire::Error::ConfigNotFound(_)) => {}
-        Err(e) => return Err(e).into_diagnostic(),
+        Err(e) => return Err(e)?,
     };
 
     let Some(_pipeline) = ci.pipeline(&commit)? else {
@@ -63,7 +63,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     let tmp = tempfile::tempdir().into_diagnostic()?;
     let db_path = tmp.path().join("quire.db");
     let mut db = quire::db::open(&db_path).into_diagnostic()?;
-    quire::db::migrate(&mut db).into_diagnostic()?;
+    quire::db::migrate(&mut db)?;
     drop(db);
     let runs = Runs::new(db_path, "local".to_string(), tmp.path().to_path_buf());
 
@@ -83,8 +83,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
     );
 
     let workspace = tmp.path().join("workspace");
-    quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)
-        .into_diagnostic()?;
+    quire::ci::materialize_workspace(&repo_path.join(".git"), &commit.sha, &workspace)?;
     let exec_result = run.execute(&repo_path.join(".git"), &workspace, None, None, None);
 
     // Print the combined quire-ci log regardless of outcome.
@@ -105,7 +104,7 @@ pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
         }
         Err(e) => {
             println!("\nRun failed.");
-            Err(e).into_diagnostic()
+            Err(e)?
         }
     }
 }

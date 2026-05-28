@@ -26,7 +26,7 @@ static MIGRATIONS: std::sync::LazyLock<Migrations<'static>> = std::sync::LazyLoc
 });
 
 /// Error from running migrations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 pub enum MigrationError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
