@@ -85,12 +85,12 @@ impl Repo {
     /// Verifies the path falls under `base` and passes name validation.
     /// Used by hooks that receive `GIT_DIR` from git.
     pub fn from_path(repos_base: &Path, path: &Path) -> Result<Self> {
-        let relative = path.strip_prefix(repos_base).map_err(|_| {
-            Error::InvalidRepoName(format!(
+        let Ok(relative) = path.strip_prefix(repos_base) else {
+            return Err(Error::InvalidRepoName(format!(
                 "path is not under repos directory: {}",
                 path.display()
-            ))
-        })?;
+            )));
+        };
         let name = relative.to_string_lossy();
         Self::validate_name(&name)?;
         Ok(Self {
