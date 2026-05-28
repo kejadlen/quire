@@ -12,8 +12,9 @@ pub enum Error {
     #[error("config not found: {0}")]
     ConfigNotFound(String),
 
-    #[error("{0}")]
-    InvalidRepoName(String),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Repo(#[from] RepoNameError),
 
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -37,6 +38,20 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, thiserror::Error, Diagnostic)]
+pub enum RepoNameError {
+    #[error("repository name cannot be empty")]
+    Empty,
+    #[error("repository name must end in .git: {0}")]
+    MissingGitSuffix(String),
+    #[error("repository name allows at most one level of grouping: {0}")]
+    TooManySegments(String),
+    #[error("path is not under repos directory: {0}")]
+    PathOutsideBase(String),
+    #[error("invalid repository name: {0}")]
+    Invalid(String),
+}
 
 impl From<FennelError> for Error {
     fn from(err: FennelError) -> Self {
