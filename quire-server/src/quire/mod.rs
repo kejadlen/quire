@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub mod web;
 
 use crate::ci::{Ci, Executor, Runs};
-use crate::{Error, Result};
+use crate::{Error, RepoNameError, Result};
 pub use quire_core::telemetry::SentryConfig;
 
 use quire_core::fennel::Fennel;
@@ -86,10 +86,7 @@ impl Repo {
     /// Used by hooks that receive `GIT_DIR` from git.
     pub fn from_path(repos_base: &Path, path: &Path) -> Result<Self> {
         let Ok(relative) = path.strip_prefix(repos_base) else {
-            return Err(Error::InvalidRepoName(format!(
-                "path is not under repos directory: {}",
-                path.display()
-            )));
+            return Err(RepoNameError::PathOutsideBase(path.display().to_string()).into());
         };
         let name = relative.to_string_lossy();
         Self::validate_name(&name)?;
@@ -99,40 +96,28 @@ impl Repo {
         })
     }
 
-    fn validate_name(name: &str) -> Result<()> {
+    fn validate_name(name: &str) -> std::result::Result<(), RepoNameError> {
         if name.is_empty() {
-            return Err(Error::InvalidRepoName(
-                "repository name cannot be empty".to_string(),
-            ));
+            return Err(RepoNameError::Empty);
         }
         if name.contains("..") {
-            return Err(Error::InvalidRepoName(format!(
-                "invalid repository name: {name}"
-            )));
+            return Err(RepoNameError::Invalid(name.to_string()));
         }
         if !name.ends_with(".git") {
-            return Err(Error::InvalidRepoName(format!(
-                "repository name must end in .git: {name}"
-            )));
+            return Err(RepoNameError::MissingGitSuffix(name.to_string()));
         }
         if name.contains("//") {
-            return Err(Error::InvalidRepoName(format!(
-                "invalid repository name: {name}"
-            )));
+            return Err(RepoNameError::Invalid(name.to_string()));
         }
 
         let segments = name.split('/').collect::<Vec<_>>();
         if segments.len() > 2 {
-            return Err(Error::InvalidRepoName(format!(
-                "repository name allows at most one level of grouping: {name}"
-            )));
+            return Err(RepoNameError::TooManySegments(name.to_string()));
         }
 
         for seg in &segments {
             if seg.is_empty() || *seg == "." || *seg == ".." || *seg == ".git" {
-                return Err(Error::InvalidRepoName(format!(
-                    "invalid repository name: {name}"
-                )));
+                return Err(RepoNameError::Invalid(name.to_string()));
             }
         }
 
@@ -170,7 +155,7 @@ impl Repo {
     /// Read and parse `.quire/config.fnl` at the given commit SHA.
     ///
     /// Returns defaults if the file does not exist at that commit.
-    pub fn repo_config(&self, sha: &str) -> AppResult<RepoConfig> {
+    pub fn repo_config(&self, sha: &str) -> Result<RepoConfig> {
         let path = format!("{sha}:.quire/config.fnl");
 
         // cat-file -e: exit 0 if the object exists, non-zero if absent.

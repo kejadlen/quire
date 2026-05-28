@@ -100,8 +100,8 @@ fn mirror_ref(
     }
 
     tracing::info!(
-        ref_name = push_ref.ref_name,
-        mirror_url,
+        ref_name = %push_ref.ref_name,
+        mirror_url = %mirror_url,
         "mirror: push succeeded"
     );
     Ok(())
