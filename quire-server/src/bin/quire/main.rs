@@ -17,9 +17,14 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Root directory for quire data (default: /var/quire).
-    #[arg(long, global = true, env = "QUIRE_BASE_DIR")]
-    base_dir: Option<String>,
+    /// Root directory for quire data.
+    #[arg(
+        long,
+        global = true,
+        env = "QUIRE_BASE_DIR",
+        default_value = "/var/quire"
+    )]
+    base_dir: String,
 
     /// Generate shell completions and exit.
     #[arg(long, value_enum)]
@@ -104,10 +109,7 @@ enum CiCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let quire = match cli.base_dir {
-        Some(ref dir) => Quire::new(dir.into()),
-        None => Quire::default(),
-    };
+    let quire = Quire::new(cli.base_dir.into());
 
     let sentry_config = quire.global_config().ok().and_then(|c| c.sentry);
     let miette_layer = MietteLayer::new()
