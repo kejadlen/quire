@@ -247,7 +247,7 @@ mod tests {
     impl TestEnv {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let quire = Quire::new(dir.path().to_path_buf());
+            let quire = Quire::load(dir.path().to_path_buf()).expect("load");
             let mut db = crate::db::open(&quire.db_path()).expect("db open");
             crate::db::migrate(&mut db).expect("migrate");
             drop(db);
