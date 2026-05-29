@@ -5,7 +5,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
-use quire::{GlobalConfig, Quire};
+use quire::Quire;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 const VERSION: &str = env!("QUIRE_VERSION");
@@ -109,9 +109,7 @@ enum CiCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let base_dir: std::path::PathBuf = cli.base_dir.into();
-    let config = GlobalConfig::load(&base_dir.join("config.fnl"))?;
-    let quire = Quire::new(base_dir, config);
+    let quire = Quire::load(cli.base_dir.into())?;
 
     let miette_layer = MietteLayer::new()
         .with_type::<quire::Error>()

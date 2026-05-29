@@ -243,7 +243,16 @@ impl Default for Quire {
 }
 
 impl Quire {
-    /// Create a `Quire` rooted at the given base directory with the given config.
+    /// Load config from `base_dir/config.fnl` and create a `Quire` rooted there.
+    ///
+    /// Returns default config if the file is absent; propagates parse errors.
+    pub fn load(base_dir: PathBuf) -> Result<Self> {
+        let config = GlobalConfig::load(&base_dir.join("config.fnl"))?;
+        Ok(Self::new(base_dir, config))
+    }
+
+    /// Create a `Quire` with an explicit config. Prefer `Quire::load` in production;
+    /// use this in tests that need direct control over config.
     pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
         Self {
             base_dir,
