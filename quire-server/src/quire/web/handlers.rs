@@ -297,7 +297,7 @@ mod tests {
     impl TestEnv {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let quire = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
+            let quire = Quire::new(dir.path().to_path_buf());
 
             // Create repos dir + a bare repo so `quire.repo("example.git")` resolves.
             let repos_dir = quire.repos_dir();
