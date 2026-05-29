@@ -67,7 +67,7 @@ impl Seeder {
         let base_dir = dir.keep();
         tracing::info!(path = %base_dir.display(), "seeded tempdir");
 
-        let quire = Quire::new(base_dir, quire::GlobalConfig::default());
+        let quire = Quire::load(base_dir)?;
 
         // Create the repos dir + a bare repo so the web view resolves the repo.
         let bare_repo = quire.repos_dir().join("example.git");

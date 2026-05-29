@@ -36,6 +36,7 @@ pub struct GlobalConfig {
     pub github: GlobalGithubConfig,
 }
 
+#[cfg(test)]
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
@@ -45,17 +46,6 @@ impl Default for GlobalConfig {
             ci: CiConfig::default(),
             github: GlobalGithubConfig::default(),
         }
-    }
-}
-
-impl GlobalConfig {
-    /// Load config from `path`. Returns `Self::default()` if the file is absent;
-    /// propagates parse errors.
-    pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        Ok(Fennel::load_config(path)?)
     }
 }
 
@@ -236,29 +226,37 @@ pub struct Quire {
     db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
 }
 
-impl Default for Quire {
-    fn default() -> Self {
-        Self::new(PathBuf::from("/var/quire"), GlobalConfig::default())
-    }
-}
-
 impl Quire {
     /// Load config from `base_dir/config.fnl` and create a `Quire` rooted there.
     ///
-    /// Returns default config if the file is absent; propagates parse errors.
+    /// Returns built-in defaults if the file is absent; propagates parse errors.
     pub fn load(base_dir: PathBuf) -> Result<Self> {
-        let config = GlobalConfig::load(&base_dir.join("config.fnl"))?;
-        Ok(Self::new(base_dir, config))
+        let config_path = base_dir.join("config.fnl");
+        let config = if config_path.exists() {
+            Fennel::load_config(&config_path)?
+        } else {
+            GlobalConfig {
+                sentry: None,
+                secrets: HashMap::new(),
+                port: default_port(),
+                ci: CiConfig::default(),
+                github: GlobalGithubConfig::default(),
+            }
+        };
+        Ok(Self::init(base_dir, config))
     }
 
-    /// Create a `Quire` with an explicit config. Prefer `Quire::load` in production;
-    /// use this in tests that need direct control over config.
-    pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
+    fn init(base_dir: PathBuf, config: GlobalConfig) -> Self {
         Self {
             base_dir,
             config,
             db_pool: Arc::new(OnceLock::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
+        Self::init(base_dir, config)
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -332,6 +330,13 @@ impl Quire {
 
         repos.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(repos.into_iter())
+    }
+}
+
+#[cfg(test)]
+impl Default for Quire {
+    fn default() -> Self {
+        Self::new(PathBuf::from("/var/quire"), GlobalConfig::default())
     }
 }
 
@@ -468,88 +473,80 @@ mod tests {
     #[test]
     fn global_config_ci_defaults() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
-        fs_err::write(&config_path, "{}").expect("write");
+        fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        assert_eq!(config.ci.executor, Executor::Process);
-        assert_eq!(config.port, 3000);
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        assert_eq!(q.config.ci.executor, Executor::Process);
+        assert_eq!(q.config.port, 3000);
     }
 
     #[test]
     fn global_config_parses_custom_port() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
-        fs_err::write(&config_path, r#"{:port 4000}"#).expect("write");
+        fs_err::write(dir.path().join("config.fnl"), r#"{:port 4000}"#).expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        assert_eq!(config.port, 4000);
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        assert_eq!(q.config.port, 4000);
     }
 
     #[test]
     fn global_config_loads_from_fennel_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
-        fs_err::write(&config_path, "{}").expect("write");
+        fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        assert!(config.secrets.is_empty());
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        assert!(q.config.secrets.is_empty());
     }
 
     #[test]
     fn global_config_missing_file_uses_defaults() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
 
-        let config = GlobalConfig::load(&config_path).expect("missing file should use defaults");
-        assert_eq!(config.port, 3000);
-        assert!(config.sentry.is_none());
-        assert!(config.secrets.is_empty());
+        let q = Quire::load(dir.path().to_path_buf()).expect("missing file should use defaults");
+        assert_eq!(q.config.port, 3000);
+        assert!(q.config.sentry.is_none());
+        assert!(q.config.secrets.is_empty());
     }
 
     #[test]
     fn global_config_loads_with_sentry() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
         fs_err::write(
-            &config_path,
+            dir.path().join("config.fnl"),
             r#"{:sentry {:dsn "https://key@sentry.io/123"}}"#,
         )
         .expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        let sentry = config.sentry.expect("sentry should be present");
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        let sentry = q.config.sentry.expect("sentry should be present");
         assert_eq!(sentry.dsn.reveal().unwrap(), "https://key@sentry.io/123");
     }
 
     #[test]
     fn global_config_sentry_is_optional() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
-        fs_err::write(&config_path, "{}").expect("write");
+        fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        assert!(config.sentry.is_none());
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        assert!(q.config.sentry.is_none());
     }
 
     #[test]
     fn global_config_secrets_default_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
-        fs_err::write(&config_path, "{}").expect("write");
+        fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        assert!(config.secrets.is_empty());
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        assert!(q.config.secrets.is_empty());
     }
 
     #[test]
     fn global_config_loads_secrets_map() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.fnl");
         let secret_file = dir.path().join("gh_token");
         fs_err::write(&secret_file, "ghp_from_file\n").expect("write secret");
         fs_err::write(
-            &config_path,
+            dir.path().join("config.fnl"),
             format!(
                 r#"{{:secrets {{:github_token {{:file "{}"}}
                    :slack_webhook "https://hooks.slack.com/abc"}}}}"#,
@@ -558,14 +555,14 @@ mod tests {
         )
         .expect("write");
 
-        let config = GlobalConfig::load(&config_path).expect("should load");
-        assert_eq!(config.secrets.len(), 2);
+        let q = Quire::load(dir.path().to_path_buf()).expect("should load");
+        assert_eq!(q.config.secrets.len(), 2);
         assert_eq!(
-            config.secrets["github_token"].reveal().unwrap(),
+            q.config.secrets["github_token"].reveal().unwrap(),
             "ghp_from_file"
         );
         assert_eq!(
-            config.secrets["slack_webhook"].reveal().unwrap(),
+            q.config.secrets["slack_webhook"].reveal().unwrap(),
             "https://hooks.slack.com/abc"
         );
     }
