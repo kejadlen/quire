@@ -154,18 +154,31 @@ impl Fennel {
     ///
     /// `name` is used in error messages — typically a filename or a synthetic
     /// label like `HEAD:.quire/config.fnl`.
+    ///
+    /// Unknown fields at any nesting depth are logged as warnings via
+    /// `tracing::warn!` but do not cause a failure.
     pub fn load_string<T>(&self, source: &str, name: &str) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
         let result = self.eval_raw(source, name, |_| Ok(()))?;
 
-        self.lua.from_value(result).map_err(|e| {
+        // Convert to a generic JSON value so serde_ignored can walk the tree
+        // and detect fields that no known struct key consumes.
+        let json_val: serde_json::Value = self.lua.from_value(result).map_err(|e| {
             let message = format!("{name}: {e}");
             FennelError::TypeMismatch {
                 message,
                 source: Box::new(e),
             }
+        })?;
+
+        serde_ignored::deserialize(&json_val, |path| {
+            tracing::warn!(config = %name, field = %path, "unknown config field ignored");
+        })
+        .map_err(|e| FennelError::TypeMismatch {
+            message: format!("{name}: {e}"),
+            source: Box::new(mlua::Error::external(e)),
         })
     }
 
@@ -411,6 +424,28 @@ mod tests {
             message.len() > "types.fnl: ".len(),
             "message should include the deser error detail, got {message:?}"
         );
+    }
+
+    #[test]
+    fn load_string_warns_on_unknown_top_level_field() {
+        // tracing::warn! fires but we verify it doesn't cause an error.
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_string(
+            r#"{:mirror {:url "https://github.com/owner/repo.git"} :oops 1}"#,
+            "warn.fnl",
+        );
+        // Unknown field must not be an error.
+        assert!(result.is_ok(), "unexpected error: {:?}", result.err());
+    }
+
+    #[test]
+    fn load_string_warns_on_unknown_nested_field() {
+        let f = fennel();
+        let result: Result<MirrorConfig, _> = f.load_string(
+            r#"{:mirror {:url "https://github.com/owner/repo.git" :extra "hi"}}"#,
+            "warn-nested.fnl",
+        );
+        assert!(result.is_ok(), "unexpected error: {:?}", result.err());
     }
 
     #[test]
