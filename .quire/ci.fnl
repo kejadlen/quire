@@ -3,13 +3,13 @@
 
 ; (job :test [:quire/push] (fn [{: sh}] (sh [:cargo :test])))
 
-(job :mirror [:quire/push]
-     (fn [{: jobs : secret}]
-       (let [push (jobs :quire/push)]
-         (when (= push.ref :refs/heads/main)
-           (mirror {:url "https://github.com/kejadlen/quire.git"
-                    :auth-header (secret :github_auth_header)
-                    :sha push.sha
-                    :tag (.. :v (os.date "!%Y-%m-%d") "-" (push.sha:sub 1 8))
-                    :git-dir push.git-dir
-                    :refs [:refs/heads/main]})))))
+; (job :mirror [:quire/push]
+;      (fn [{: jobs : secret}]
+;        (let [push (jobs :quire/push)]
+;          (when (= push.ref :refs/heads/main)
+;            (mirror {:url "https://github.com/kejadlen/quire.git"
+;                     :auth-header (secret :github_auth_header)
+;                     :sha push.sha
+;                     :tag (.. :v (os.date "!%Y-%m-%d") "-" (push.sha:sub 1 8))
+;                     :git-dir push.git-dir
+;                     :refs [:refs/heads/main]})))))
