@@ -48,7 +48,7 @@ enum ApiError {
     #[error("gone")]
     Gone,
     #[error("internal error")]
-    Internal,
+    Internal(#[from] tokio::task::JoinError),
     #[error(transparent)]
     Db(rusqlite::Error),
     #[error(transparent)]
@@ -125,11 +125,7 @@ async fn verify_run_token(
             Err(e) => Err(ApiError::Db(e)),
         }
     })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = ?e, "spawn_blocking task panicked in verify_run_token");
-        Err(ApiError::Internal)
-    })?;
+    .await??;
 
     let mut req = axum::extract::Request::from_parts(parts, body);
     req.extensions_mut().insert(run_id);
@@ -200,11 +196,7 @@ async fn get_bootstrap(
                 traceparent: row.traceparent,
             })
         })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = ?e, "spawn_blocking task panicked in get_bootstrap");
-            Err(ApiError::Internal)
-        })?;
+        .await??;
 
     Ok(axum::Json(bootstrap))
 }
@@ -232,11 +224,7 @@ async fn get_secret(
             .reveal()?
             .to_string())
     })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = ?e, "spawn_blocking task panicked in get_secret");
-        Err(ApiError::Internal)
-    })?;
+    .await??;
 
     Ok(axum::Json(serde_json::json!({ "value": value })))
 }
