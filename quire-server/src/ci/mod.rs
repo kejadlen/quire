@@ -299,7 +299,7 @@ mod tests {
             ],
         );
 
-        let quire = Quire::new(dir.path().to_path_buf());
+        let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // Initialize the database.
         let mut db = crate::db::open(&quire.db_path()).expect("init db");
         crate::db::migrate(&mut db).expect("migrate db");
@@ -325,7 +325,7 @@ mod tests {
             ],
         );
 
-        let quire = Quire::new(dir.path().to_path_buf());
+        let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         let mut db = crate::db::open(&quire.db_path()).expect("init db");
         crate::db::migrate(&mut db).expect("migrate db");
         drop(db);
@@ -617,7 +617,7 @@ exit 0
     #[test]
     fn trigger_skips_nonexistent_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let quire = Quire::new(dir.path().to_path_buf());
+        let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         let event = push_event("no-such.git", "abc123");
         // Should not panic — just logs and returns.
         trigger(&quire, &event);
@@ -626,7 +626,7 @@ exit 0
     #[test]
     fn trigger_skips_repo_not_on_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let quire = Quire::new(dir.path().to_path_buf());
+        let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // repo name is valid but directory doesn't exist.
         let event = push_event("missing.git", "abc123");
         trigger(&quire, &event);
@@ -635,7 +635,7 @@ exit 0
     #[test]
     fn trigger_skips_invalid_repo_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let quire = Quire::new(dir.path().to_path_buf());
+        let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // Repo name with path traversal — quire.repo() returns Err.
         let event = push_event("../evil.git", "abc123");
         trigger(&quire, &event);

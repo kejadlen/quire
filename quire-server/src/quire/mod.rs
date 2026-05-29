@@ -246,15 +246,6 @@ impl Quire {
         })
     }
 
-    #[cfg(test)]
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self {
-            base_dir,
-            config: GlobalConfig::default(),
-            db_pool: Arc::new(OnceLock::new()),
-        }
-    }
-
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
@@ -332,7 +323,11 @@ impl Quire {
 #[cfg(test)]
 impl Default for Quire {
     fn default() -> Self {
-        Self::new(PathBuf::from("/var/quire"))
+        Self {
+            base_dir: PathBuf::from("/var/quire"),
+            config: GlobalConfig::default(),
+            db_pool: Arc::new(OnceLock::new()),
+        }
     }
 }
 
@@ -370,7 +365,7 @@ mod tests {
     #[test]
     fn repos_lists_bare_repos() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let repos_dir = q.repos_dir();
 
         // Create two bare repos.
@@ -389,7 +384,7 @@ mod tests {
     #[test]
     fn repos_empty_when_no_dirs() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let repos: Vec<_> = q.repos().expect("repos").collect();
         assert!(repos.is_empty());
     }
@@ -444,7 +439,7 @@ mod tests {
     #[test]
     fn repo_from_path_valid() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let path = dir.path().join("repos").join("foo.git");
         let repo = q.repo_from_path(&path).expect("should resolve");
         assert_eq!(repo.path(), path);
@@ -453,7 +448,7 @@ mod tests {
     #[test]
     fn repo_from_path_outside_repos() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let path = PathBuf::from("/tmp/evil.git");
         assert!(q.repo_from_path(&path).is_err());
     }
@@ -461,7 +456,7 @@ mod tests {
     #[test]
     fn repo_from_path_rejects_bad_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let path = dir.path().join("repos").join("foo"); // missing .git
         assert!(q.repo_from_path(&path).is_err());
     }
