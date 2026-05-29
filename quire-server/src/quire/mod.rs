@@ -235,6 +235,7 @@ impl Quire {
         let config = if config_path.exists() {
             Fennel::load_config(&config_path)?
         } else {
+            tracing::warn!(path = %config_path.display(), "config file not found, using defaults");
             GlobalConfig {
                 sentry: None,
                 secrets: HashMap::new(),
