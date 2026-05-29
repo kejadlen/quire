@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use miette::{Diagnostic, NamedSource, SourceOffset};
-use mlua::{Lua, LuaSerdeExt};
+use mlua::Lua;
 use thiserror::Error;
 
 const FENNEL_LUA: &str = include_str!("../vendor/fennel.lua");
@@ -163,22 +163,14 @@ impl Fennel {
     {
         let result = self.eval_raw(source, name, |_| Ok(()))?;
 
-        // Convert to a generic JSON value so serde_ignored can walk the tree
-        // and detect fields that no known struct key consumes.
-        let json_val: serde_json::Value = self.lua.from_value(result).map_err(|e| {
-            let message = format!("{name}: {e}");
-            FennelError::TypeMismatch {
-                message,
-                source: Box::new(e),
-            }
-        })?;
+        let de = mlua::serde::Deserializer::new(result);
 
-        serde_ignored::deserialize(&json_val, |path| {
+        serde_ignored::deserialize(de, |path| {
             tracing::warn!(config = %name, field = %path, "unknown config field ignored");
         })
         .map_err(|e| FennelError::TypeMismatch {
             message: format!("{name}: {e}"),
-            source: Box::new(mlua::Error::external(e)),
+            source: Box::new(e),
         })
     }
 
