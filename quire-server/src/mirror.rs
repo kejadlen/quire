@@ -42,10 +42,11 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
         return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
     }
 
-    let config = quire.global_config()?;
+    let config = quire.global_config();
     let Some(mirror_token) = config
         .github
         .mirror_token
+        .as_ref()
         .map(|s| s.reveal().map(str::to_owned))
         .transpose()?
     else {

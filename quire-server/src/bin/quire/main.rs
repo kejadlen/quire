@@ -5,7 +5,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
-use quire::Quire;
+use quire::{GlobalConfig, Quire};
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 const VERSION: &str = env!("QUIRE_VERSION");
@@ -109,9 +109,10 @@ enum CiCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let quire = Quire::new(cli.base_dir.into());
+    let base_dir: std::path::PathBuf = cli.base_dir.into();
+    let config = GlobalConfig::load(&base_dir.join("config.fnl"))?;
+    let quire = Quire::new(base_dir, config);
 
-    let sentry_config = quire.global_config().ok().and_then(|c| c.sentry);
     let miette_layer = MietteLayer::new()
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
@@ -119,7 +120,7 @@ async fn main() -> Result<()> {
     let _guard = telemetry::init_telemetry(
         miette_layer,
         FmtMode::AutoJson,
-        sentry_config.as_ref(),
+        quire.global_config().sentry.as_ref(),
         VERSION,
     )?;
 
@@ -166,7 +167,7 @@ async fn main() -> Result<()> {
         },
         Commands::Ci { command } => match command {
             CiCommands::Validate { sha } => commands::ci::validate(sha.as_deref()).await?,
-            CiCommands::Run { sha } => commands::ci::run(&quire, sha.as_deref()).await?,
+            CiCommands::Run { sha } => commands::ci::run(sha.as_deref()).await?,
         },
     }
 

@@ -216,13 +216,14 @@ async fn get_secret(
     AxumPath(SecretPath { name }): AxumPath<SecretPath>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
-        let config = quire.global_config()?;
-        Ok(config
+        quire
+            .global_config()
             .secrets
             .get(&name)
             .ok_or(ApiError::NotFound)?
-            .reveal()?
-            .to_string())
+            .reveal()
+            .map(|s| s.to_string())
+            .map_err(ApiError::Secret)
     })
     .await
     .expect("blocking task panicked")?;
@@ -246,12 +247,15 @@ mod tests {
 
     impl TestEnv {
         fn new() -> Self {
+            Self::with_config(crate::quire::GlobalConfig::default())
+        }
+
+        fn with_config(config: crate::quire::GlobalConfig) -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let quire = Quire::new(dir.path().to_path_buf());
+            let quire = Quire::new(dir.path().to_path_buf(), config);
             let mut db = crate::db::open(&quire.db_path()).expect("db open");
             crate::db::migrate(&mut db).expect("migrate");
             drop(db);
-            fs_err::write(quire.config_path(), "{}").expect("write config");
             Self { _dir: dir, quire }
         }
 
@@ -366,12 +370,14 @@ mod tests {
 
     #[tokio::test]
     async fn secret_returns_plaintext_value() {
-        let env = TestEnv::new();
-        fs_err::write(
-            env.quire.config_path(),
-            r#"{:secrets {:my_token "hunter2"}}"#,
-        )
-        .expect("write config");
+        let config = {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let config_path = dir.path().join("config.fnl");
+            fs_err::write(&config_path, r#"{:secrets {:my_token "hunter2"}}"#)
+                .expect("write config");
+            crate::quire::GlobalConfig::load(&config_path).expect("load config")
+        };
+        let env = TestEnv::with_config(config);
         let session = ApiSession::new(3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&session))

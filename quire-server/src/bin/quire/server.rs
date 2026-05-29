@@ -28,8 +28,7 @@ async fn index() -> String {
 }
 
 pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Router) -> Result<()> {
-    let config = quire.global_config()?;
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], quire.global_config().port));
 
     // Set up event socket.
     let socket_path = quire.socket_path();

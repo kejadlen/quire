@@ -286,7 +286,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::Quire;
+    use crate::{GlobalConfig, Quire};
 
     /// Build a test axum Router with the CI routes, backed by a tempdir.
     struct TestEnv {
@@ -297,7 +297,7 @@ mod tests {
     impl TestEnv {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let quire = Quire::new(dir.path().to_path_buf());
+            let quire = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
 
             // Create repos dir + a bare repo so `quire.repo("example.git")` resolves.
             let repos_dir = quire.repos_dir();
