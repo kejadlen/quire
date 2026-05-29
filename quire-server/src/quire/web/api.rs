@@ -246,12 +246,18 @@ mod tests {
 
     impl TestEnv {
         fn new() -> Self {
-            Self::with_config(crate::quire::GlobalConfig::default())
+            let dir = tempfile::tempdir().expect("tempdir");
+            let quire = Quire::new(dir.path().to_path_buf());
+            let mut db = crate::db::open(&quire.db_path()).expect("db open");
+            crate::db::migrate(&mut db).expect("migrate");
+            drop(db);
+            Self { _dir: dir, quire }
         }
 
-        fn with_config(config: crate::quire::GlobalConfig) -> Self {
+        fn with_config_fnl(content: &str) -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
-            let quire = Quire::new(dir.path().to_path_buf(), config);
+            fs_err::write(dir.path().join("config.fnl"), content).expect("write config");
+            let quire = crate::Quire::load(dir.path().to_path_buf()).expect("load config");
             let mut db = crate::db::open(&quire.db_path()).expect("db open");
             crate::db::migrate(&mut db).expect("migrate");
             drop(db);
@@ -369,18 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn secret_returns_plaintext_value() {
-        let config = {
-            let dir = tempfile::tempdir().expect("tempdir");
-            fs_err::write(
-                dir.path().join("config.fnl"),
-                r#"{:secrets {:my_token "hunter2"}}"#,
-            )
-            .expect("write config");
-            crate::Quire::load(dir.path().to_path_buf())
-                .expect("load config")
-                .config
-        };
-        let env = TestEnv::with_config(config);
+        let env = TestEnv::with_config_fnl(r#"{:secrets {:my_token "hunter2"}}"#);
         let session = ApiSession::new(3000);
         env.runs()
             .create(&TestEnv::meta(), Some(&session))
