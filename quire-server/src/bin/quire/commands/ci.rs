@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
-use quire::Quire;
 use quire::ci::{Ci, CommitRef, RunMeta, Runs};
 
 /// Validate a repo's ci.fnl without executing any jobs.
@@ -40,17 +39,10 @@ pub async fn validate(maybe_sha: Option<&str>) -> Result<()> {
 /// default), creates a transient Run rooted at a tempdir, dispatches
 /// to `quire-ci` via `execute`, and prints the combined
 /// log to stdout. The tempdir is removed when the command exits.
-pub async fn run(quire: &Quire, maybe_sha: Option<&str>) -> Result<()> {
+pub async fn run(maybe_sha: Option<&str>) -> Result<()> {
     let repo_path = discover_repo()?;
     let commit = resolve_commit(maybe_sha)?;
     let ci = Ci::new(repo_path.clone());
-
-    // Ensure the global config is valid; absence is fine for local testing.
-    match quire.global_config() {
-        Ok(_) => {}
-        Err(quire::Error::ConfigNotFound(_)) => {}
-        Err(e) => return Err(e)?,
-    };
 
     let Some(_pipeline) = ci.pipeline(&commit)? else {
         println!("No ci.fnl found at {}.", commit.display);

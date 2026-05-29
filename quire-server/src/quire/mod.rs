@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub mod web;
 
 use crate::ci::{Ci, Executor, Runs};
-use crate::{Error, RepoNameError, Result};
+use crate::{RepoNameError, Result};
 pub use quire_core::telemetry::SentryConfig;
 
 use quire_core::fennel::Fennel;
@@ -34,6 +34,29 @@ pub struct GlobalConfig {
     /// GitHub integration settings.
     #[serde(default)]
     pub github: GlobalGithubConfig,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            sentry: None,
+            secrets: HashMap::new(),
+            port: default_port(),
+            ci: CiConfig::default(),
+            github: GlobalGithubConfig::default(),
+        }
+    }
+}
+
+impl GlobalConfig {
+    /// Load config from `path`. Returns `Self::default()` if the file is absent;
+    /// propagates parse errors.
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        Ok(Fennel::load_config(path)?)
+    }
 }
 
 /// Global GitHub integration configuration.
@@ -209,20 +232,22 @@ pub struct RepoGithubConfig {
 #[derive(Clone)]
 pub struct Quire {
     base_dir: PathBuf,
+    config: Arc<GlobalConfig>,
     db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
 }
 
 impl Default for Quire {
     fn default() -> Self {
-        Self::new(PathBuf::from("/var/quire"))
+        Self::new(PathBuf::from("/var/quire"), GlobalConfig::default())
     }
 }
 
 impl Quire {
-    /// Create a `Quire` rooted at the given base directory.
-    pub fn new(base_dir: PathBuf) -> Self {
+    /// Create a `Quire` rooted at the given base directory with the given config.
+    pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
         Self {
             base_dir,
+            config: Arc::new(config),
             db_pool: Arc::new(OnceLock::new()),
         }
     }
@@ -258,16 +283,9 @@ impl Quire {
         })
     }
 
-    /// Load and parse the global Fennel config file.
-    ///
-    /// Re-reads on every call. Cheap at current call volume; revisit if
-    /// `quire serve` ends up loading per-request.
-    pub fn global_config(&self) -> Result<GlobalConfig> {
-        let config_path = self.config_path();
-        if !config_path.exists() {
-            return Err(Error::ConfigNotFound(config_path.display().to_string()));
-        }
-        Ok(Fennel::load_config(&config_path)?)
+    /// Return the global configuration loaded at launch.
+    pub fn global_config(&self) -> &GlobalConfig {
+        &self.config
     }
 
     /// Validate a repository name and return its resolved path.
@@ -347,7 +365,7 @@ mod tests {
     #[test]
     fn repos_lists_bare_repos() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
         let repos_dir = q.repos_dir();
 
         // Create two bare repos.
@@ -366,7 +384,7 @@ mod tests {
     #[test]
     fn repos_empty_when_no_dirs() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
         let repos: Vec<_> = q.repos().expect("repos").collect();
         assert!(repos.is_empty());
     }
@@ -421,7 +439,7 @@ mod tests {
     #[test]
     fn repo_from_path_valid() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
         let path = dir.path().join("repos").join("foo.git");
         let repo = q.repo_from_path(&path).expect("should resolve");
         assert_eq!(repo.path(), path);
@@ -430,7 +448,7 @@ mod tests {
     #[test]
     fn repo_from_path_outside_repos() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
         let path = PathBuf::from("/tmp/evil.git");
         assert!(q.repo_from_path(&path).is_err());
     }
@@ -438,7 +456,7 @@ mod tests {
     #[test]
     fn repo_from_path_rejects_bad_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let q = Quire::new(dir.path().to_path_buf());
+        let q = Quire::new(dir.path().to_path_buf(), GlobalConfig::default());
         let path = dir.path().join("repos").join("foo"); // missing .git
         assert!(q.repo_from_path(&path).is_err());
     }
@@ -449,8 +467,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         assert_eq!(config.ci.executor, Executor::Process);
         assert_eq!(config.port, 3000);
     }
@@ -461,8 +478,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, r#"{:port 4000}"#).expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         assert_eq!(config.port, 4000);
     }
 
@@ -472,21 +488,19 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         assert!(config.secrets.is_empty());
     }
 
     #[test]
-    fn global_config_missing_file_errors() {
+    fn global_config_missing_file_uses_defaults() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.fnl");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let err = q.global_config().unwrap_err();
-        assert!(
-            matches!(err, Error::ConfigNotFound(_)),
-            "expected ConfigNotFound, got {err:?}"
-        );
+        let config = GlobalConfig::load(&config_path).expect("missing file should use defaults");
+        assert_eq!(config.port, 3000);
+        assert!(config.sentry.is_none());
+        assert!(config.secrets.is_empty());
     }
 
     #[test]
@@ -499,8 +513,7 @@ mod tests {
         )
         .expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         let sentry = config.sentry.expect("sentry should be present");
         assert_eq!(sentry.dsn.reveal().unwrap(), "https://key@sentry.io/123");
     }
@@ -511,8 +524,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         assert!(config.sentry.is_none());
     }
 
@@ -522,8 +534,7 @@ mod tests {
         let config_path = dir.path().join("config.fnl");
         fs_err::write(&config_path, "{}").expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         assert!(config.secrets.is_empty());
     }
 
@@ -543,8 +554,7 @@ mod tests {
         )
         .expect("write");
 
-        let q = Quire::new(dir.path().to_path_buf());
-        let config = q.global_config().expect("global_config should load");
+        let config = GlobalConfig::load(&config_path).expect("should load");
         assert_eq!(config.secrets.len(), 2);
         assert_eq!(
             config.secrets["github_token"].reveal().unwrap(),

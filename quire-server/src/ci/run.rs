@@ -567,7 +567,10 @@ mod tests {
 
     fn tmp_quire() -> (tempfile::TempDir, Quire) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let quire = Quire::new(dir.path().to_path_buf());
+        let quire = Quire::new(
+            dir.path().to_path_buf(),
+            crate::quire::GlobalConfig::default(),
+        );
         // Initialize the database.
         let mut db = crate::db::open(&quire.db_path()).expect("init db");
         crate::db::migrate(&mut db).expect("migrate db");

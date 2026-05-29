@@ -7,7 +7,8 @@ loaded via the embedding described in [`fennel.md`](fennel.md).
 ## Global config
 
 Lives at `/var/quire/config.fnl` on the bind-mounted volume.
-Operator-created. Re-read on every call (no caching today).
+Operator-created. Read once at launch; a server restart is required to
+pick up changes.
 
 | Key                  | Type           | Required | Purpose                                                  |
 |----------------------|----------------|----------|----------------------------------------------------------|
@@ -28,8 +29,9 @@ With Sentry, secrets, and the token sourced from a Docker secret:
  :secrets {:github_token {:file "/run/secrets/github_token"}}}
 ```
 
-A missing file is a typed error (`Error::ConfigNotFound`). A malformed
-file surfaces as a Fennel parse or eval error with source labels.
+A missing file causes all settings to use their defaults. A malformed
+file surfaces as a Fennel parse or eval error at startup and prevents
+the server from starting.
 
 ## Per-repo config
 
