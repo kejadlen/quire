@@ -198,29 +198,36 @@ impl Fennel {
     ///
     /// Convenience wrapper for callers that only need a one-shot config load
     /// and don't need to reuse the VM. Warns via `tracing::warn!` for any
-    /// unknown fields.
+    /// unknown fields (all in a single message).
     pub fn load_config<T>(path: &Path) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
         let name = path.display().to_string();
-        Self::new()?.load_file(path, |path| {
-            tracing::warn!(config = %name, field = %path, "unknown config field ignored");
-        })
+        let mut unknown = Vec::new();
+        let result = Self::new()?.load_file(path, |path| unknown.push(path.to_string()))?;
+        if !unknown.is_empty() {
+            tracing::warn!(config = %name, fields = ?unknown, "unknown config fields ignored");
+        }
+        Ok(result)
     }
 
     /// Create a fresh Fennel VM and parse `source` into `T`.
     ///
     /// Like [`load_config`] but reads from a string rather than a file.
     /// `name` is used in error messages (e.g. `".quire/config.fnl"`).
-    /// Warns via `tracing::warn!` for any unknown fields.
+    /// Warns via `tracing::warn!` for any unknown fields (all in a single message).
     pub fn load_config_str<T>(source: &str, name: &str) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
-        Self::new()?.load_string(source, name, |path| {
-            tracing::warn!(config = %name, field = %path, "unknown config field ignored");
-        })
+        let mut unknown = Vec::new();
+        let result =
+            Self::new()?.load_string(source, name, |path| unknown.push(path.to_string()))?;
+        if !unknown.is_empty() {
+            tracing::warn!(config = %name, fields = ?unknown, "unknown config fields ignored");
+        }
+        Ok(result)
     }
 }
 
