@@ -54,7 +54,10 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
     tracing::info!(path = %db_path.display(), "opening database");
     let mut db = quire::db::open(&db_path).into_diagnostic()?;
     if let Err(e) = quire::db::migrate(&mut db) {
-        tracing::error!(error = &e as &(dyn std::error::Error + 'static), "migration failed");
+        tracing::error!(
+            error = &e as &(dyn std::error::Error + 'static),
+            "migration failed"
+        );
         return Err(e.into());
     }
     drop(db);
