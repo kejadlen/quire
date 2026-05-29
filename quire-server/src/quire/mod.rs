@@ -8,7 +8,7 @@ use crate::ci::{Ci, Executor, Runs};
 use crate::{RepoNameError, Result};
 pub use quire_core::telemetry::SentryConfig;
 
-use quire_core::fennel::Fennel;
+use quire_core::fennel::{Fennel, FennelError};
 use quire_core::secret::SecretString;
 
 /// Parsed global configuration (`/var/quire/config.fnl`).
@@ -231,26 +231,28 @@ impl Quire {
     /// Returns built-in defaults if the file is absent; propagates parse errors.
     pub fn load(base_dir: PathBuf) -> Result<Self> {
         let config_path = base_dir.join("config.fnl");
-        let config = if config_path.exists() {
-            Fennel::load_config(&config_path)?
-        } else {
-            tracing::warn!(path = %config_path.display(), "config file not found, using defaults");
-            GlobalConfig::default()
+        let config = match Fennel::load_config::<GlobalConfig>(&config_path) {
+            Ok(config) => config,
+            Err(FennelError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(path = %config_path.display(), "config file not found, using defaults");
+                GlobalConfig::default()
+            }
+            Err(e) => return Err(e.into()),
         };
-        Ok(Self::init(base_dir, config))
+        Ok(Self {
+            base_dir,
+            config,
+            db_pool: Arc::new(OnceLock::new()),
+        })
     }
 
-    fn init(base_dir: PathBuf, config: GlobalConfig) -> Self {
+    #[cfg(test)]
+    pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
         Self {
             base_dir,
             config,
             db_pool: Arc::new(OnceLock::new()),
         }
-    }
-
-    #[cfg(test)]
-    pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
-        Self::init(base_dir, config)
     }
 
     pub fn base_dir(&self) -> &Path {
