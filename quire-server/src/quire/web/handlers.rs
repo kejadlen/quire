@@ -286,7 +286,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::{GlobalConfig, Quire};
+    use crate::Quire;
 
     /// Build a test axum Router with the CI routes, backed by a tempdir.
     struct TestEnv {

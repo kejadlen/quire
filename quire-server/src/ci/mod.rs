@@ -254,7 +254,6 @@ mod tests {
     use super::*;
     use crate::Quire;
     use crate::event::PushRef;
-    use crate::quire::GlobalConfig;
     use std::path::Path;
 
     fn git_in(cwd: &Path, args: &[&str]) {
