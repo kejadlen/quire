@@ -203,13 +203,8 @@ impl Fennel {
     where
         T: serde::de::DeserializeOwned,
     {
-        let name = path.display().to_string();
-        let mut unknown = Vec::new();
-        let result = Self::new()?.load_file(path, |path| unknown.push(path.to_string()))?;
-        if !unknown.is_empty() {
-            tracing::warn!(config = %name, fields = ?unknown, "unknown config fields ignored");
-        }
-        Ok(result)
+        let source = fs_err::read_to_string(path)?;
+        Self::load_config_str(&source, &path.display().to_string())
     }
 
     /// Create a fresh Fennel VM and parse `source` into `T`.
