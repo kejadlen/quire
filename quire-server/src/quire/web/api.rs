@@ -371,10 +371,14 @@ mod tests {
     async fn secret_returns_plaintext_value() {
         let config = {
             let dir = tempfile::tempdir().expect("tempdir");
-            let config_path = dir.path().join("config.fnl");
-            fs_err::write(&config_path, r#"{:secrets {:my_token "hunter2"}}"#)
-                .expect("write config");
-            crate::quire::GlobalConfig::load(&config_path).expect("load config")
+            fs_err::write(
+                dir.path().join("config.fnl"),
+                r#"{:secrets {:my_token "hunter2"}}"#,
+            )
+            .expect("write config");
+            crate::Quire::load(dir.path().to_path_buf())
+                .expect("load config")
+                .config
         };
         let env = TestEnv::with_config(config);
         let session = ApiSession::new(3000);
