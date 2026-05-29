@@ -86,7 +86,13 @@ fn mirror_ref(
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
         .env(
             "GIT_CONFIG_VALUE_0",
-            format!("Authorization: Bearer {token}"),
+            format!(
+                "Authorization: Basic {}",
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    format!("x-access-token:{token}"),
+                )
+            ),
         )
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
