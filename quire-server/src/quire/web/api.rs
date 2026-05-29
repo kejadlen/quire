@@ -217,7 +217,7 @@ async fn get_secret(
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         Ok(quire
-            .global_config()
+            .config
             .secrets
             .get(&name)
             .ok_or(ApiError::NotFound)?

@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
     let _guard = telemetry::init_telemetry(
         miette_layer,
         FmtMode::AutoJson,
-        quire.global_config().sentry.as_ref(),
+        quire.config.sentry.as_ref(),
         VERSION,
     )?;
 

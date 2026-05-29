@@ -127,7 +127,7 @@ pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
         }
     };
 
-    let config = quire.global_config();
+    let config = &quire.config;
 
     let sentry_dsn = config.sentry.as_ref().and_then(|s| match s.dsn.reveal() {
         Ok(dsn) => Some(dsn.to_string()),
