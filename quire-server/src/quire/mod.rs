@@ -232,7 +232,7 @@ pub struct RepoGithubConfig {
 #[derive(Clone)]
 pub struct Quire {
     base_dir: PathBuf,
-    config: GlobalConfig,
+    pub config: GlobalConfig,
     db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
 }
 
@@ -290,11 +290,6 @@ impl Quire {
             let conn = crate::db::open(&self.db_path()).expect("failed to open database");
             Mutex::new(conn)
         })
-    }
-
-    /// Return the global configuration loaded at launch.
-    pub fn global_config(&self) -> &GlobalConfig {
-        &self.config
     }
 
     /// Validate a repository name and return its resolved path.
