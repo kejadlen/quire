@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
     let miette_layer = MietteLayer::new()
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
+        .with_type::<quire::db::MigrationError>()
         .with_type::<quire_core::fennel::FennelError>();
     let _guard = telemetry::init_telemetry(
         miette_layer,
