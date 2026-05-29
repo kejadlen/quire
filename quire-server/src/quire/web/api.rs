@@ -216,14 +216,13 @@ async fn get_secret(
     AxumPath(SecretPath { name }): AxumPath<SecretPath>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
-        quire
+        Ok(quire
             .global_config()
             .secrets
             .get(&name)
             .ok_or(ApiError::NotFound)?
-            .reveal()
-            .map(|s| s.to_string())
-            .map_err(ApiError::Secret)
+            .reveal()?
+            .to_string())
     })
     .await
     .expect("blocking task panicked")?;
