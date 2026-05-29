@@ -36,7 +36,6 @@ pub struct GlobalConfig {
     pub github: GlobalGithubConfig,
 }
 
-#[cfg(test)]
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
@@ -236,13 +235,7 @@ impl Quire {
             Fennel::load_config(&config_path)?
         } else {
             tracing::warn!(path = %config_path.display(), "config file not found, using defaults");
-            GlobalConfig {
-                sentry: None,
-                secrets: HashMap::new(),
-                port: default_port(),
-                ci: CiConfig::default(),
-                github: GlobalGithubConfig::default(),
-            }
+            GlobalConfig::default()
         };
         Ok(Self::init(base_dir, config))
     }
