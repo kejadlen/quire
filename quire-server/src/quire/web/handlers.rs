@@ -322,8 +322,7 @@ mod tests {
             dispatched: Option<i64>,
             resolved: Option<i64>,
         ) {
-            let pool = self.quire.db_pool();
-            let db = pool.lock().expect("lock");
+            let db = self.quire.db_pool();
             db.execute(
                 "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
                                   created_at, dispatched_at, resolved_at, outcome)
@@ -342,8 +341,7 @@ mod tests {
             started: Option<i64>,
             finished: Option<i64>,
         ) {
-            let pool = self.quire.db_pool();
-            let db = pool.lock().expect("lock");
+            let db = self.quire.db_pool();
             db.execute(
                 "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

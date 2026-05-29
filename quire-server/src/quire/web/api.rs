@@ -113,7 +113,7 @@ async fn verify_run_token(
     let token = bearer.token().to_string();
 
     let run_id = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
-        let db = quire.db_pool().lock().expect("db mutex poisoned");
+        let db = quire.db_pool();
         let result: rusqlite::Result<String> = db.query_row(
             "SELECT id FROM runs WHERE run_token = ?1",
             rusqlite::params![token],

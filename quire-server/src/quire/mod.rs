@@ -270,11 +270,12 @@ impl Quire {
     ///
     /// Lazily initialises the connection on first call. Once open, the
     /// same connection is reused for all subsequent requests.
-    pub fn db_pool(&self) -> &Mutex<rusqlite::Connection> {
-        self.db_pool.get_or_init(|| {
+    pub fn db_pool(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        let mutex = self.db_pool.get_or_init(|| {
             let conn = crate::db::open(&self.db_path()).expect("failed to open database");
             Mutex::new(conn)
-        })
+        });
+        mutex.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Validate a repository name and return its resolved path.
