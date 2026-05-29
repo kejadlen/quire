@@ -496,7 +496,7 @@ mod tests {
 
         let fennel = Fennel::new().expect("fennel");
         let config: Config = fennel
-            .load_string(r#"{:token "hunter2"}"#, "test.fnl")
+            .load_string(r#"{:token "hunter2"}"#, "test.fnl", |_| {})
             .expect("deserialize from fennel");
         assert_eq!(config.token.reveal().unwrap(), "hunter2");
     }
@@ -516,7 +516,7 @@ mod tests {
         // Fennel table syntax: {:token {:file "/path"}}
         let source = format!("{{:token {{:file \"{}\"}}}}", path.display(),);
         let config: Config = fennel
-            .load_string(&source, "test.fnl")
+            .load_string(&source, "test.fnl", |_| {})
             .expect("deserialize file ref from fennel");
         assert_eq!(config.token.reveal().unwrap(), "secret_from_file");
     }
