@@ -47,6 +47,8 @@ enum ApiError {
     Unauthorized,
     #[error("gone")]
     Gone,
+    #[error("internal error")]
+    Internal,
     #[error(transparent)]
     Db(rusqlite::Error),
     #[error(transparent)]
@@ -124,7 +126,10 @@ async fn verify_run_token(
         }
     })
     .await
-    .expect("blocking task panicked")?;
+    .unwrap_or_else(|e| {
+        tracing::error!(error = ?e, "spawn_blocking task panicked in verify_run_token");
+        Err(ApiError::Internal)
+    })?;
 
     let mut req = axum::extract::Request::from_parts(parts, body);
     req.extensions_mut().insert(run_id);
@@ -196,7 +201,10 @@ async fn get_bootstrap(
             })
         })
         .await
-        .expect("blocking task panicked")?;
+        .unwrap_or_else(|e| {
+            tracing::error!(error = ?e, "spawn_blocking task panicked in get_bootstrap");
+            Err(ApiError::Internal)
+        })?;
 
     Ok(axum::Json(bootstrap))
 }
@@ -225,7 +233,10 @@ async fn get_secret(
             .to_string())
     })
     .await
-    .expect("blocking task panicked")?;
+    .unwrap_or_else(|e| {
+        tracing::error!(error = ?e, "spawn_blocking task panicked in get_secret");
+        Err(ApiError::Internal)
+    })?;
 
     Ok(axum::Json(serde_json::json!({ "value": value })))
 }
