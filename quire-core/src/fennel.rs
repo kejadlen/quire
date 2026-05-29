@@ -155,9 +155,14 @@ impl Fennel {
     /// `name` is used in error messages — typically a filename or a synthetic
     /// label like `HEAD:.quire/config.fnl`.
     ///
-    /// Unknown fields at any nesting depth are logged as warnings via
-    /// `tracing::warn!` but do not cause a failure.
-    pub fn load_string<T>(&self, source: &str, name: &str) -> Result<T, FennelError>
+    /// `on_unknown` is called for every field key present in the Fennel value
+    /// but not consumed by `T` at any nesting depth. Pass `|_| {}` to ignore.
+    pub fn load_string<T>(
+        &self,
+        source: &str,
+        name: &str,
+        mut on_unknown: impl FnMut(&serde_ignored::Path<'_>),
+    ) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
@@ -165,45 +170,57 @@ impl Fennel {
 
         let de = mlua::serde::Deserializer::new(result);
 
-        serde_ignored::deserialize(de, |path| {
-            tracing::warn!(config = %name, field = %path, "unknown config field ignored");
-        })
-        .map_err(|e| FennelError::TypeMismatch {
-            message: format!("{name}: {e}"),
-            source: Box::new(e),
+        serde_ignored::deserialize(de, |path| on_unknown(&path)).map_err(|e| {
+            FennelError::TypeMismatch {
+                message: format!("{name}: {e}"),
+                source: Box::new(e),
+            }
         })
     }
 
     /// Load and evaluate a Fennel file from disk, deserializing the result
     /// into `T`.
-    pub fn load_file<T>(&self, path: &Path) -> Result<T, FennelError>
+    ///
+    /// `on_unknown` is forwarded to [`load_string`] — see its docs.
+    pub fn load_file<T>(
+        &self,
+        path: &Path,
+        on_unknown: impl FnMut(&serde_ignored::Path<'_>),
+    ) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
         let source = fs_err::read_to_string(path)?;
-        self.load_string(&source, &path.display().to_string())
+        self.load_string(&source, &path.display().to_string(), on_unknown)
     }
 
     /// Create a fresh Fennel VM and load `path` into `T`.
     ///
     /// Convenience wrapper for callers that only need a one-shot config load
-    /// and don't need to reuse the VM.
+    /// and don't need to reuse the VM. Warns via `tracing::warn!` for any
+    /// unknown fields.
     pub fn load_config<T>(path: &Path) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
-        Self::new()?.load_file(path)
+        let name = path.display().to_string();
+        Self::new()?.load_file(path, |path| {
+            tracing::warn!(config = %name, field = %path, "unknown config field ignored");
+        })
     }
 
     /// Create a fresh Fennel VM and parse `source` into `T`.
     ///
     /// Like [`load_config`] but reads from a string rather than a file.
     /// `name` is used in error messages (e.g. `".quire/config.fnl"`).
+    /// Warns via `tracing::warn!` for any unknown fields.
     pub fn load_config_str<T>(source: &str, name: &str) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
-        Self::new()?.load_string(source, name)
+        Self::new()?.load_string(source, name, |path| {
+            tracing::warn!(config = %name, field = %path, "unknown config field ignored");
+        })
     }
 }
 
@@ -331,6 +348,7 @@ mod tests {
             .load_string(
                 r#"{:mirror {:url "https://github.com/owner/repo.git"}}"#,
                 "test",
+                |_| {},
             )
             .expect("load_string should succeed");
 
@@ -353,7 +371,7 @@ mod tests {
                  :on [:ci-failed :mirror-failed]}}
 "#;
         let config: FullConfig = f
-            .load_string(source, "config.fnl")
+            .load_string(source, "config.fnl", |_| {})
             .expect("load_string should succeed");
 
         assert_eq!(
@@ -374,7 +392,7 @@ mod tests {
     fn load_string_rejects_malformed_fennel() {
         let f = fennel();
         let source = "{:bad {:}";
-        let result: Result<MirrorConfig, _> = f.load_string(source, "bad.fnl");
+        let result: Result<MirrorConfig, _> = f.load_string(source, "bad.fnl", |_| {});
         let err = result.unwrap_err();
         let FennelError::Eval {
             message,
@@ -403,7 +421,8 @@ mod tests {
     #[test]
     fn load_string_rejects_type_mismatch() {
         let f = fennel();
-        let result: Result<MirrorConfig, _> = f.load_string("{:mirror {:url 42}}", "types.fnl");
+        let result: Result<MirrorConfig, _> =
+            f.load_string("{:mirror {:url 42}}", "types.fnl", |_| {});
         let err = result.unwrap_err();
         let FennelError::TypeMismatch { message, .. } = &err else {
             panic!("expected TypeMismatch, got {err:?}");
@@ -419,25 +438,29 @@ mod tests {
     }
 
     #[test]
-    fn load_string_warns_on_unknown_top_level_field() {
-        // tracing::warn! fires but we verify it doesn't cause an error.
+    fn load_string_callback_fires_for_unknown_top_level_field() {
         let f = fennel();
+        let mut unknown = Vec::new();
         let result: Result<MirrorConfig, _> = f.load_string(
             r#"{:mirror {:url "https://github.com/owner/repo.git"} :oops 1}"#,
             "warn.fnl",
+            |path| unknown.push(path.to_string()),
         );
-        // Unknown field must not be an error.
         assert!(result.is_ok(), "unexpected error: {:?}", result.err());
+        assert_eq!(unknown, ["oops"]);
     }
 
     #[test]
-    fn load_string_warns_on_unknown_nested_field() {
+    fn load_string_callback_fires_for_unknown_nested_field() {
         let f = fennel();
+        let mut unknown = Vec::new();
         let result: Result<MirrorConfig, _> = f.load_string(
             r#"{:mirror {:url "https://github.com/owner/repo.git" :extra "hi"}}"#,
             "warn-nested.fnl",
+            |path| unknown.push(path.to_string()),
         );
         assert!(result.is_ok(), "unexpected error: {:?}", result.err());
+        assert_eq!(unknown, ["mirror.extra"]);
     }
 
     #[test]
@@ -451,7 +474,9 @@ mod tests {
         .expect("write");
 
         let f = fennel();
-        let config: MirrorConfig = f.load_file(&path).expect("load_file should succeed");
+        let config: MirrorConfig = f
+            .load_file(&path, |_| {})
+            .expect("load_file should succeed");
         assert_eq!(
             config,
             MirrorConfig {
@@ -465,7 +490,7 @@ mod tests {
     #[test]
     fn load_file_rejects_missing_file() {
         let f = fennel();
-        let result: Result<MirrorConfig, _> = f.load_file(Path::new("/no/such/file.fnl"));
+        let result: Result<MirrorConfig, _> = f.load_file(Path::new("/no/such/file.fnl"), |_| {});
         let err = result.unwrap_err();
         assert!(
             matches!(&err, FennelError::Io(e) if e.kind() == std::io::ErrorKind::NotFound),
@@ -481,7 +506,8 @@ mod tests {
     fn error_label_works_with_colon_in_name() {
         let f = fennel();
         let source = "\n{:bad {:}";
-        let result: Result<MirrorConfig, _> = f.load_string(source, "HEAD:.quire/config.fnl");
+        let result: Result<MirrorConfig, _> =
+            f.load_string(source, "HEAD:.quire/config.fnl", |_| {});
         let err = result.unwrap_err();
         let FennelError::Eval { label, .. } = &err else {
             unreachable!()

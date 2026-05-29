@@ -77,7 +77,8 @@ mod tests {
         // walk the `#[source]` chain — so plain `%err` is enough for
         // tracing/Sentry. The chain is still preserved structurally.
         let f = quire_core::fennel::Fennel::new().expect("Fennel::new");
-        let result: std::result::Result<i32, _> = f.load_string("(this is not valid", "bad.fnl");
+        let result: std::result::Result<i32, _> =
+            f.load_string("(this is not valid", "bad.fnl", |_| {});
         let fennel_err = result.unwrap_err();
 
         let plain = fennel_err.to_string();
