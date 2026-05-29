@@ -14,7 +14,7 @@ use quire_core::secret::SecretString;
 /// Parsed global configuration (`/var/quire/config.fnl`).
 ///
 /// Top-level stays open for future keys (notifications defaults, SMTP, etc.).
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct GlobalConfig {
     #[serde(default)]
@@ -60,7 +60,7 @@ impl GlobalConfig {
 }
 
 /// Global GitHub integration configuration.
-#[derive(serde::Deserialize, Debug, Default)]
+#[derive(serde::Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct GlobalGithubConfig {
     /// Bearer token used to authenticate push access to the mirror remote.
@@ -72,7 +72,7 @@ fn default_port() -> u16 {
     3000
 }
 
-#[derive(serde::Deserialize, Debug, Default)]
+#[derive(serde::Deserialize, Debug, Default, Clone)]
 pub struct CiConfig {
     /// How the orchestrator dispatches CI runs. Defaults to shelling
     /// out to the `quire-ci` binary via `Executor::Process`.
@@ -232,7 +232,7 @@ pub struct RepoGithubConfig {
 #[derive(Clone)]
 pub struct Quire {
     base_dir: PathBuf,
-    config: Arc<GlobalConfig>,
+    config: GlobalConfig,
     db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
 }
 
@@ -256,7 +256,7 @@ impl Quire {
     pub fn new(base_dir: PathBuf, config: GlobalConfig) -> Self {
         Self {
             base_dir,
-            config: Arc::new(config),
+            config,
             db_pool: Arc::new(OnceLock::new()),
         }
     }
