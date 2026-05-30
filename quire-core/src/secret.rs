@@ -79,6 +79,12 @@ impl std::fmt::Debug for SecretString {
     }
 }
 
+impl std::fmt::Display for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[secret]")
+    }
+}
+
 impl From<String> for SecretString {
     fn from(value: String) -> Self {
         Self(SecretSource::Plain(value))

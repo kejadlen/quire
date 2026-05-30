@@ -280,6 +280,14 @@ pub async fn run_detail(
     render(&tmpl)
 }
 
+pub async fn config(State(quire): State<Quire>) -> Response {
+    let tmpl = ConfigTemplate {
+        crumbs: vec![Crumb::new("config")],
+        config: quire.config.clone(),
+    };
+    render(&tmpl)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;

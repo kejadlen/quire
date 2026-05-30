@@ -227,6 +227,27 @@ impl DetailShEvent {
     }
 }
 
+// ── Config ─────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "config.html")]
+pub struct ConfigTemplate {
+    pub crumbs: Vec<Crumb>,
+    pub config: crate::GlobalConfig,
+}
+
+impl ConfigTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+
+    pub fn sorted_secrets(&self) -> Vec<(&String, &quire_core::secret::SecretString)> {
+        let mut pairs: Vec<_> = self.config.secrets.iter().collect();
+        pairs.sort_by_key(|(k, _)| *k);
+        pairs
+    }
+}
+
 // ── Error ──────────────────────────────────────────────────────────
 
 #[derive(Template)]

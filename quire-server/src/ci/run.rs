@@ -27,6 +27,14 @@ pub enum Executor {
     Process,
 }
 
+impl std::fmt::Display for Executor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Process => f.write_str("process"),
+        }
+    }
+}
+
 /// Access to CI runs for a single repo.
 ///
 /// Owns the database path, repo name, and base directory for run
