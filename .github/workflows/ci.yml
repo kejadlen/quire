@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: [v*]
   pull_request:
     branches: [main]
 
@@ -48,17 +47,22 @@ jobs:
   release:
     name: Release
     needs: test
-    if: github.ref_type == 'tag'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create GitHub release.
       packages: write # push container image to GHCR.
     outputs:
-      version: ${{ steps.meta.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - id: version
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          date=$(date -u +%Y-%m-%d)
+          echo "version=${date}-${short_sha}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
       - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -70,7 +74,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=match,pattern=v(.*),group=1
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
       - uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -78,10 +83,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            QUIRE_VERSION=${{ steps.meta.outputs.version }}
+            QUIRE_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh release view "v$VERSION" &>/dev/null || gh release create "v$VERSION" --generate-notes
