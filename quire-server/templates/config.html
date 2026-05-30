@@ -31,11 +31,20 @@
 <h2 class="ci-heading">config</h2>
 <table class="ci-table">
   <tbody>
-    {% for (key, value) in rows %}
-    <tr>
-      <th>{{ key }}</th>
-      <td>{{ value }}</td>
-    </tr>
+    <tr><th>port</th><td>{{ config.port }}</td></tr>
+    <tr><th>ci.executor</th><td>{{ config.ci.executor }}</td></tr>
+    {% if let Some(sentry) = config.sentry %}
+    <tr><th>sentry.dsn</th><td>{{ sentry.dsn }}</td></tr>
+    {% else %}
+    <tr><th>sentry</th><td class="empty">disabled</td></tr>
+    {% endif %}
+    {% if let Some(token) = config.github.mirror_token %}
+    <tr><th>github.mirror-token</th><td>{{ token }}</td></tr>
+    {% else %}
+    <tr><th>github.mirror-token</th><td class="empty">not set</td></tr>
+    {% endif %}
+    {% for (key, value) in sorted_secrets() %}
+    <tr><th>secrets.{{ key }}</th><td>{{ value }}</td></tr>
     {% endfor %}
   </tbody>
 </table>
