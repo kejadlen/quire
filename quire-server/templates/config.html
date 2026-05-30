@@ -31,32 +31,12 @@
 <h2 class="ci-heading">config</h2>
 <table class="ci-table">
   <tbody>
+    {% for (key, value) in rows %}
     <tr>
-      <th>port</th>
-      <td>{{ port }}</td>
+      <th>{{ key }}</th>
+      <td>{{ value }}</td>
     </tr>
-    <tr>
-      <th>executor</th>
-      <td>{{ executor }}</td>
-    </tr>
-    <tr>
-      <th>sentry</th>
-      <td>{% if sentry_enabled %}enabled{% else %}disabled{% endif %}</td>
-    </tr>
-    <tr>
-      <th>github mirror token</th>
-      <td>{% if github_mirror_token %}set{% else %}not set{% endif %}</td>
-    </tr>
-    <tr>
-      <th>secrets</th>
-      <td>
-        {% if secret_names.is_empty() %}
-        <span class="empty">none</span>
-        {% else %}
-        {% for name in secret_names %}{{ name }}{% if !loop.last %}, {% endif %}{% endfor %}
-        {% endif %}
-      </td>
-    </tr>
+    {% endfor %}
   </tbody>
 </table>
 {% endblock %}
