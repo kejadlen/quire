@@ -10,11 +10,14 @@ Lives at `/var/quire/config.fnl` on the bind-mounted volume.
 Operator-created. Read once at launch; a server restart is required to
 pick up changes.
 
-| Key                  | Type           | Required | Purpose                                                  |
-|----------------------|----------------|----------|----------------------------------------------------------|
-| `:port`              | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
-| `:sentry :dsn`       | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
-| `:secrets`           | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)`. |
+| Key                       | Type           | Required | Purpose                                                  |
+|---------------------------|----------------|----------|----------------------------------------------------------|
+| `:port`                   | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
+| `:sentry :dsn`            | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
+| `:secrets`                | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)`. |
+| `:github :mirror-token`   | `SecretString` | no       | Token used to authenticate pushes to per-repo GitHub mirrors. Required for mirroring to work; omit to disable. |
+
+Note: key names use hyphens, not underscores (e.g. `:mirror-token`, not `:mirror_token`).
 
 Minimal (no Sentry, no secrets):
 
@@ -38,11 +41,26 @@ the server from starting.
 Files quire reads from a checked-in `.quire/` directory in the working
 tree:
 
-- `.quire/ci.fnl` — pipeline definition (jobs, image, mirror).
+- `.quire/ci.fnl` — pipeline definition (jobs, image).
 - `.quire/Dockerfile` — image built per run when the CI executor is
   `docker` and no other image is supplied.
-- `.quire/config.fnl` — reserved for future use (notifications,
-  visibility settings, etc.); not yet read.
+- `.quire/config.fnl` — per-repo settings; read at the pushed commit's
+  SHA on every push.
+
+### `.quire/config.fnl` schema
+
+| Key                  | Type   | Required | Purpose                                                        |
+|----------------------|--------|----------|----------------------------------------------------------------|
+| `:github :mirror`    | string | no       | HTTPS URL to mirror every pushed ref to (e.g. `"https://github.com/user/repo.git"`). Requires `:github :mirror-token` in the global config. |
+
+Example:
+
+```fennel
+{:github {:mirror "https://github.com/user/repo.git"}}
+```
+
+The file is read via `git show <new-sha>:.quire/config.fnl`, so changes
+take effect on the push that includes the commit updating the file.
 
 ## SecretString values
 
