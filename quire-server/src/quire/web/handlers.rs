@@ -282,16 +282,36 @@ pub async fn run_detail(
 
 pub async fn config(State(quire): State<Quire>) -> Response {
     let cfg = &quire.config;
-    let mut secret_names: Vec<String> = cfg.secrets.keys().cloned().collect();
-    secret_names.sort();
+    let mut rows: Vec<(String, String)> = Vec::new();
+
+    rows.push(("port".into(), cfg.port.to_string()));
+    rows.push((
+        "ci.executor".into(),
+        format!("{:?}", cfg.ci.executor).to_lowercase(),
+    ));
+
+    match &cfg.sentry {
+        Some(s) => rows.push(("sentry.dsn".into(), s.dsn.to_string())),
+        None => rows.push(("sentry".into(), "disabled".into())),
+    }
+
+    match &cfg.github.mirror_token {
+        Some(t) => rows.push(("github.mirror-token".into(), t.to_string())),
+        None => rows.push(("github.mirror-token".into(), "not set".into())),
+    }
+
+    let mut secret_keys: Vec<&String> = cfg.secrets.keys().collect();
+    secret_keys.sort();
+    for key in secret_keys {
+        rows.push((
+            format!("secrets.{key}"),
+            cfg.secrets[key].to_string(),
+        ));
+    }
 
     let tmpl = ConfigTemplate {
         crumbs: vec![Crumb::new("config")],
-        port: cfg.port,
-        sentry_enabled: cfg.sentry.is_some(),
-        secret_names,
-        executor: format!("{:?}", cfg.ci.executor).to_lowercase(),
-        github_mirror_token: cfg.github.mirror_token.is_some(),
+        rows,
     };
     render(&tmpl)
 }

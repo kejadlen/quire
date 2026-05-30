@@ -233,11 +233,7 @@ impl DetailShEvent {
 #[template(path = "config.html")]
 pub struct ConfigTemplate {
     pub crumbs: Vec<Crumb>,
-    pub port: u16,
-    pub sentry_enabled: bool,
-    pub secret_names: Vec<String>,
-    pub executor: String,
-    pub github_mirror_token: bool,
+    pub rows: Vec<(String, String)>,
 }
 
 impl ConfigTemplate {
