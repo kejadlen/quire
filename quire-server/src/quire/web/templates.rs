@@ -227,6 +227,25 @@ impl DetailShEvent {
     }
 }
 
+// ── Config ─────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "config.html")]
+pub struct ConfigTemplate {
+    pub crumbs: Vec<Crumb>,
+    pub port: u16,
+    pub sentry_enabled: bool,
+    pub secret_names: Vec<String>,
+    pub executor: String,
+    pub github_mirror_token: bool,
+}
+
+impl ConfigTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+}
+
 // ── Error ──────────────────────────────────────────────────────────
 
 #[derive(Template)]

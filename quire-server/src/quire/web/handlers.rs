@@ -280,6 +280,22 @@ pub async fn run_detail(
     render(&tmpl)
 }
 
+pub async fn config(State(quire): State<Quire>) -> Response {
+    let cfg = &quire.config;
+    let mut secret_names: Vec<String> = cfg.secrets.keys().cloned().collect();
+    secret_names.sort();
+
+    let tmpl = ConfigTemplate {
+        crumbs: vec![Crumb::new("config")],
+        port: cfg.port,
+        sentry_enabled: cfg.sentry.is_some(),
+        secret_names,
+        executor: format!("{:?}", cfg.ci.executor).to_lowercase(),
+        github_mirror_token: cfg.github.mirror_token.is_some(),
+    };
+    render(&tmpl)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
