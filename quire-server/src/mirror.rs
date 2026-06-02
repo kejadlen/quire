@@ -8,12 +8,23 @@ use thiserror::Error;
 
 use crate::quire::Quire;
 
-#[derive(Debug, Error, Diagnostic)]
-#[error("mirror: {} ref(s) failed", errors.len())]
-struct MirrorErrors {
+#[derive(Debug, Diagnostic)]
+pub struct MirrorErrors {
     #[related]
     errors: Vec<MirrorError>,
 }
+
+impl std::fmt::Display for MirrorErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mirror: {} ref(s) failed", self.errors.len())?;
+        for e in &self.errors {
+            write!(f, "; {e}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for MirrorErrors {}
 
 #[derive(Debug, Error, Diagnostic)]
 enum MirrorError {
@@ -36,10 +47,27 @@ enum MirrorError {
 /// ref, reads `.quire/config.fnl` at the new SHA to obtain the `github.mirror`
 /// URL. Skips repos with no mirror URL configured. If no token is configured,
 /// mirroring is skipped entirely.
-pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
-    let repo = quire.repo(&event.repo)?;
+pub fn trigger(quire: &Quire, event: &PushEvent) -> Result<(), MirrorErrors> {
+    let errors = collect_errors(quire, event)?;
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(MirrorErrors { errors })
+    }
+}
+
+fn collect_errors(
+    quire: &Quire,
+    event: &PushEvent,
+) -> Result<Vec<MirrorError>, MirrorErrors> {
+    let one = |e: MirrorError| MirrorErrors { errors: vec![e] };
+
+    let repo = quire
+        .repo(&event.repo)
+        .map_err(|e| one(MirrorError::App(e)))?;
+
     if !repo.exists() {
-        return Err(MirrorError::RepoNotFound(event.repo.clone()).into());
+        return Err(one(MirrorError::RepoNotFound(event.repo.clone())));
     }
 
     let config = &quire.config;
@@ -48,22 +76,17 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> miette::Result<()> {
         .mirror_token
         .as_ref()
         .map(|s| s.reveal().map(str::to_owned))
-        .transpose()?
+        .transpose()
+        .map_err(|e| one(MirrorError::App(crate::Error::from(e))))?
     else {
-        return Ok(());
+        return Ok(vec![]);
     };
 
-    let errors: Vec<MirrorError> = event
+    Ok(event
         .updated_refs()
         .into_iter()
         .filter_map(|push_ref| mirror_ref(&repo, push_ref, &mirror_token).err())
-        .collect();
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(MirrorErrors { errors }.into())
-    }
+        .collect())
 }
 
 fn mirror_ref(

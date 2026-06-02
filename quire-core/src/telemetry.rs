@@ -44,15 +44,13 @@ type RenderFn = Box<dyn (Fn(&(dyn std::error::Error + 'static)) -> Option<String
 ///
 /// # Sentry data scrubbing
 ///
-/// The rendering currently arrives in Sentry as `extra["diagnostic"] =
-/// "[Filtered]"`, so this layer's output is effectively invisible there
-/// today. The miette `NarratableReportHandler` renders the source
-/// snippet inline, and any keyword Sentry's data-scrubber recognizes
-/// (e.g. `secret` from a `(secret …)` call in a ci.fnl) trips the
-/// whole-value replacement. Fixing this — by either moving the
-/// rendering into the exception value, sending as an attachment, or
-/// configuring the Sentry project's scrubbing rules — is a prerequisite
-/// for this layer to be useful again.
+/// The rendering arrives in Sentry as `extra["diagnostic"]`. For most
+/// errors this is fine, but the miette `NarratableReportHandler` renders
+/// source snippets inline: if a CI pipeline error references a
+/// `(secret …)` call in `ci.fnl`, Sentry's data-scrubber replaces the
+/// entire value with `"[Filtered]"`. Errors without source spans (e.g.
+/// mirror push failures) are unaffected. A fuller fix would move the
+/// rendering into the exception value or send it as an attachment.
 ///
 /// # Layer ordering
 ///
