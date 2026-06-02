@@ -18,6 +18,27 @@ No issues, no PRs, no user management, no webhooks. Use the GitHub mirror for th
 
 Post-v1, the feature I most want to build is a richer line/file history view — blame ladder, range-follow, rename trails — the thing every forge does poorly.
 
+## Creating a repository
+
+Quire requires explicit repository creation — repos are not created automatically on first push.
+
+Create the bare repo on the server:
+
+```
+ssh git@host quire repo new foo.git
+```
+
+Names must end in `.git`. One level of grouping is supported: `work/foo.git` is valid, `a/b/c.git` is not.
+
+Then add the remote and push:
+
+```
+jj git remote add origin git@host:foo.git
+jj git push
+```
+
+Other management commands: `quire repo list` and `quire repo rm foo.git`, invoked the same way via SSH.
+
 ## Design principles
 
 Quire holds to a few principles:
