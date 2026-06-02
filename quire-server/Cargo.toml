@@ -49,6 +49,7 @@ shell-words = "*"
 tokio = { workspace = true, features = ["full"] }
 uuid = { version = "*", features = ["v7"] }
 walkdir = "*"
+pulldown-cmark = "*"
 
 [dev-dependencies]
 assert_cmd = "*"
