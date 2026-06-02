@@ -3,22 +3,195 @@
 use askama::Template;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{StatusCode, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Response};
 
 use super::db;
 use super::templates::*;
 use crate::Quire;
+use crate::quire::Repo;
 
-pub async fn repo_redirect(
-    State(quire): State<Quire>,
-    AxumPath(repo): AxumPath<String>,
-) -> Response {
+pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
+    let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => {}
+    let git_repo = match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => r,
         _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // Load recent CI runs from DB.
+    let q = quire.clone();
+    let rn = repo_name.clone();
+    let recent_runs: Vec<RunListRow> = match tokio::task::spawn_blocking(move || {
+        db::load_runs(&q, &rn)
+    })
+    .await
+    {
+        Ok(Ok(runs)) => runs
+            .into_iter()
+            .take(5)
+            .map(|r| RunListRow {
+                id: r.id,
+                outcome: r.outcome,
+                sha: r.sha,
+                ref_name: r.ref_name,
+                created_at: r.created_at,
+                dispatched_at: r.dispatched_at,
+                resolved_at: r.resolved_at,
+            })
+            .collect(),
+        Ok(Err(e)) => {
+            tracing::warn!(repo = %repo, error = &e as &(dyn std::error::Error + 'static), "failed to load runs for home");
+            vec![]
+        }
+        Err(_) => vec![],
+    };
+
+    // Read git data (blocking).
+    let (head, readme_html, bookmarks, tags, recent_changes) =
+        tokio::task::spawn_blocking(move || read_git_data(&git_repo))
+            .await
+            .unwrap_or_default();
+
+    let tmpl = RepoHomeTemplate {
+        repo: repo_display,
+        crumbs: vec![],
+        head,
+        readme_html,
+        bookmarks,
+        tags,
+        recent_runs,
+        recent_changes,
+    };
+    render(&tmpl)
+}
+
+type GitData = (
+    Option<HeadInfo>,
+    Option<String>,
+    Vec<BookmarkRow>,
+    Vec<TagRow>,
+    Vec<ChangeRow>,
+);
+
+/// Read summary data from a bare git repository for the repo home page.
+fn read_git_data(repo: &Repo) -> GitData {
+    let head = read_head_info(repo);
+    let readme_html = read_readme(repo);
+    let bookmarks = read_bookmarks(repo);
+    let tags = read_tags(repo);
+    let recent_changes = read_recent_changes(repo);
+    (head, readme_html, bookmarks, tags, recent_changes)
+}
+
+fn run_git(repo: &Repo, args: &[&str]) -> Option<String> {
+    let output = repo.git(args).output().ok()?;
+    if !output.status.success() {
+        return None;
     }
-    Redirect::temporary(&format!("/{}/ci", repo.trim_end_matches(".git"))).into_response()
+    let s = String::from_utf8(output.stdout).ok()?;
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+fn read_head_info(repo: &Repo) -> Option<HeadInfo> {
+    let bookmark =
+        run_git(repo, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_else(|| "main".to_string());
+
+    // %H = full sha, %s = subject, %ar = relative age
+    let log = run_git(repo, &["log", "-1", "--format=%H%n%s%n%ar"])?;
+    let mut lines = log.lines();
+    let sha = lines.next()?.to_string();
+    let description = lines.next().unwrap_or("").to_string();
+    let age = lines.next().unwrap_or("").to_string();
+
+    Some(HeadInfo {
+        sha,
+        description,
+        age,
+        bookmark,
+    })
+}
+
+fn read_readme(repo: &Repo) -> Option<String> {
+    // Try common README filenames.
+    let candidates = ["HEAD:README.md", "HEAD:readme.md", "HEAD:README"];
+    for candidate in &candidates {
+        if let Some(raw) = run_git(repo, &["show", candidate]) {
+            return Some(render_markdown(&raw));
+        }
+    }
+    None
+}
+
+fn render_markdown(markdown: &str) -> String {
+    use pulldown_cmark::{Options, Parser, html};
+    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
+    let parser = Parser::new_ext(markdown, opts);
+    let mut output = String::new();
+    html::push_html(&mut output, parser);
+    output
+}
+
+fn read_bookmarks(repo: &Repo) -> Vec<BookmarkRow> {
+    let out = run_git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)|%(objectname:short)|%(committerdate:relative)",
+            "--sort=-committerdate",
+            "refs/heads/",
+        ],
+    )
+    .unwrap_or_default();
+
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            Some(BookmarkRow {
+                name: parts.next()?.to_string(),
+                sha_short: parts.next()?.to_string(),
+                age: parts.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+fn read_tags(repo: &Repo) -> Vec<TagRow> {
+    let out = run_git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)|%(committerdate:relative)",
+            "--sort=-version:refname",
+            "refs/tags/",
+        ],
+    )
+    .unwrap_or_default();
+
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '|');
+            Some(TagRow {
+                name: parts.next()?.to_string(),
+                age: parts.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
+fn read_recent_changes(repo: &Repo) -> Vec<ChangeRow> {
+    let out = run_git(repo, &["log", "-12", "--format=%H|%s|%ar"]).unwrap_or_default();
+
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            Some(ChangeRow {
+                sha: parts.next()?.to_string(),
+                description: parts.next().unwrap_or("").to_string(),
+                age: parts.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Render a template into an HTML response, returning 500 on render failure.
@@ -367,7 +540,7 @@ mod tests {
     const SHA1: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
     #[tokio::test]
-    async fn repo_redirect_strips_git_and_redirects() {
+    async fn repo_home_returns_ok_for_known_repo() {
         let env = TestEnv::new();
         let app = env.app();
         let req = Request::builder()
@@ -375,13 +548,11 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
-        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert_eq!(loc, "/example/ci");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn repo_redirect_strips_git_suffix() {
+    async fn repo_home_accepts_git_suffix() {
         let env = TestEnv::new();
         let app = env.app();
         let req = Request::builder()
@@ -389,9 +560,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
-        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert_eq!(loc, "/example/ci");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
