@@ -56,10 +56,7 @@ pub fn trigger(quire: &Quire, event: &PushEvent) -> Result<(), MirrorErrors> {
     }
 }
 
-fn collect_errors(
-    quire: &Quire,
-    event: &PushEvent,
-) -> Result<Vec<MirrorError>, MirrorErrors> {
+fn collect_errors(quire: &Quire, event: &PushEvent) -> Result<Vec<MirrorError>, MirrorErrors> {
     let one = |e: MirrorError| MirrorErrors { errors: vec![e] };
 
     let repo = quire
