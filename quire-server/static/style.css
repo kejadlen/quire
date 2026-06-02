@@ -685,3 +685,23 @@ html.dark {
   font-style: italic;
   color: var(--mutedFaint);
 }
+
+/* ── Arborium syntax highlighting integration ──────────────────── */
+
+/* Keep quire's paper-toned code background; strip any theme-imposed radius. */
+pre:has(code[class*="language-"]),
+pre:has(code[data-lang]) {
+  background: var(--code) !important;
+  border-radius: 0 !important;
+  /* Preserve the design's left-rail accent. */
+  border-left: 2px solid var(--accent) !important;
+}
+
+/* Arborium injects its own <style> for theme colors; let it control text
+   colors but keep our font stack and size. */
+pre code[class*="language-"],
+pre code[data-lang] {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  background: transparent !important;
+}
