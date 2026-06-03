@@ -54,14 +54,7 @@
 </header>
 
 {# ── Section nav ────────────────────────────────────────────── #}
-<nav class="repo-section-nav">
-  <a class="section-link section-link--active" href="/{{ repo }}">readme</a>
-  <a class="section-link" href="/{{ repo }}/tree">tree</a>
-  <a class="section-link" href="/{{ repo }}/log">log</a>
-  <a class="section-link" href="/{{ repo }}/bookmarks">bookmarks{% if !bookmarks.is_empty() %} <span class="section-count">{{ bookmarks.len() }}</span>{% endif %}</a>
-  <a class="section-link" href="/{{ repo }}/tags">tags{% if !tags.is_empty() %} <span class="section-count">{{ tags.len() }}</span>{% endif %}</a>
-  <a class="section-link" href="/{{ repo }}/ci">ci</a>
-</nav>
+{% include "_repo_section_nav.html" %}
 
 {# ── Two-column body ─────────────────────────────────────────── #}
 <div class="repo-body">

@@ -41,6 +41,9 @@ pub struct RunListTemplate {
     pub repo: String,
     pub crumbs: Vec<Crumb>,
     pub runs: Vec<RunListRow>,
+    pub bookmarks: Vec<BookmarkRow>,
+    pub tags: Vec<TagRow>,
+    pub active_section: String,
 }
 
 impl RunListTemplate {
@@ -99,6 +102,9 @@ pub struct RunDetailTemplate {
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
     pub quire_ci_log: String,
+    pub bookmarks: Vec<BookmarkRow>,
+    pub tags: Vec<TagRow>,
+    pub active_section: String,
 }
 
 impl RunDetailTemplate {
@@ -240,6 +246,7 @@ pub struct RepoHomeTemplate {
     pub tags: Vec<TagRow>,
     pub recent_runs: Vec<RunListRow>,
     pub recent_changes: Vec<ChangeRow>,
+    pub active_section: String,
 }
 
 impl RepoHomeTemplate {

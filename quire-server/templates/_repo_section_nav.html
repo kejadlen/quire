@@ -1,0 +1,8 @@
+<nav class="repo-section-nav">
+  <a class="section-link {% if active_section == "readme" %}section-link--active{% endif %}" href="/{{ repo }}">readme</a>
+  <a class="section-link {% if active_section == "tree" %}section-link--active{% endif %}" href="/{{ repo }}/tree">tree</a>
+  <a class="section-link {% if active_section == "log" %}section-link--active{% endif %}" href="/{{ repo }}/log">log</a>
+  <a class="section-link {% if active_section == "bookmarks" %}section-link--active{% endif %}" href="/{{ repo }}/bookmarks">bookmarks{% if !bookmarks.is_empty() %} <span class="section-count">{{ bookmarks.len() }}</span>{% endif %}</a>
+  <a class="section-link {% if active_section == "tags" %}section-link--active{% endif %}" href="/{{ repo }}/tags">tags{% if !tags.is_empty() %} <span class="section-count">{{ tags.len() }}</span>{% endif %}</a>
+  <a class="section-link {% if active_section == "ci" %}section-link--active{% endif %}" href="/{{ repo }}/ci">ci</a>
+</nav>

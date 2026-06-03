@@ -6,7 +6,9 @@
 {% include "_nav.html" %}
 {% endblock %}
 
-{% block content %}
+{% block fullpage %}
+{% include "_repo_section_nav.html" %}
+<main class="page-main">
 <h2 class="ci-heading">ci runs</h2>
 <table class="ci-table">
   <thead>
@@ -32,4 +34,5 @@
   {% endfor %}
   </tbody>
 </table>
+</main>
 {% endblock %}

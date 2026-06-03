@@ -61,6 +61,7 @@ pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<Stri
         tags,
         recent_runs,
         recent_changes,
+        active_section: "readme".to_string(),
     };
     render(&tmpl)
 }
@@ -262,13 +263,18 @@ fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -
 pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => {}
+    let git_repo = match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => r,
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
     let q = quire.clone();
-    let runs = match tokio::task::spawn_blocking(move || db::load_runs(&q, &repo_name)).await {
+    let rn = repo_name.clone();
+    let runs_handle = tokio::task::spawn_blocking(move || db::load_runs(&q, &rn));
+    let refs_handle =
+        tokio::task::spawn_blocking(move || (read_bookmarks(&git_repo), read_tags(&git_repo)));
+
+    let runs = match runs_handle.await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             tracing::error!(repo = %repo, error = &e as &(dyn std::error::Error + 'static), "failed to load runs");
@@ -284,6 +290,7 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
+    let (bookmarks, tags) = refs_handle.await.unwrap_or_default();
 
     let template_runs: Vec<RunListRow> = runs
         .into_iter()
@@ -300,8 +307,11 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
 
     let tmpl = RunListTemplate {
         repo: repo_display,
-        crumbs: vec![Crumb::new("ci")],
+        crumbs: vec![],
         runs: template_runs,
+        bookmarks,
+        tags,
+        active_section: "ci".to_string(),
     };
     render(&tmpl)
 }
@@ -312,13 +322,16 @@ pub async fn run_detail(
 ) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => {}
+    let git_repo = match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => r,
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     if !db::is_valid_run_id(&run_id) {
         return StatusCode::NOT_FOUND.into_response();
     }
+
+    let refs_handle =
+        tokio::task::spawn_blocking(move || (read_bookmarks(&git_repo), read_tags(&git_repo)));
 
     let q = quire.clone();
     let rn = repo_name.clone();
@@ -438,6 +451,7 @@ pub async fn run_detail(
     }
 
     let quire_ci_log = quire_ci_log_handle.await.unwrap_or_default();
+    let (bookmarks, tags) = refs_handle.await.unwrap_or_default();
 
     let crumbs = vec![
         Crumb::with_href("ci", format!("/{}/ci", repo_display)),
@@ -449,6 +463,9 @@ pub async fn run_detail(
         run: detail_run,
         jobs: detail_jobs,
         quire_ci_log,
+        bookmarks,
+        tags,
+        active_section: "ci".to_string(),
     };
     render(&tmpl)
 }

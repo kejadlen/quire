@@ -6,7 +6,9 @@
 {% include "_nav.html" %}
 {% endblock %}
 
-{% block content %}
+{% block fullpage %}
+{% include "_repo_section_nav.html" %}
+<main class="page-main">
 <div class="ci-meta">
   <div class="ci-meta-primary">
     <span class="c-accent">{{ run.sha_short() }}</span>
@@ -52,4 +54,5 @@
   <pre class="ci-sh-log">{{ quire_ci_log }}</pre>
 </div>
 {% endif %}
+</main>
 {% endblock %}
