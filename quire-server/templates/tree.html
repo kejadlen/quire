@@ -9,40 +9,37 @@
 {% block fullpage %}
 
 {# ── Identity band ──────────────────────────────────────────────── #}
-<header class="tree-header">
-  <div class="tree-breadcrumb">
-    {% for (label, href) in self.path_parts() %}
-    {% if let Some(url) = href %}
-    <a class="tree-breadcrumb-seg tree-breadcrumb-link" href="{{ url }}">{{ label }}</a>
-    {% else %}
-    <span class="tree-breadcrumb-seg">{{ label }}</span>
-    {% endif %}
-    {% if !loop.last %}<span class="tree-breadcrumb-sep">/</span>{% endif %}
-    {% endfor %}
-  </div>
-  <div class="tree-meta-row">
-    <span class="tree-meta-item">
-      <span class="tree-meta-label">on</span>
-      <span class="tree-ref-name">{{ bookmark }}</span>
-    </span>
-    <span class="tree-meta-dot">·</span>
-    <span class="tree-meta-item">
-      <span class="tree-meta-label">at</span>
-      <a class="change-id tree-meta-sha" href="/{{ repo }}/log">
+<header class="repo-header">
+  <div class="repo-meta-row">
+    <span class="repo-meta-item">
+      <span class="bookmark-glyph">※</span>
+      <span class="bookmark-name">{{ bookmark }}</span>
+      <span class="repo-meta-sep">→</span>
+      <span class="change-id" title="{{ sha_short }}">
         <span class="change-head">{{ self.sha_head() }}</span><span class="change-tail">{{ self.sha_tail() }}</span>
-      </a>
+      </span>
     </span>
-    <span class="tree-meta-dot">·</span>
-    <span class="tree-meta-item">{{ total_entries }} entries</span>
-    <span class="tree-meta-spacer"></span>
-    <span class="tree-meta-links">
-      <a class="tree-meta-link tree-meta-link--active" href="/{{ repo }}/log">log</a>
-    </span>
+    <span class="repo-meta-dot">·</span>
+    <span class="repo-meta-item">{{ total_entries }} entries</span>
   </div>
 </header>
 
 {# ── Section nav ────────────────────────────────────────────────── #}
 {% include "_repo_section_nav.html" %}
+
+{# ── Path breadcrumb (sub-directories only) ─────────────────────── #}
+{% if !path.is_empty() %}
+<div class="tree-path-crumb">
+  {% for (label, href) in self.path_parts() %}
+  {% if let Some(url) = href %}
+  <a class="tree-breadcrumb-seg tree-breadcrumb-link" href="{{ url }}">{{ label }}</a>
+  {% else %}
+  <span class="tree-breadcrumb-seg">{{ label }}</span>
+  {% endif %}
+  {% if !loop.last %}<span class="tree-breadcrumb-sep">/</span>{% endif %}
+  {% endfor %}
+</div>
+{% endif %}
 
 {# ── Latest-commit-on-this-path strip ───────────────────────────── #}
 {% if let Some(hc) = head_commit %}
@@ -110,7 +107,7 @@
   {# RIGHT — sidebar #}
   <aside class="tree-sidebar">
 
-    <div class="side-block">
+    <div class="side-block side-block--last">
       <div class="side-block-title">This directory</div>
       <div class="tree-stats">
         <div class="tree-stat-row"><span class="tree-stat-label">entries</span><span>{{ total_entries }}</span></div>
@@ -124,26 +121,7 @@
       </div>
     </div>
 
-    {% if let Some(preview) = readme_preview %}
-    <div class="side-block side-block--last">
-      <div class="side-block-title">README.md</div>
-      <div class="tree-readme-preview">{{ preview }}</div>
-      <a class="side-more" href="#">open readme →</a>
-    </div>
-    {% endif %}
-
   </aside>
 </div>
-
-{# ── Keyboard hint footer ────────────────────────────────────────── #}
-<footer class="tree-footer">
-  <span class="tree-footer-hints">
-    <span><kbd>j</kbd><kbd>k</kbd> move</span>
-    <span><kbd>o</kbd> open</span>
-    <span><kbd>l</kbd> log</span>
-    <span><kbd>t</kbd> back to tree root</span>
-  </span>
-  <span>press <kbd>?</kbd> for shortcuts</span>
-</footer>
 
 {% endblock %}

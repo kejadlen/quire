@@ -706,9 +706,16 @@ pre code[data-lang] {
 
 /* ── Tree browser ──────────────────────────────────────────────── */
 
-.tree-header {
-  padding: 22px var(--space-xl) 18px;
-  border-bottom: 1px solid var(--rule);
+.tree-path-crumb {
+  padding: 10px var(--space-xl);
+  border-bottom: 1px solid var(--rule2);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 .tree-breadcrumb {
