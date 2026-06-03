@@ -431,24 +431,15 @@ impl TreeTemplate {
     }
 
     pub fn dir_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| e.is_dir())
-            .count()
+        self.entries.iter().filter(|e| e.is_dir()).count()
     }
 
     pub fn submodule_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| e.is_submodule())
-            .count()
+        self.entries.iter().filter(|e| e.is_submodule()).count()
     }
 
     pub fn file_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| e.is_file())
-            .count()
+        self.entries.iter().filter(|e| e.is_file()).count()
     }
 
     pub fn sha_head(&self) -> &str {

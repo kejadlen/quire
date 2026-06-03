@@ -1,14 +1,14 @@
 //! Handler for the repository home page.
 
 use axum::extract::{Path as AxumPath, State};
-use axum::response::Response;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::response::Response;
 
-use super::git::{read_bookmarks, read_git_data, read_tags};
-use super::render;
 use super::super::db;
 use super::super::templates::{RepoHomeTemplate, RunListRow};
+use super::git::{read_bookmarks, read_git_data, read_tags};
+use super::render;
 use crate::Quire;
 
 pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {

@@ -4,10 +4,10 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use super::git::{read_bookmarks, read_tags, run_git};
-use super::render;
 use super::super::db;
 use super::super::templates::{Crumb, PathCommit, TreeEntry, TreeEntryKind, TreeTemplate};
+use super::git::{read_bookmarks, read_tags, run_git};
+use super::render;
 use crate::Quire;
 use crate::quire::Repo;
 
@@ -82,8 +82,8 @@ struct TreeData {
 }
 
 fn read_tree_data(repo: &Repo, path: &str) -> Option<TreeData> {
-    let bookmark = run_git(repo, &["symbolic-ref", "--short", "HEAD"])
-        .unwrap_or_else(|| "main".to_string());
+    let bookmark =
+        run_git(repo, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_else(|| "main".to_string());
 
     let sha_short =
         run_git(repo, &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
@@ -141,15 +141,22 @@ fn read_tree_data(repo: &Repo, path: &str) -> Option<TreeData> {
         } else {
             format!("{}/{}", path, name)
         };
-        let commit_info =
-            run_git(repo, &["log", "-1", "--format=%s|%ar", "HEAD", "--", &entry_path]);
+        let commit_info = run_git(
+            repo,
+            &["log", "-1", "--format=%s|%ar", "HEAD", "--", &entry_path],
+        );
         let (last_msg, age) = commit_info
             .and_then(|s| {
                 let mut it = s.splitn(2, '|');
                 Some((it.next()?.to_string(), it.next()?.to_string()))
             })
             .unwrap_or_default();
-        entries.push(TreeEntry { kind, name, last_msg, age });
+        entries.push(TreeEntry {
+            kind,
+            name,
+            last_msg,
+            age,
+        });
     }
 
     let head_commit = {
@@ -186,5 +193,12 @@ fn read_tree_data(repo: &Repo, path: &str) -> Option<TreeData> {
         })
     };
 
-    Some(TreeData { bookmark, sha_short, entries, total_entries, head_commit, readme_preview })
+    Some(TreeData {
+        bookmark,
+        sha_short,
+        entries,
+        total_entries,
+        head_commit,
+        readme_preview,
+    })
 }

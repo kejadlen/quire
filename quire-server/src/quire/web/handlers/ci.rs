@@ -4,12 +4,12 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use super::git::{read_bookmarks, read_tags};
-use super::{render, render_error};
 use super::super::db;
 use super::super::templates::{
     Crumb, DetailJob, DetailRun, DetailShEvent, RunDetailTemplate, RunListRow, RunListTemplate,
 };
+use super::git::{read_bookmarks, read_tags};
+use super::{render, render_error};
 use crate::Quire;
 
 pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {

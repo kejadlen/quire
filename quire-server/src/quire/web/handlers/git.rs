@@ -42,7 +42,12 @@ pub(super) fn read_head_info(repo: &Repo) -> Option<HeadInfo> {
     let sha = lines.next()?.to_string();
     let description = lines.next().unwrap_or("").to_string();
     let age = lines.next().unwrap_or("").to_string();
-    Some(HeadInfo { sha, description, age, bookmark })
+    Some(HeadInfo {
+        sha,
+        description,
+        age,
+        bookmark,
+    })
 }
 
 pub(super) fn read_readme(repo: &Repo) -> Option<String> {

@@ -33,7 +33,12 @@ pub(super) fn render<T: Template>(tmpl: &T) -> Response {
 
 /// Render the error template with the given status, falling back to plain
 /// text if the error template itself fails to render.
-pub(super) fn render_error(repo: String, status: StatusCode, title: &str, detail: String) -> Response {
+pub(super) fn render_error(
+    repo: String,
+    status: StatusCode,
+    title: &str,
+    detail: String,
+) -> Response {
     let tmpl = ErrorTemplate {
         repo,
         crumbs: vec![Crumb::new("error")],
@@ -151,7 +156,12 @@ mod tests {
         let env = TestEnv::new();
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/example").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -162,7 +172,12 @@ mod tests {
         let env = TestEnv::new();
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/example.git").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/example.git")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -171,10 +186,23 @@ mod tests {
     #[tokio::test]
     async fn run_list_returns_ok_for_known_repo() {
         let env = TestEnv::new();
-        env.insert_run(UUID1, Some("succeeded"), SHA1, "refs/heads/main", 1000, Some(2000), Some(3000));
+        env.insert_run(
+            UUID1,
+            Some("succeeded"),
+            SHA1,
+            "refs/heads/main",
+            1000,
+            Some(2000),
+            Some(3000),
+        );
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/example/ci").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/example/ci")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -185,7 +213,12 @@ mod tests {
         let env = TestEnv::new();
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/nonexistent/ci").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/nonexistent/ci")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -194,7 +227,15 @@ mod tests {
     #[tokio::test]
     async fn run_detail_returns_ok_for_existing_run() {
         let env = TestEnv::new();
-        env.insert_run(UUID1, Some("succeeded"), SHA1, "refs/heads/main", 1000, Some(2000), Some(3000));
+        env.insert_run(
+            UUID1,
+            Some("succeeded"),
+            SHA1,
+            "refs/heads/main",
+            1000,
+            Some(2000),
+            Some(3000),
+        );
         env.insert_job(UUID1, "build", "succeeded", Some(0), Some(2000), Some(3000));
         let resp = env
             .app()
@@ -214,7 +255,12 @@ mod tests {
         let env = TestEnv::new();
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/example/ci/not-a-uuid").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/example/ci/not-a-uuid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -247,7 +293,12 @@ mod tests {
             .ok();
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/example/tree").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/example/tree")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         // Empty repo has no HEAD → 404; populated repo → 200.
@@ -263,7 +314,12 @@ mod tests {
         let env = TestEnv::new();
         let resp = env
             .app()
-            .oneshot(Request::builder().uri("/nonexistent/tree").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/nonexistent/tree")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
