@@ -364,6 +364,148 @@ impl ConfigTemplate {
     }
 }
 
+// ── Tree view ─────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "tree.html")]
+pub struct TreeTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub bookmarks: Vec<BookmarkRow>,
+    pub tags: Vec<TagRow>,
+    pub active_section: String,
+    /// Current directory path relative to repo root ("" = root).
+    pub path: String,
+    /// Active bookmark name (e.g. "main").
+    pub bookmark: String,
+    /// Short commit hash for HEAD.
+    pub sha_short: String,
+    pub entries: Vec<TreeEntry>,
+    pub total_entries: usize,
+    pub head_commit: Option<PathCommit>,
+    pub readme_preview: Option<String>,
+}
+
+impl TreeTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+
+    /// Returns (label, href) pairs for the path breadcrumb.
+    /// Root: just the repo name with no link (it's the current location).
+    /// Sub-path: repo → each segment, with links on all but the last.
+    pub fn path_parts(&self) -> Vec<(String, Option<String>)> {
+        if self.path.is_empty() {
+            return vec![(self.repo.clone(), None)];
+        }
+        let mut parts = vec![(self.repo.clone(), Some(format!("/{}/tree", self.repo)))];
+        let segments: Vec<&str> = self.path.split('/').collect();
+        for (i, seg) in segments.iter().enumerate() {
+            let subpath = segments[..=i].join("/");
+            let href = if i < segments.len() - 1 {
+                Some(format!("/{}/tree/{}", self.repo, subpath))
+            } else {
+                None
+            };
+            parts.push((seg.to_string(), href));
+        }
+        parts
+    }
+
+    pub fn parent_url(&self) -> String {
+        if self.path.is_empty() {
+            return format!("/{}", self.repo);
+        }
+        match self.path.rfind('/') {
+            Some(idx) => format!("/{}/tree/{}", self.repo, &self.path[..idx]),
+            None => format!("/{}/tree", self.repo),
+        }
+    }
+
+    pub fn dir_entry_url(&self, name: &str) -> String {
+        if self.path.is_empty() {
+            format!("/{}/tree/{}", self.repo, name)
+        } else {
+            format!("/{}/tree/{}/{}", self.repo, self.path, name)
+        }
+    }
+
+    pub fn dir_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_dir()).count()
+    }
+
+    pub fn submodule_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_submodule()).count()
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_file()).count()
+    }
+
+    pub fn sha_head(&self) -> &str {
+        &self.sha_short[..self.sha_short.len().min(4)]
+    }
+
+    pub fn sha_tail(&self) -> &str {
+        let start = self.sha_short.len().min(4);
+        &self.sha_short[start..]
+    }
+}
+
+pub struct TreeEntry {
+    pub kind: TreeEntryKind,
+    pub name: String,
+    pub last_msg: String,
+    pub age: String,
+}
+
+pub enum TreeEntryKind {
+    Up,
+    Dir,
+    File,
+    Submodule,
+}
+
+impl TreeEntry {
+    pub fn is_dir(&self) -> bool {
+        matches!(self.kind, TreeEntryKind::Dir)
+    }
+
+    pub fn is_file(&self) -> bool {
+        matches!(self.kind, TreeEntryKind::File)
+    }
+
+    pub fn is_submodule(&self) -> bool {
+        matches!(self.kind, TreeEntryKind::Submodule)
+    }
+
+    pub fn is_up(&self) -> bool {
+        matches!(self.kind, TreeEntryKind::Up)
+    }
+
+    pub fn is_dir_like(&self) -> bool {
+        matches!(self.kind, TreeEntryKind::Dir | TreeEntryKind::Submodule)
+    }
+}
+
+pub struct PathCommit {
+    pub sha_short: String,
+    pub description: String,
+    pub age: String,
+    pub author: String,
+}
+
+impl PathCommit {
+    pub fn sha_head(&self) -> &str {
+        &self.sha_short[..self.sha_short.len().min(4)]
+    }
+
+    pub fn sha_tail(&self) -> &str {
+        let start = self.sha_short.len().min(4);
+        &self.sha_short[start..]
+    }
+}
+
 // ── Error ──────────────────────────────────────────────────────────
 
 #[derive(Template)]

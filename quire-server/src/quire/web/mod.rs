@@ -13,21 +13,27 @@ pub mod format;
 pub mod handlers;
 pub mod templates;
 
-use crate::Quire;
+use axum::{Router, routing::get};
+
+use crate::{
+    Quire,
+    quire::web::handlers::{
+        config, repo_home, run_detail, run_list, stylesheet, tree_view, tree_view_path,
+    },
+};
 
 /// Bare CI routes without any auth middleware.
 ///
 /// The caller decides whether to layer auth on top (e.g.
 /// `.layer(middleware::from_fn(auth::require_auth))`).
-pub fn router(quire: Quire) -> axum::Router {
-    axum::Router::new()
-        .route("/style.css", axum::routing::get(handlers::stylesheet))
-        .route("/{repo}", axum::routing::get(handlers::repo_home))
-        .route("/{repo}/ci", axum::routing::get(handlers::run_list))
-        .route(
-            "/{repo}/ci/{run_id}",
-            axum::routing::get(handlers::run_detail),
-        )
-        .route("/config", axum::routing::get(handlers::config))
+pub fn router(quire: Quire) -> Router {
+    Router::new()
+        .route("/style.css", get(stylesheet))
+        .route("/{repo}", get(repo_home))
+        .route("/{repo}/ci", get(run_list))
+        .route("/{repo}/ci/{run_id}", get(run_detail))
+        .route("/{repo}/tree", get(tree_view))
+        .route("/{repo}/tree/{*path}", get(tree_view_path))
+        .route("/config", get(config))
         .with_state(quire)
 }
