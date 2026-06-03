@@ -65,9 +65,7 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
         bookmark: tree_data.bookmark,
         sha_short: tree_data.sha_short,
         entries: tree_data.entries,
-        total_entries: tree_data.total_entries,
         head_commit: tree_data.head_commit,
-        readme_preview: tree_data.readme_preview,
     };
     render(&tmpl)
 }
@@ -76,9 +74,7 @@ struct TreeData {
     bookmark: String,
     sha_short: String,
     entries: Vec<TreeEntry>,
-    total_entries: usize,
     head_commit: Option<PathCommit>,
-    readme_preview: Option<String>,
 }
 
 fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
@@ -123,8 +119,6 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         let bo = matches!(bk, TreeEntryKind::Dir | TreeEntryKind::Submodule) as u8;
         bo.cmp(&ao).then(an.cmp(bn))
     });
-
-    let total_entries = raw.len();
 
     let mut entries: Vec<TreeEntry> = Vec::new();
 
@@ -177,28 +171,10 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         })
     };
 
-    let readme_preview = {
-        let readme_git_path = if path.is_empty() {
-            "HEAD:README.md".to_string()
-        } else {
-            format!("HEAD:{}/README.md", path)
-        };
-        reader.run(&["show", &readme_git_path]).map(|content| {
-            let trimmed = content.trim().to_string();
-            if trimmed.len() > 400 {
-                format!("{}…", &trimmed[..400])
-            } else {
-                trimmed
-            }
-        })
-    };
-
     Some(TreeData {
         bookmark,
         sha_short,
         entries,
-        total_entries,
         head_commit,
-        readme_preview,
     })
 }

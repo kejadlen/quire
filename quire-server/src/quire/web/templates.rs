@@ -381,9 +381,7 @@ pub struct TreeTemplate {
     /// Short commit hash for HEAD.
     pub sha_short: String,
     pub entries: Vec<TreeEntry>,
-    pub total_entries: usize,
     pub head_commit: Option<PathCommit>,
-    pub readme_preview: Option<String>,
 }
 
 impl TreeTemplate {

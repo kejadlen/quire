@@ -19,8 +19,6 @@
         <span class="change-head">{{ self.sha_head() }}</span><span class="change-tail">{{ self.sha_tail() }}</span>
       </span>
     </span>
-    <span class="repo-meta-dot">·</span>
-    <span class="repo-meta-item">{{ total_entries }} entries</span>
   </div>
 </header>
 
@@ -110,7 +108,6 @@
     <div class="side-block side-block--last">
       <div class="side-block-title">This directory</div>
       <div class="tree-stats">
-        <div class="tree-stat-row"><span class="tree-stat-label">entries</span><span>{{ total_entries }}</span></div>
         {% if self.dir_count() > 0 %}
         <div class="tree-stat-row"><span class="tree-stat-label">directories</span><span>{{ self.dir_count() }}</span></div>
         {% endif %}
