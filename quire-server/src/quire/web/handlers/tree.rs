@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::super::db;
-use super::super::templates::{Crumb, PathCommit, TreeEntry, TreeEntryKind, TreeTemplate};
+use super::super::templates::{Crumb, TreeEntry, TreeEntryKind, TreeTemplate};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -65,7 +65,6 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
         bookmark: tree_data.bookmark,
         sha_short: tree_data.sha_short,
         entries: tree_data.entries,
-        head_commit: tree_data.head_commit,
     };
     render(&tmpl)
 }
@@ -74,7 +73,6 @@ struct TreeData {
     bookmark: String,
     sha_short: String,
     entries: Vec<TreeEntry>,
-    head_commit: Option<PathCommit>,
 }
 
 fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
@@ -153,28 +151,5 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         });
     }
 
-    let head_commit = {
-        let fmt = "--format=%h|%s|%ar|%an";
-        let info = if path.is_empty() {
-            reader.run(&["log", "-1", fmt, "HEAD"])
-        } else {
-            reader.run(&["log", "-1", fmt, "HEAD", "--", path])
-        };
-        info.and_then(|s| {
-            let mut it = s.splitn(4, '|');
-            Some(PathCommit {
-                sha_short: it.next()?.to_string(),
-                description: it.next().unwrap_or("").to_string(),
-                age: it.next().unwrap_or("").to_string(),
-                author: it.next().unwrap_or("").to_string(),
-            })
-        })
-    };
-
-    Some(TreeData {
-        bookmark,
-        sha_short,
-        entries,
-        head_commit,
-    })
+    Some(TreeData { bookmark, sha_short, entries })
 }

@@ -381,33 +381,11 @@ pub struct TreeTemplate {
     /// Short commit hash for HEAD.
     pub sha_short: String,
     pub entries: Vec<TreeEntry>,
-    pub head_commit: Option<PathCommit>,
 }
 
 impl TreeTemplate {
     pub fn version(&self) -> &'static str {
         pkg_version()
-    }
-
-    /// Returns (label, href) pairs for the path breadcrumb.
-    /// Root: just the repo name with no link (it's the current location).
-    /// Sub-path: repo → each segment, with links on all but the last.
-    pub fn path_parts(&self) -> Vec<(String, Option<String>)> {
-        if self.path.is_empty() {
-            return vec![(self.repo.clone(), None)];
-        }
-        let mut parts = vec![(self.repo.clone(), Some(format!("/{}/tree", self.repo)))];
-        let segments: Vec<&str> = self.path.split('/').collect();
-        for (i, seg) in segments.iter().enumerate() {
-            let subpath = segments[..=i].join("/");
-            let href = if i < segments.len() - 1 {
-                Some(format!("/{}/tree/{}", self.repo, subpath))
-            } else {
-                None
-            };
-            parts.push((seg.to_string(), href));
-        }
-        parts
     }
 
     pub fn parent_url(&self) -> String {
@@ -483,24 +461,6 @@ impl TreeEntry {
 
     pub fn is_dir_like(&self) -> bool {
         matches!(self.kind, TreeEntryKind::Dir | TreeEntryKind::Submodule)
-    }
-}
-
-pub struct PathCommit {
-    pub sha_short: String,
-    pub description: String,
-    pub age: String,
-    pub author: String,
-}
-
-impl PathCommit {
-    pub fn sha_head(&self) -> &str {
-        &self.sha_short[..self.sha_short.len().min(4)]
-    }
-
-    pub fn sha_tail(&self) -> &str {
-        let start = self.sha_short.len().min(4);
-        &self.sha_short[start..]
     }
 }
 

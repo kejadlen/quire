@@ -7,7 +7,9 @@
 {% endblock %}
 
 {% block fullpage %}
-{% include "_repo_section_nav.html" %}
+<nav class="repo-section-nav">
+  {% include "_repo_section_nav.html" %}
+</nav>
 <main class="page-main">
 <h2 class="ci-heading">ci runs</h2>
 <table class="ci-table">

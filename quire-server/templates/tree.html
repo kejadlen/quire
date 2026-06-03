@@ -8,48 +8,22 @@
 
 {% block fullpage %}
 
-{# ── Identity band ──────────────────────────────────────────────── #}
-<header class="repo-header">
-  <div class="repo-meta-row">
-    <span class="repo-meta-item">
-      <span class="bookmark-glyph">※</span>
-      <span class="bookmark-name">{{ bookmark }}</span>
-      <span class="repo-meta-sep">→</span>
-      <span class="change-id" title="{{ sha_short }}">
-        <span class="change-head">{{ self.sha_head() }}</span><span class="change-tail">{{ self.sha_tail() }}</span>
-      </span>
+{# ── Section nav + position token ───────────────────────────────── #}
+<nav class="repo-section-nav">
+  {% include "_repo_section_nav.html" %}
+  <span class="repo-position">
+    <span class="bookmark-glyph">※</span>
+    <span class="bookmark-name">{{ bookmark }}</span>
+    <span class="repo-meta-sep">→</span>
+    <span class="change-id" title="{{ sha_short }}">
+      <span class="change-head">{{ self.sha_head() }}</span><span class="change-tail">{{ self.sha_tail() }}</span>
     </span>
-  </div>
-</header>
-
-{# ── Section nav ────────────────────────────────────────────────── #}
-{% include "_repo_section_nav.html" %}
-
-{# ── Path breadcrumb (sub-directories only) ─────────────────────── #}
-{% if !path.is_empty() %}
-<div class="tree-path-crumb">
-  {% for (label, href) in self.path_parts() %}
-  {% if let Some(url) = href %}
-  <a class="tree-breadcrumb-seg tree-breadcrumb-link" href="{{ url }}">{{ label }}</a>
-  {% else %}
-  <span class="tree-breadcrumb-seg">{{ label }}</span>
-  {% endif %}
-  {% if !loop.last %}<span class="tree-breadcrumb-sep">/</span>{% endif %}
-  {% endfor %}
-</div>
-{% endif %}
-
-{# ── Latest-commit-on-this-path strip ───────────────────────────── #}
-{% if let Some(hc) = head_commit %}
-<div class="tree-commit-strip">
-  <a class="change-id tree-commit-id" href="/{{ repo }}/log">
-    <span class="change-head">{{ hc.sha_head() }}</span><span class="change-tail">{{ hc.sha_tail() }}</span>
-  </a>
-  <span class="tree-commit-desc">{{ hc.description }}</span>
-  <span class="tree-commit-author">{{ hc.author }}</span>
-  <span class="tree-commit-age">{{ hc.age }}</span>
-</div>
-{% endif %}
+    {% if !path.is_empty() %}
+    <span class="repo-meta-dot">·</span>
+    <span class="repo-position-path">{{ path }}</span>
+    {% endif %}
+  </span>
+</nav>
 
 {# ── Two-column body ─────────────────────────────────────────────── #}
 <div class="tree-body">
