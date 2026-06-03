@@ -61,7 +61,7 @@ pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<Stri
         tags,
         recent_runs,
         recent_changes,
-        active_section: "readme".to_string(),
+        active_section: "overview".to_string(),
     };
     render(&tmpl)
 }
@@ -163,7 +163,7 @@ fn read_tags(repo: &Repo) -> Vec<TagRow> {
         &[
             "for-each-ref",
             "--format=%(refname:short)|%(committerdate:relative)",
-            "--sort=-version:refname",
+            "--sort=-creatordate",
             "refs/tags/",
         ],
     )

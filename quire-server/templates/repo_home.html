@@ -25,13 +25,9 @@
 
 {# ── Repo identity band ─────────────────────────────────────── #}
 <header class="repo-header">
-  <div class="repo-title-row">
-    <h1 class="repo-name">{{ repo }}</h1>
-  </div>
   <div class="repo-meta-row">
     {% if let Some(h) = head %}
     <span class="repo-meta-item">
-      <span class="repo-meta-label">on</span>
       <span class="bookmark-glyph">※</span>
       <span class="bookmark-name">{{ h.bookmark }}</span>
       <span class="repo-meta-sep">→</span>
@@ -74,10 +70,7 @@
 
     <div class="side-block">
       <div class="side-block-title">Clone</div>
-      <div class="clone-label">https</div>
       <div class="clone-url">https://quire.local/{{ repo }}.git</div>
-      <div class="clone-label">ssh</div>
-      <div class="clone-url">git@quire.local:{{ repo }}.git</div>
     </div>
 
     {% if !bookmarks.is_empty() %}
@@ -106,7 +99,6 @@
       <div class="bookmark-list">
         {% for t in self.tags_preview() %}
         <div class="bookmark-row">
-          <span class="bookmark-kind">tag</span>
           <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
           <span class="bookmark-age">{{ t.age }}</span>
         </div>
@@ -120,7 +112,7 @@
 
     {% if !recent_runs.is_empty() %}
     <div class="side-block">
-      <div class="side-block-title">CI · last {{ recent_runs.len() }}</div>
+      <div class="side-block-title">CI</div>
       <div class="ci-mini-list">
         {% for run in recent_runs %}
         <div class="ci-mini-row">

@@ -1,9 +1,6 @@
 <footer class="page-footer">
   <span>quire v{{ self.version() }}</span>
-  <span>
-    <button class="dark-toggle" @click="toggleDark()" :aria-label="darkMode ? 'switch to light' : 'switch to dark'" title="toggle dark mode">
-      <span x-show="!darkMode">◐</span><span x-show="darkMode">◑</span>
-    </button>
-    <span class="footer-hint">press <kbd>?</kbd> for keyboard shortcuts</span>
-  </span>
+  <button class="dark-toggle" @click="toggleDark()" :aria-label="darkMode ? 'switch to light' : 'switch to dark'" title="toggle dark mode">
+    <span x-show="!darkMode">◐</span><span x-show="darkMode">◑</span>
+  </button>
 </footer>

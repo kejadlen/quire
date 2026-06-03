@@ -443,7 +443,7 @@ html.dark {
 
 .readme-content h2 {
   font-family: var(--font-humanist);
-  font-size: 19px;
+  font-size: 22px;
   font-weight: 600;
   margin: 28px 0 10px;
   line-height: 1.3;
@@ -451,12 +451,15 @@ html.dark {
 
 .readme-content h3 {
   font-family: var(--font-humanist);
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
   margin: 20px 0 8px;
 }
 
-.readme-content p { margin: 0 0 16px; }
+.readme-content p {
+  margin: 0 0 16px;
+  font-size: var(--step-1);
+}
 
 .readme-content p:last-child { margin-bottom: 0; }
 
@@ -466,7 +469,7 @@ html.dark {
   padding-left: 22px;
 }
 
-.readme-content li { margin: 5px 0; }
+.readme-content li { margin: 5px 0; font-size: var(--step-1); }
 
 .readme-content code {
   font-family: var(--font-mono);
@@ -617,25 +620,23 @@ html.dark {
 .ci-mini-list {
   font-family: var(--font-mono);
   font-size: 12.5px;
+  display: grid;
+  grid-template-columns: 10px 64px 1fr auto auto;
+  column-gap: 8px;
+  row-gap: 0;
+  align-items: baseline;
   line-height: 1.85;
 }
 
-.ci-mini-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
+.ci-mini-row { display: contents; }
 
 .ci-mini-link {
   color: var(--ink);
   text-decoration: none;
-  width: 64px;
-  flex-shrink: 0;
 }
 
 .ci-mini-branch {
   color: var(--accent);
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
