@@ -10,6 +10,7 @@ pub use repo::repo_home;
 pub use tree::{tree_view, tree_view_path};
 
 use askama::Template;
+use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
@@ -73,8 +74,6 @@ pub async fn config(State(quire): State<Quire>) -> Response {
     };
     render(&tmpl)
 }
-
-use axum::extract::State;
 
 #[cfg(test)]
 mod tests {
