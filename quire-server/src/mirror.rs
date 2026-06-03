@@ -8,23 +8,12 @@ use thiserror::Error;
 
 use crate::quire::Quire;
 
-#[derive(Debug, Diagnostic)]
+#[derive(Debug, Error, Diagnostic)]
+#[error("mirror: {} ref(s) failed", self.errors.len())]
 pub struct MirrorErrors {
     #[related]
     errors: Vec<MirrorError>,
 }
-
-impl std::fmt::Display for MirrorErrors {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mirror: {} ref(s) failed", self.errors.len())?;
-        for e in &self.errors {
-            write!(f, "; {e}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for MirrorErrors {}
 
 #[derive(Debug, Error, Diagnostic)]
 enum MirrorError {
