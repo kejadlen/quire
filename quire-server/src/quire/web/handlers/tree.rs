@@ -49,7 +49,7 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
         let mut c = vec![Crumb::with_href("tree", format!("/{}/tree", repo_display))];
         if !path.is_empty() {
             c.push(Crumb::new(
-                path.split('/').last().unwrap_or(&path).to_string(),
+                path.split('/').next_back().unwrap_or(&path).to_string(),
             ));
         }
         c

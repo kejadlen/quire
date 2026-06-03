@@ -14,7 +14,6 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
-use super::db;
 use super::templates::{ConfigTemplate, Crumb, ErrorTemplate};
 use crate::Quire;
 

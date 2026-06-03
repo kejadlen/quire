@@ -7,7 +7,7 @@ use axum::response::Response;
 
 use super::super::db;
 use super::super::templates::{RepoHomeTemplate, RunListRow};
-use super::git::{read_bookmarks, read_git_data, read_tags};
+use super::git::read_git_data;
 use super::render;
 use crate::Quire;
 
