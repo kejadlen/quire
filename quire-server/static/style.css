@@ -456,10 +456,7 @@ html.dark {
   margin: 20px 0 8px;
 }
 
-.readme-content p {
-  margin: 0 0 16px;
-  font-size: var(--step-1);
-}
+.readme-content p { margin: 0 0 16px; }
 
 .readme-content p:last-child { margin-bottom: 0; }
 
@@ -469,7 +466,7 @@ html.dark {
   padding-left: 22px;
 }
 
-.readme-content li { margin: 5px 0; font-size: var(--step-1); }
+.readme-content li { margin: 5px 0; }
 
 .readme-content code {
   font-family: var(--font-mono);
