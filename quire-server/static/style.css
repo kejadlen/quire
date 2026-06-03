@@ -703,3 +703,279 @@ pre code[data-lang] {
   font-size: 13px !important;
   background: transparent !important;
 }
+
+/* ── Tree browser ──────────────────────────────────────────────── */
+
+.tree-header {
+  padding: 22px var(--space-xl) 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tree-breadcrumb {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tree-breadcrumb-seg {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.tree-breadcrumb-link {
+  text-decoration: none;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.tree-breadcrumb-link:hover { color: var(--accent); }
+
+.tree-breadcrumb-sep {
+  color: var(--rule2);
+  padding: 0 4px;
+}
+
+.tree-meta-row {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tree-meta-label {
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--mutedFaint);
+  margin-right: 6px;
+}
+
+.tree-ref-name {
+  color: var(--ink);
+  border-bottom: 1px dotted var(--rule2);
+}
+
+.tree-meta-sha { font-size: 12.5px; }
+
+.tree-meta-dot { color: var(--rule2); }
+
+.tree-meta-spacer { flex: 1; }
+
+.tree-meta-links { display: inline-flex; gap: 12px; }
+
+.tree-meta-link {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.tree-meta-link:hover { color: var(--ink); }
+
+.tree-meta-link--active { color: var(--accent); }
+
+/* Commit strip */
+
+.tree-commit-strip {
+  padding: 10px var(--space-xl);
+  border-bottom: 1px solid var(--rule2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+}
+
+.tree-commit-id { font-size: 12.5px; }
+
+.tree-commit-desc {
+  color: var(--ink);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-commit-author { color: var(--mutedFaint); }
+
+.tree-commit-age { color: var(--muted); }
+
+/* Two-column layout */
+
+.tree-body {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr);
+}
+
+/* Tree table — left column */
+
+.tree-table-col {
+  border-right: 1px solid var(--rule);
+  min-width: 0;
+}
+
+.tree-table-header {
+  display: grid;
+  grid-template-columns: 22px 1.1fr 2fr 90px;
+  gap: 14px;
+  padding: 8px var(--space-xl);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--mutedFaint);
+  border-bottom: 1px solid var(--rule2);
+}
+
+.tree-th-age { text-align: right; }
+
+.tree-row {
+  display: grid;
+  grid-template-columns: 22px 1.1fr 2fr 90px;
+  gap: 14px;
+  padding: 5px var(--space-xl);
+  align-items: baseline;
+  border-bottom: 1px dotted var(--rule2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.tree-row:last-child { border-bottom: none; }
+
+.tree-icon {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  transform: translateY(2px);
+}
+
+.tree-row--sub .tree-icon { color: var(--accent); }
+.tree-row--up .tree-icon { opacity: 0.5; }
+
+.tree-name {
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-name--dir {
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.tree-name--dir:hover { color: var(--accent); }
+
+.tree-name--up {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.tree-name--up:hover { color: var(--ink); }
+
+.tree-row--sub .tree-name { font-style: italic; }
+
+.tree-msg {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+
+.tree-age {
+  color: var(--mutedFaint);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* Tree sidebar — right column */
+
+.tree-sidebar {
+  padding: 18px var(--space-xl) 56px 36px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+/* Dir stats */
+
+.tree-stats { line-height: 1.8; }
+
+.tree-stat-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink);
+}
+
+.tree-stat-label { color: var(--muted); }
+
+/* README preview */
+
+.tree-readme-preview {
+  font-family: var(--font-humanist);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  padding: 10px 14px;
+  background: var(--code);
+  border-left: 2px solid var(--accent);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  max-height: 160px;
+}
+
+/* Keyboard hint footer */
+
+.tree-footer {
+  padding: 16px var(--space-xl) 24px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--mutedFaint);
+  display: flex;
+  justify-content: space-between;
+  letter-spacing: 0.2px;
+}
+
+.tree-footer-hints {
+  display: inline-flex;
+  gap: 14px;
+}
+
+.tree-footer kbd,
+.tree-footer-hints kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--rule2);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+/* Collapse to single column on narrow viewports */
+
+@media (max-width: 720px) {
+  .tree-body {
+    grid-template-columns: 1fr;
+  }
+
+  .tree-table-col {
+    border-right: none;
+  }
+
+  .tree-sidebar {
+    border-top: 1px solid var(--rule);
+    padding: 18px var(--space-xl);
+  }
+}

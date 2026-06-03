@@ -28,6 +28,8 @@ pub fn router(quire: Quire) -> axum::Router {
             "/{repo}/ci/{run_id}",
             axum::routing::get(handlers::run_detail),
         )
+        .route("/{repo}/tree", axum::routing::get(handlers::tree_view))
+        .route("/{repo}/tree/{*path}", axum::routing::get(handlers::tree_view_path))
         .route("/config", axum::routing::get(handlers::config))
         .with_state(quire)
 }
