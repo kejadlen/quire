@@ -238,19 +238,470 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .c-muted { color: var(--muted); }
 .c-accent { color: var(--accent); }
 
-/* Dark palette — activates when the OS signals dark mode. */
+/* Dark palette — OS preference or .dark class toggle via Alpine. */
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1d1a15;
-    --ink: #e8e0d0;
-    --muted: #9a9184;
-    --mutedFaint: #6b6257;
-    --rule: #3a3530;
-    --rule2: #4a4540;
-    --code: #2a2520;
-    --accent: #c8c0b0;
-    --ok: #6aad5a;
-    --bad: #d45a48;
+  :root:not(.dark-override-light) {
+    --bg: #14120f;
+    --ink: #e8e2d2;
+    --muted: #8a8173;
+    --mutedFaint: #5a5347;
+    --rule: #2a2721;
+    --rule2: #1f1d18;
+    --code: #1b1915;
+    --accent: #c9c2b0;
+    --ok: #8ab378;
+    --bad: #d47a65;
   }
+}
+
+html.dark {
+  --bg: #14120f;
+  --ink: #e8e2d2;
+  --muted: #8a8173;
+  --mutedFaint: #5a5347;
+  --rule: #2a2721;
+  --rule2: #1f1d18;
+  --code: #1b1915;
+  --accent: #c9c2b0;
+  --ok: #8ab378;
+  --bad: #d47a65;
+}
+
+@media (prefers-color-scheme: dark) {
+  html.dark { /* already applied above */ }
+}
+
+/* ── Footer enhancements ───────────────────────────────────────── */
+
+.dark-toggle {
+  background: none;
+  border: 1px solid var(--rule2);
+  border-radius: 3px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  cursor: pointer;
+  padding: 1px 5px;
+  margin-right: var(--space-2xs);
+  line-height: 1;
+}
+
+.dark-toggle:hover { color: var(--ink); border-color: var(--rule); }
+
+.footer-hint {
+  font-size: var(--step--2);
+}
+
+.footer-hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--rule2);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+/* ── Repo Home ─────────────────────────────────────────────────── */
+
+.repo-header {
+  padding: 28px 56px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.repo-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-s);
+  flex-wrap: wrap;
+}
+
+.repo-name {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  margin: 0;
+  color: var(--ink);
+}
+
+.repo-meta-row {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.repo-meta-item { display: inline-flex; align-items: baseline; gap: 5px; }
+.repo-meta-label { color: var(--mutedFaint); font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase; }
+.repo-meta-sep { color: var(--rule2); }
+.repo-meta-dot { color: var(--rule2); }
+.repo-meta-value { color: var(--ink); }
+.ci-inline { align-items: center; gap: 6px; }
+
+.bookmark-glyph { color: var(--mutedFaint); }
+.bookmark-name { color: var(--accent); }
+
+.commit-id-secondary {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--mutedFaint);
+}
+
+/* change-id: first 4 chars accent, next 4 muted */
+.change-id {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.change-head { color: var(--accent); font-weight: 500; }
+.change-tail { color: var(--muted); }
+
+/* ── Section nav ───────────────────────────────────────────────── */
+
+.repo-section-nav {
+  display: flex;
+  align-items: baseline;
+  gap: 28px;
+  padding: 0 56px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.section-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 12px 0;
+  margin-bottom: -1px;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+
+.section-link:hover { color: var(--ink); }
+
+.section-link--active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.section-count {
+  color: var(--mutedFaint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Repo body (two-column) ────────────────────────────────────── */
+
+.repo-body {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(0, 1fr);
+}
+
+.repo-readme {
+  padding: 32px 44px 56px 56px;
+  border-right: 1px solid var(--rule);
+  font-family: var(--font-humanist);
+  font-size: 16px;
+  line-height: 1.72;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.readme-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.readme-empty {
+  color: var(--mutedFaint);
+  font-style: italic;
+  margin: 0;
+}
+
+/* README rendered content */
+.readme-content h1 {
+  font-family: var(--font-humanist);
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 4px;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+}
+
+.readme-content h2 {
+  font-family: var(--font-humanist);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+  line-height: 1.3;
+}
+
+.readme-content h3 {
+  font-family: var(--font-humanist);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+.readme-content p { margin: 0 0 16px; }
+
+.readme-content p:last-child { margin-bottom: 0; }
+
+.readme-content ul,
+.readme-content ol {
+  margin: 0 0 20px;
+  padding-left: 22px;
+}
+
+.readme-content li { margin: 5px 0; }
+
+.readme-content code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--code);
+  padding: 1px 5px;
+}
+
+.readme-content pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  background: var(--code);
+  color: var(--ink);
+  padding: 14px 18px;
+  margin: 0 0 20px;
+  border-left: 2px solid var(--accent);
+  overflow: auto;
+  white-space: pre;
+}
+
+.readme-content pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.readme-content a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--rule2);
+}
+
+.readme-content a:hover { border-bottom-color: var(--accent); }
+
+.readme-content blockquote {
+  border-left: 2px solid var(--rule2);
+  margin: 0 0 16px;
+  padding: 4px 16px;
+  color: var(--muted);
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────── */
+
+.repo-sidebar {
+  padding: 32px 56px 56px 44px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.side-block {
+  margin-bottom: 24px;
+}
+
+.side-block--last { margin-bottom: 0; }
+
+.side-block-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule2);
+}
+
+/* Clone block */
+.clone-label {
+  color: var(--mutedFaint);
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+  margin-top: 8px;
+}
+
+.clone-label:first-of-type { margin-top: 0; }
+
+.clone-url {
+  color: var(--ink);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+  margin-bottom: 4px;
+}
+
+/* Bookmark list */
+.bookmark-list { line-height: 1.8; }
+
+.bookmark-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+.bookmark-kind {
+  display: inline-block;
+  width: 44px;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--mutedFaint);
+  flex-shrink: 0;
+}
+
+.bookmark-kind--trunk { color: var(--accent); }
+
+.bookmark-glyph-sm {
+  color: var(--mutedFaint);
+  font-size: 9px;
+  margin-right: 4px;
+}
+
+.bookmark-link {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--rule2);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-link:hover { color: var(--accent); }
+
+.bookmark-age {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-left: 10px;
+  white-space: nowrap;
+}
+
+.side-more {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.side-more:hover { color: var(--ink); }
+
+/* CI mini list */
+.ci-mini-list {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.85;
+}
+
+.ci-mini-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ci-mini-link {
+  color: var(--ink);
+  text-decoration: none;
+  width: 64px;
+  flex-shrink: 0;
+}
+
+.ci-mini-branch {
+  color: var(--accent);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ci-mini-age {
+  color: var(--mutedFaint);
+  white-space: nowrap;
+}
+
+.ci-mini-dur {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Recent changes list */
+.change-mini-list { }
+
+.change-mini-row {
+  padding: 5px 0;
+  border-bottom: 1px dotted var(--rule2);
+}
+
+.change-mini-row:last-child { border-bottom: none; }
+
+.change-mini-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.change-mini-age {
+  color: var(--mutedFaint);
+  font-size: 11.5px;
+}
+
+.change-mini-desc {
+  color: var(--ink);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.no-desc {
+  font-style: italic;
+  color: var(--mutedFaint);
+}
+
+/* ── Arborium syntax highlighting integration ──────────────────── */
+
+/* Keep quire's paper-toned code background; strip any theme-imposed radius. */
+pre:has(code[class*="language-"]),
+pre:has(code[data-lang]) {
+  background: var(--code) !important;
+  border-radius: 0 !important;
+  /* Preserve the design's left-rail accent. */
+  border-left: 2px solid var(--accent) !important;
+}
+
+/* Arborium injects its own <style> for theme colors; let it control text
+   colors but keep our font stack and size. */
+pre code[class*="language-"],
+pre code[data-lang] {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  background: transparent !important;
 }

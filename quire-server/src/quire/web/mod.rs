@@ -22,7 +22,7 @@ use crate::Quire;
 pub fn router(quire: Quire) -> axum::Router {
     axum::Router::new()
         .route("/style.css", axum::routing::get(handlers::stylesheet))
-        .route("/{repo}", axum::routing::get(handlers::repo_redirect))
+        .route("/{repo}", axum::routing::get(handlers::repo_home))
         .route("/{repo}/ci", axum::routing::get(handlers::run_list))
         .route(
             "/{repo}/ci/{run_id}",

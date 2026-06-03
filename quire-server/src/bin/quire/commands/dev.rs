@@ -69,11 +69,25 @@ impl Seeder {
 
         let quire = Quire::load(base_dir)?;
 
-        // Create the repos dir + a bare repo so the web view resolves the repo.
-        let bare_repo = quire.repos_dir().join("example.git");
-        fs_err::create_dir_all(&bare_repo)
+        // Clone the current working directory as a bare repo so the web view
+        // has real git data to render.
+        fs_err::create_dir_all(quire.repos_dir())
             .into_diagnostic()
-            .context("failed to create bare repo dir")?;
+            .context("failed to create repos dir")?;
+        let bare_repo = quire.repos_dir().join("example.git");
+        let src = std::env::current_dir()
+            .into_diagnostic()
+            .context("failed to get current directory")?;
+        let status = std::process::Command::new("git")
+            .args(["clone", "--bare"])
+            .arg(&src)
+            .arg(&bare_repo)
+            .status()
+            .into_diagnostic()
+            .context("failed to run git clone")?;
+        if !status.success() {
+            miette::bail!("git clone --bare failed with {status}");
+        }
 
         let mut db = quire::db::open(&quire.db_path())
             .into_diagnostic()

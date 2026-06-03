@@ -1,0 +1,171 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ repo }}{% endblock %}
+
+{% block nav %}
+<nav class="page-nav">
+  <div class="nav-bar">
+    <a class="nav-wordmark" href="/" aria-label="quire home">
+      <svg class="q-mark" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="2" y="2" width="12" height="12" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <line x1="4.5" y1="6"  x2="11.5" y2="6"  stroke="currentColor" stroke-width="0.8"/>
+        <line x1="4.5" y1="8"  x2="11.5" y2="8"  stroke="currentColor" stroke-width="0.8"/>
+        <line x1="4.5" y1="10" x2="9"    y2="10" stroke="currentColor" stroke-width="0.8"/>
+        <circle cx="11" cy="11" r="3" fill="none" stroke="currentColor" stroke-width="0.8" stroke-dasharray="1.2 1.2" opacity="0.35"/>
+      </svg>
+      <span class="nav-wordmark-text">quire</span>
+    </a>
+    <span class="sep">/</span>
+    <span class="nav-repo">{{ repo }}</span>
+  </div>
+</nav>
+{% endblock %}
+
+{% block fullpage %}
+
+{# ── Repo identity band ─────────────────────────────────────── #}
+<header class="repo-header">
+  <div class="repo-title-row">
+    <h1 class="repo-name">{{ repo }}</h1>
+  </div>
+  <div class="repo-meta-row">
+    {% if let Some(h) = head %}
+    <span class="repo-meta-item">
+      <span class="repo-meta-label">on</span>
+      <span class="bookmark-glyph">※</span>
+      <span class="bookmark-name">{{ h.bookmark }}</span>
+      <span class="repo-meta-sep">→</span>
+      <a class="change-id" href="/{{ repo }}/log" title="commit {{ h.sha_short() }}">
+        <span class="change-head">{{ h.change_head() }}</span><span class="change-tail">{{ h.change_tail() }}</span>
+      </a>
+      <span class="commit-id-secondary">{{ h.sha_short() }}</span>
+    </span>
+    <span class="repo-meta-dot">·</span>
+    <span class="repo-meta-item">updated <span class="repo-meta-value">{{ h.age }}</span></span>
+    <span class="repo-meta-dot">·</span>
+    {% endif %}
+    {% if !recent_runs.is_empty() %}
+    <span class="repo-meta-item ci-inline">
+      <span class="ci-status-dot {{ self.latest_ci_state_class() }}"></span>
+      ci {{ self.latest_ci_state() }}
+    </span>
+    {% endif %}
+  </div>
+</header>
+
+{# ── Section nav ────────────────────────────────────────────── #}
+<nav class="repo-section-nav">
+  <a class="section-link section-link--active" href="/{{ repo }}">readme</a>
+  <a class="section-link" href="/{{ repo }}/tree">tree</a>
+  <a class="section-link" href="/{{ repo }}/log">log</a>
+  <a class="section-link" href="/{{ repo }}/bookmarks">bookmarks{% if !bookmarks.is_empty() %} <span class="section-count">{{ bookmarks.len() }}</span>{% endif %}</a>
+  <a class="section-link" href="/{{ repo }}/tags">tags{% if !tags.is_empty() %} <span class="section-count">{{ tags.len() }}</span>{% endif %}</a>
+  <a class="section-link" href="/{{ repo }}/ci">ci</a>
+</nav>
+
+{# ── Two-column body ─────────────────────────────────────────── #}
+<div class="repo-body">
+
+  {# Left column: README #}
+  <article class="repo-readme">
+    <div class="readme-eyebrow">README.md</div>
+    {% if let Some(html) = readme_html %}
+    <div class="readme-content">{{ html|safe }}</div>
+    {% else %}
+    <p class="readme-empty">no readme</p>
+    {% endif %}
+  </article>
+
+  {# Right column: sidebar stack #}
+  <aside class="repo-sidebar">
+
+    <div class="side-block">
+      <div class="side-block-title">Clone</div>
+      <div class="clone-label">https</div>
+      <div class="clone-url">https://quire.local/{{ repo }}.git</div>
+      <div class="clone-label">ssh</div>
+      <div class="clone-url">git@quire.local:{{ repo }}.git</div>
+    </div>
+
+    {% if !bookmarks.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Bookmarks</div>
+      <div class="bookmark-list">
+        {% for b in self.bookmarks_preview() %}
+        <div class="bookmark-row">
+          <span class="bookmark-kind {% if loop.first %}bookmark-kind--trunk{% endif %}">{% if loop.first %}trunk{% else %}local{% endif %}</span>
+          <a class="bookmark-link" href="/{{ repo }}/log">
+            <span class="bookmark-glyph-sm">※</span>{{ b.name }}
+          </a>
+          <span class="bookmark-age">{{ b.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if self.extra_bookmarks() > 0 %}
+      <a class="side-more" href="/{{ repo }}/bookmarks">all bookmarks →</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if !tags.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Tags</div>
+      <div class="bookmark-list">
+        {% for t in self.tags_preview() %}
+        <div class="bookmark-row">
+          <span class="bookmark-kind">tag</span>
+          <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
+          <span class="bookmark-age">{{ t.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if self.extra_tags() > 0 %}
+      <a class="side-more" href="/{{ repo }}/tags">+ {{ self.extra_tags() }} more →</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if !recent_runs.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">CI · last {{ recent_runs.len() }}</div>
+      <div class="ci-mini-list">
+        {% for run in recent_runs %}
+        <div class="ci-mini-row">
+          <span class="ci-status-dot {{ run.state_class() }}"></span>
+          <a class="ci-mini-link" href="/{{ repo }}/ci/{{ run.id }}">{{ run.sha_short() }}</a>
+          <span class="ci-mini-branch">{{ run.branch_short() }}</span>
+          <span class="ci-mini-age"><time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time></span>
+          <span class="ci-mini-dur">{{ run.duration_display() }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      <a class="side-more" href="/{{ repo }}/ci">all runs →</a>
+    </div>
+    {% endif %}
+
+    {% if !recent_changes.is_empty() %}
+    <div class="side-block side-block--last">
+      <div class="side-block-title">Recent changes</div>
+      <div class="change-mini-list">
+        {% for ch in recent_changes %}
+        <div class="change-mini-row">
+          <div class="change-mini-header">
+            <a class="change-id" href="/{{ repo }}/log" title="commit {{ ch.sha_full() }}">
+              <span class="change-head">{{ ch.change_head() }}</span><span class="change-tail">{{ ch.change_tail() }}</span>
+            </a>
+            <span class="change-mini-age">{{ ch.age }}</span>
+          </div>
+          <div class="change-mini-desc">
+            {% if ch.description.is_empty() %}<span class="no-desc">(no description set)</span>{% else %}{{ ch.description }}{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <a class="side-more" href="/{{ repo }}/log">full log →</a>
+    </div>
+    {% endif %}
+
+  </aside>
+</div>
+
+{% endblock %}

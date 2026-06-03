@@ -78,6 +78,9 @@ mutants:
     fi
     exit "$rc"
 
+dev:
+    cargo run -p quire-server --features dev -- serve --seed
+
 all: fmt clippy test
 
 install:

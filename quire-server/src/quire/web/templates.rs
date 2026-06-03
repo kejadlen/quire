@@ -227,6 +227,115 @@ impl DetailShEvent {
     }
 }
 
+// ── Repo Home ──────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "repo_home.html")]
+pub struct RepoHomeTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub head: Option<HeadInfo>,
+    pub readme_html: Option<String>,
+    pub bookmarks: Vec<BookmarkRow>,
+    pub tags: Vec<TagRow>,
+    pub recent_runs: Vec<RunListRow>,
+    pub recent_changes: Vec<ChangeRow>,
+}
+
+impl RepoHomeTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+
+    pub fn latest_ci_state(&self) -> &str {
+        self.recent_runs
+            .first()
+            .map(|r| r.state())
+            .unwrap_or("none")
+    }
+
+    pub fn latest_ci_state_class(&self) -> &'static str {
+        self.recent_runs
+            .first()
+            .map(|r| r.state_class())
+            .unwrap_or("")
+    }
+
+    pub fn bookmarks_preview(&self) -> &[BookmarkRow] {
+        &self.bookmarks[..self.bookmarks.len().min(5)]
+    }
+
+    pub fn extra_bookmarks(&self) -> usize {
+        self.bookmarks.len().saturating_sub(5)
+    }
+
+    pub fn tags_preview(&self) -> &[TagRow] {
+        &self.tags[..self.tags.len().min(5)]
+    }
+
+    pub fn extra_tags(&self) -> usize {
+        self.tags.len().saturating_sub(5)
+    }
+}
+
+pub struct HeadInfo {
+    pub sha: String,
+    pub description: String,
+    pub age: String,
+    pub bookmark: String,
+}
+
+impl HeadInfo {
+    pub fn change_head(&self) -> &str {
+        let end = self.sha.len().min(4);
+        &self.sha[..end]
+    }
+
+    pub fn change_tail(&self) -> &str {
+        let start = self.sha.len().min(4);
+        let end = self.sha.len().min(8);
+        &self.sha[start..end]
+    }
+
+    pub fn sha_short(&self) -> &str {
+        &self.sha[..self.sha.len().min(8)]
+    }
+}
+
+pub struct BookmarkRow {
+    pub name: String,
+    pub sha_short: String,
+    pub age: String,
+}
+
+pub struct TagRow {
+    pub name: String,
+    pub age: String,
+}
+
+pub struct ChangeRow {
+    pub sha: String,
+    pub description: String,
+    pub age: String,
+}
+
+impl ChangeRow {
+    pub fn change_head(&self) -> &str {
+        let end = self.sha.len().min(4);
+        &self.sha[..end]
+    }
+
+    pub fn change_tail(&self) -> &str {
+        let start = self.sha.len().min(4);
+        let end = self.sha.len().min(8);
+        &self.sha[start..end]
+    }
+
+    pub fn sha_full(&self) -> &str {
+        &self.sha
+    }
+}
+
 // ── Config ─────────────────────────────────────────────────────────
 
 #[derive(Template)]

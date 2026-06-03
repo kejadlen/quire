@@ -1,16 +1,49 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" x-data="quireApp()" :class="{ dark: darkMode }" x-init="init()">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}quire{% endblock %}</title>
     <link rel="stylesheet" href="/style.css">
+    <script>window.Arborium = { manual: true };</script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@arborium/arborium@2/dist/arborium.iife.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   </head>
   <body>
     {% block nav %}{% endblock %}
+    {% block fullpage %}
     <main class="page-main">
       {% block content %}{% endblock %}
     </main>
+    {% endblock %}
     {% include "_footer.html" %}
   </body>
+  <script>
+    function quireApp() {
+      return {
+        darkMode: false,
+        init() {
+          const stored = localStorage.getItem('quire-dark');
+          if (stored !== null) {
+            this.darkMode = stored === '1';
+          } else {
+            this.darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+          this._highlight();
+        },
+        toggleDark() {
+          this.darkMode = !this.darkMode;
+          localStorage.setItem('quire-dark', this.darkMode ? '1' : '0');
+          this._highlight();
+        },
+        _highlight() {
+          const arborium = window.arborium;
+          if (!arborium) return;
+          const theme = this.darkMode ? 'github-dark' : 'github-light';
+          arborium.setConfig({ theme });
+          arborium.highlightAll();
+        }
+      }
+    }
+  </script>
 </html>
