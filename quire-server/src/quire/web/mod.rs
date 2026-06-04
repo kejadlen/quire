@@ -18,7 +18,7 @@ use axum::{Router, routing::get};
 use crate::{
     Quire,
     quire::web::handlers::{
-        config, file_view, repo_home, run_detail, run_list, stylesheet, tree_view, tree_view_path,
+        config, repo_home, run_detail, run_list, stylesheet, tree_view, tree_view_path,
     },
 };
 
@@ -39,7 +39,6 @@ pub fn public_router(quire: Quire) -> Router {
         .route("/{repo}", get(repo_home))
         .route("/{repo}/tree", get(tree_view))
         .route("/{repo}/tree/{*path}", get(tree_view_path))
-        .route("/{repo}/blob/{*path}", get(file_view))
         .route("/config", get(config))
         .with_state(quire)
 }

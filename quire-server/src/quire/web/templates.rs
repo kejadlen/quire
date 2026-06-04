@@ -468,14 +468,6 @@ impl TreeTemplate {
         self.entries.iter().filter(|e| e.is_file()).count()
     }
 
-    pub fn file_entry_url(&self, name: &str) -> String {
-        if self.path.is_empty() {
-            format!("/{}/blob/{}", self.repo, name)
-        } else {
-            format!("/{}/blob/{}/{}", self.repo, self.path, name)
-        }
-    }
-
     pub fn sha_head(&self) -> &str {
         &self.sha_short[..self.sha_short.len().min(4)]
     }

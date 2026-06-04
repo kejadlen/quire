@@ -30,11 +30,7 @@
         <div class="code-line-num">{{ line_num }}</div>
         {% endfor %}
       </div>
-      <div class="code-body">
-        {% for line in lines %}
-        <div class="code-line"><pre>{{ line|safe }}</pre></div>
-        {% endfor %}
-      </div>
+      <pre class="code-body">{% for line in lines %}{{ line|safe }}{% endfor %}</pre>
     </div>
   </div>
 

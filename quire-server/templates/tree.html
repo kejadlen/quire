@@ -61,7 +61,7 @@
       <span class="tree-msg">{{ entry.last_msg }}</span>
       <span class="tree-age">{{ entry.age }}</span>
       {% else %}
-      <a class="tree-name" href="{{ self.file_entry_url(&entry.name) }}">{{ entry.name }}</a>
+      <a class="tree-name" href="{{ self.dir_entry_url(&entry.name) }}">{{ entry.name }}</a>
       <span class="tree-msg">{{ entry.last_msg }}</span>
       <span class="tree-age">{{ entry.age }}</span>
       {% endif %}

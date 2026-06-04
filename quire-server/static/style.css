@@ -806,19 +806,11 @@ html.dark {
 .code-body {
   padding: 18px 56px 18px 20px;
   overflow: auto;
-}
-
-.code-line {
-  white-space: pre;
-}
-
-.code-line pre {
   margin: 0;
-  padding: 0;
+  white-space: pre;
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
-  white-space: pre;
 }
 
 /* ── Arborium syntax highlighting integration ──────────────────── */
