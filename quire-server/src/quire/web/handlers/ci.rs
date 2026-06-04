@@ -45,7 +45,10 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    let (bookmarks, tags) = refs_handle.await.unwrap_or_default();
+    let (bookmarks, tags) = refs_handle.await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "refs task panicked");
+        Default::default()
+    });
 
     let template_runs: Vec<RunListRow> = runs
         .into_iter()
@@ -169,7 +172,10 @@ pub async fn run_detail(
     // Await all spawned reads in spawn order to preserve the index mapping.
     let mut log_results: Vec<String> = Vec::with_capacity(log_handles.len());
     for handle in log_handles {
-        log_results.push(handle.await.unwrap_or_default());
+        log_results.push(handle.await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "log read task panicked");
+            String::new()
+        }));
     }
 
     // Reassemble: walk jobs/events in the same order, pulling from log_results.
@@ -203,8 +209,14 @@ pub async fn run_detail(
         });
     }
 
-    let quire_ci_log = quire_ci_log_handle.await.unwrap_or_default();
-    let (bookmarks, tags) = refs_handle.await.unwrap_or_default();
+    let quire_ci_log = quire_ci_log_handle.await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "quire-ci.log read task panicked");
+        String::new()
+    });
+    let (bookmarks, tags) = refs_handle.await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "refs task panicked");
+        Default::default()
+    });
 
     let crumbs = vec![
         Crumb::with_href("ci", format!("/{}/ci", repo_display)),
