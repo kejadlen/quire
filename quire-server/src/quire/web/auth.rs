@@ -8,14 +8,24 @@ use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// Extractor that resolves to `true` when the `Remote-User` header is present.
-pub struct Auth(pub bool);
+/// Extractor that resolves to whether the request carries a `Remote-User` header.
+pub struct Auth {
+    pub authenticated: bool,
+}
+
+impl Auth {
+    pub fn is_authenticated(&self) -> bool {
+        self.authenticated
+    }
+}
 
 impl<S: Send + Sync> FromRequestParts<S> for Auth {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Auth(parts.headers.contains_key("Remote-User")))
+        Ok(Auth {
+            authenticated: parts.headers.contains_key("Remote-User"),
+        })
     }
 }
 
