@@ -22,16 +22,21 @@ use crate::{
     },
 };
 
-/// Bare CI routes without any auth middleware.
+/// Routes that require authentication.
 ///
-/// The caller decides whether to layer auth on top (e.g.
-/// `.layer(middleware::from_fn(auth::require_auth))`).
-pub fn router(quire: Quire) -> Router {
+/// Currently only the CI views: run list and run detail pages.
+pub fn ci_router(quire: Quire) -> Router {
+    Router::new()
+        .route("/{repo}/ci", get(run_list))
+        .route("/{repo}/ci/{run_id}", get(run_detail))
+        .with_state(quire)
+}
+
+/// Public routes with no auth required.
+pub fn public_router(quire: Quire) -> Router {
     Router::new()
         .route("/style.css", get(stylesheet))
         .route("/{repo}", get(repo_home))
-        .route("/{repo}/ci", get(run_list))
-        .route("/{repo}/ci/{run_id}", get(run_detail))
         .route("/{repo}/tree", get(tree_view))
         .route("/{repo}/tree/{*path}", get(tree_view_path))
         .route("/config", get(config))

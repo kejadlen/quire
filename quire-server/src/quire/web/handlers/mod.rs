@@ -142,7 +142,8 @@ mod tests {
         }
 
         fn app(&self) -> axum::Router {
-            super::super::router(self.quire.clone())
+            super::super::public_router(self.quire.clone())
+                .merge(super::super::ci_router(self.quire.clone()))
         }
     }
 
