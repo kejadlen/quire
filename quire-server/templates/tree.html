@@ -28,20 +28,13 @@
 {# ── Two-column body ─────────────────────────────────────────────── #}
 <div class="tree-body">
 
-  {# LEFT — tree table #}
+  {# LEFT — tree table, no header, no per-row rules #}
   <div class="tree-table-col">
-    <div class="tree-table-header">
-      <span></span>
-      <span>name</span>
-      <span>last change</span>
-      <span class="tree-th-age">age</span>
-    </div>
-
     {% for entry in entries %}
     <div class="tree-row {% if entry.is_dir_like() %}tree-row--dir{% endif %}{% if entry.is_submodule() %} tree-row--sub{% endif %}{% if entry.is_up() %} tree-row--up{% endif %}">
       <span class="tree-icon" aria-hidden="true">
         {% if entry.is_dir() %}
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
           <path d="M1 3.5h4l1 1.2h7v7.8h-12z"/>
         </svg>
         {% elif entry.is_submodule() %}
@@ -53,7 +46,7 @@
           <path d="M3 7l4-4 4 4M7 3v9"/>
         </svg>
         {% else %}
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
           <path d="M3 1.5h5l3 3v8.5h-8z"/>
           <path d="M8 1.5v3h3"/>
         </svg>
@@ -76,22 +69,18 @@
     {% endfor %}
   </div>
 
-  {# RIGHT — sidebar #}
+  {# RIGHT — recent commit log for this ref #}
   <aside class="tree-sidebar">
-
-    <div class="side-block side-block--last">
-      <div class="side-block-title">This directory</div>
-      <div class="tree-stats">
-        {% if self.dir_count() > 0 %}
-        <div class="tree-stat-row"><span class="tree-stat-label">directories</span><span>{{ self.dir_count() }}</span></div>
-        {% endif %}
-        {% if self.submodule_count() > 0 %}
-        <div class="tree-stat-row"><span class="tree-stat-label">submodules</span><span>{{ self.submodule_count() }}</span></div>
-        {% endif %}
-        <div class="tree-stat-row"><span class="tree-stat-label">files</span><span>{{ self.file_count() }}</span></div>
+    {% for change in recent_changes %}
+    <a class="tree-log-item" href="/{{ repo }}/log">
+      <div class="tree-log-subject">{{ change.description }}</div>
+      <div class="tree-log-meta">
+        <span class="tree-log-sha">{{ change.change_head() }}{{ change.change_tail() }}</span>
+        <span class="tree-log-age">{{ change.age }}</span>
       </div>
-    </div>
-
+    </a>
+    {% endfor %}
+    <a class="tree-log-more" href="/{{ repo }}/log">log →</a>
   </aside>
 </div>
 

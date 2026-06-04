@@ -35,12 +35,13 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
         let tree_data = read_tree_data(&reader, &path_clone)?;
         let bookmarks = reader.bookmarks();
         let tags = reader.tags();
-        Some((tree_data, bookmarks, tags))
+        let recent_changes = reader.recent_changes_for(Some(&path_clone));
+        Some((tree_data, bookmarks, tags, recent_changes))
     })
     .await
     .unwrap_or(None);
 
-    let (tree_data, bookmarks, tags) = match result {
+    let (tree_data, bookmarks, tags, recent_changes) = match result {
         Some(v) => v,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -65,6 +66,7 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
         bookmark: tree_data.bookmark,
         sha_short: tree_data.sha_short,
         entries: tree_data.entries,
+        recent_changes,
     };
     render(&tmpl)
 }

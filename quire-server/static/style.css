@@ -792,7 +792,7 @@ pre code[data-lang] {
 
 .tree-body {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2.7fr) minmax(0, 1fr);
 }
 
 /* Tree table — left column */
@@ -800,35 +800,18 @@ pre code[data-lang] {
 .tree-table-col {
   border-right: 1px solid var(--rule);
   min-width: 0;
+  padding-top: 16px;
 }
-
-.tree-table-header {
-  display: grid;
-  grid-template-columns: 22px 1.1fr 2fr 90px;
-  gap: 14px;
-  padding: 8px var(--space-xl);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--mutedFaint);
-  border-bottom: 1px solid var(--rule2);
-}
-
-.tree-th-age { text-align: right; }
 
 .tree-row {
   display: grid;
-  grid-template-columns: 22px 1.1fr 2fr 90px;
-  gap: 14px;
-  padding: 5px var(--space-xl);
+  grid-template-columns: 18px 240px minmax(0, 1fr) 96px;
+  gap: 16px;
+  padding: 6px var(--space-xl);
   align-items: baseline;
-  border-bottom: 1px dotted var(--rule2);
   font-family: var(--font-mono);
   font-size: 13px;
 }
-
-.tree-row:last-child { border-bottom: none; }
 
 .tree-icon {
   display: flex;
@@ -879,26 +862,50 @@ pre code[data-lang] {
   text-align: right;
 }
 
-/* Tree sidebar — right column */
+/* Tree sidebar — right column, recent commit log */
 
 .tree-sidebar {
-  padding: 18px var(--space-xl) 56px 36px;
+  padding: 12px var(--space-xl) 0 40px;
   font-family: var(--font-mono);
   font-size: 12.5px;
   min-width: 0;
 }
 
-/* Dir stats */
-
-.tree-stats { line-height: 1.8; }
-
-.tree-stat-row {
-  display: flex;
-  justify-content: space-between;
-  color: var(--ink);
+.tree-log-item {
+  display: block;
+  padding: 10px 0;
+  text-decoration: none;
 }
 
-.tree-stat-label { color: var(--muted); }
+.tree-log-subject {
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tree-log-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.tree-log-sha { color: var(--muted); }
+
+.tree-log-age { color: var(--mutedFaint); }
+
+.tree-log-more {
+  display: block;
+  margin-top: 12px;
+  color: var(--mutedFaint);
+  text-decoration: none;
+  font-size: 12px;
+}
 
 /* README preview */
 
@@ -958,6 +965,6 @@ pre code[data-lang] {
 
   .tree-sidebar {
     border-top: 1px solid var(--rule);
-    padding: 18px var(--space-xl);
+    padding: 18px var(--space-xl) 0;
   }
 }

@@ -115,9 +115,18 @@ impl<'a> RepoView<'a> {
     }
 
     pub(super) fn recent_changes(&self) -> Vec<ChangeRow> {
-        let out = self
-            .run(&["log", "-12", "--format=%H|%s|%cr"])
-            .unwrap_or_default();
+        self.recent_changes_for(None)
+    }
+
+    pub(super) fn recent_changes_for(&self, path: Option<&str>) -> Vec<ChangeRow> {
+        let mut args = vec!["log", "-12", "--format=%H|%s|%cr"];
+        if let Some(p) = path
+            && !p.is_empty()
+        {
+            args.push("--");
+            args.push(p);
+        }
+        let out = self.run(&args).unwrap_or_default();
 
         out.lines()
             .filter_map(|line| {
