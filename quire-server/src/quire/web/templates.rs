@@ -381,6 +381,7 @@ pub struct TreeTemplate {
     /// Short commit hash for HEAD.
     pub sha_short: String,
     pub entries: Vec<TreeEntry>,
+    pub recent_changes: Vec<ChangeRow>,
 }
 
 impl TreeTemplate {
