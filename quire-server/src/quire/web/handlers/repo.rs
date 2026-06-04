@@ -57,7 +57,7 @@ pub async fn repo_home(
             .unwrap_or_default();
 
     let tmpl = RepoHomeTemplate {
-        sections: nav_sections(&repo_display, "overview", auth.0),
+        sections: nav_sections(&repo_display, "overview", auth.is_authenticated()),
         repo: repo_display,
         crumbs: vec![],
         head,

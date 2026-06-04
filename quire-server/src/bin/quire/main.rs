@@ -151,13 +151,15 @@ async fn main() -> Result<()> {
                     quire::quire::web::auth::require_auth,
                 ));
                 let merged = public.merge(ci);
-                if dev {
+                #[cfg(feature = "dev")]
+                let merged = if dev {
                     merged.layer(axum::middleware::from_fn(
                         quire::quire::web::auth::inject_dev_user,
                     ))
                 } else {
                     merged
-                }
+                };
+                merged
             };
             let api_routes = quire::quire::web::api::router(quire.clone());
             commands::serve::run(&quire, web_routes, api_routes).await?

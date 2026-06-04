@@ -18,7 +18,7 @@ pub async fn tree_view(
     auth: Auth,
     AxumPath(repo): AxumPath<String>,
 ) -> Response {
-    tree_or_file_at_path(quire, repo, String::new(), auth.0).await
+    tree_or_file_at_path(quire, repo, String::new(), auth.is_authenticated()).await
 }
 
 pub async fn tree_view_path(
@@ -26,7 +26,7 @@ pub async fn tree_view_path(
     auth: Auth,
     AxumPath((repo, path)): AxumPath<(String, String)>,
 ) -> Response {
-    tree_or_file_at_path(quire, repo, path, auth.0).await
+    tree_or_file_at_path(quire, repo, path, auth.is_authenticated()).await
 }
 
 async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: bool) -> Response {
@@ -46,17 +46,17 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             let bookmarks = reader.bookmarks();
             let tags = reader.tags();
             let recent_changes = reader.recent_changes_for(Some(&path_clone));
-            Some(Either::Left((tree_data, bookmarks, tags, recent_changes)))
+            Some(Ok((tree_data, bookmarks, tags, recent_changes)))
         } else {
             // ls-tree failed — try reading as a file blob.
-            read_file_data(&reader, &path_clone).map(Either::Right)
+            read_file_data(&reader, &path_clone).map(Err)
         }
     })
     .await
     .unwrap_or(None);
 
     match result {
-        Some(Either::Left((tree_data, bookmarks, tags, recent_changes))) => {
+        Some(Ok((tree_data, bookmarks, tags, recent_changes))) => {
             let crumbs = build_tree_crumbs(&repo_display, &path);
             let tmpl = TreeTemplate {
                 sections: nav_sections(&repo_display, "tree", authed),
@@ -72,7 +72,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             };
             render(&tmpl)
         }
-        Some(Either::Right(file_data)) => {
+        Some(Err(file_data)) => {
             let crumbs = build_file_crumbs(&repo_display, &path);
             let line_nums: Vec<usize> = (1..=file_data.line_count).collect();
             let tmpl = FileViewTemplate {
@@ -103,11 +103,6 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
         }
         None => StatusCode::NOT_FOUND.into_response(),
     }
-}
-
-enum Either<L, R> {
-    Left(L),
-    Right(R),
 }
 
 // ── Tree (directory) view ──────────────────────────────────────
