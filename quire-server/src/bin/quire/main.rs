@@ -38,10 +38,10 @@ struct Cli {
 enum Commands {
     /// Start the HTTP server.
     Serve {
-        /// Seed the database with dev data before starting.
+        /// Seed the database with dev data and disable auth on CI routes.
         #[cfg(feature = "dev")]
         #[arg(long)]
-        seed: bool,
+        dev: bool,
     },
 
     /// Dispatch an SSH-originated command.
@@ -136,18 +136,18 @@ async fn main() -> Result<()> {
     match command {
         Commands::Serve {
             #[cfg(feature = "dev")]
-            seed,
+            dev,
         } => {
             #[cfg(not(feature = "dev"))]
-            let seed = false;
+            let dev = false;
 
             #[cfg(feature = "dev")]
-            let quire = if seed { commands::dev::seed()? } else { quire };
+            let quire = if dev { commands::dev::seed()? } else { quire };
 
             let web_routes = {
                 let public = quire::quire::web::public_router(quire.clone());
                 let ci = quire::quire::web::ci_router(quire.clone());
-                let ci = if seed {
+                let ci = if dev {
                     ci
                 } else {
                     ci.layer(axum::middleware::from_fn(
