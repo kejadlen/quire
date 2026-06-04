@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::super::db;
-use super::super::templates::{FileViewTemplate, nav_sections};
+use super::super::templates::{Crumb, FileViewTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -34,10 +34,12 @@ pub async fn file_view(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
+    let crumbs = build_path_crumbs(&repo_display, &path);
+
     let tmpl = FileViewTemplate {
         sections: nav_sections(&repo_display, "tree", false),
         repo: repo_display,
-        crumbs: vec![],
+        crumbs,
         path,
         bookmark: file_data.bookmark,
         sha_short: file_data.sha_short.clone(),
@@ -205,4 +207,23 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn build_path_crumbs(repo: &str, path: &str) -> Vec<Crumb> {
+    let mut crumbs = vec![Crumb::with_href("tree", format!("/{}/tree", repo))];
+    if path.is_empty() {
+        return crumbs;
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    for (i, seg) in segments.iter().enumerate() {
+        let href = if i == segments.len() - 1 {
+            // Last segment — link to the blob view.
+            format!("/{}/blob/{}", repo, segments[..=i].join("/"))
+        } else {
+            // Intermediate segment — link to the tree view.
+            format!("/{}/tree/{}", repo, segments[..=i].join("/"))
+        };
+        crumbs.push(Crumb::with_href(*seg, href));
+    }
+    crumbs
 }
