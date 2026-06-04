@@ -697,6 +697,132 @@ html.dark {
   font-style: italic;
 }
 
+/* ── File view ─────────────────────────────────────────────────── */
+
+.file-meta {
+  padding: 10px 56px;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+.file-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-meta-key {
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--mutedFaint);
+}
+
+.file-meta-val {
+  color: var(--muted);
+}
+
+.file-meta-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--rule2);
+}
+
+.file-meta-spacer {
+  flex: 1;
+}
+
+.file-actions {
+  display: inline-flex;
+  gap: 14px;
+}
+
+.file-action-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.file-action-link--muted {
+  color: var(--muted);
+}
+
+/* Last change strip */
+
+.file-last-change {
+  padding: 10px 56px;
+  border-bottom: 1px solid var(--rule2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+}
+
+.file-last-change-msg {
+  color: var(--ink);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-last-change-author {
+  color: var(--mutedFaint);
+}
+
+.file-last-change-age {
+  color: var(--muted);
+}
+
+/* Code surface */
+
+.code-surface {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  border-bottom: 1px solid var(--rule);
+}
+
+.code-gutter {
+  background: var(--code);
+  padding: 18px 14px 18px 56px;
+  color: var(--mutedFaint);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  border-right: 1px solid var(--rule2);
+}
+
+.code-line-num {
+  white-space: pre;
+}
+
+.code-body {
+  padding: 18px 56px 18px 20px;
+  overflow: auto;
+}
+
+.code-line {
+  white-space: pre;
+}
+
+.code-line pre {
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre;
+}
+
 /* ── Arborium syntax highlighting integration ──────────────────── */
 
 /* Keep quire's paper-toned code background; strip any theme-imposed radius. */

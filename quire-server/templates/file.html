@@ -1,0 +1,79 @@
+{% extends "_base.html" %}
+
+{% block title %}file · {{ repo }} · {{ path }}{% endblock %}
+
+{% block nav %}
+{% include "_nav.html" %}
+{% endblock %}
+
+{% block fullpage %}
+
+<nav class="repo-section-nav">
+  {% include "_repo_section_nav.html" %}
+  <span class="repo-position">
+    <span class="bookmark-glyph">※</span>
+    <span class="bookmark-name">{{ bookmark }}</span>
+    <span class="repo-meta-sep">→</span>
+    <span class="change-id" title="{{ sha_short }}">
+      <span class="change-head">{{ sha_head }}</span><span class="change-tail">{{ sha_tail }}</span>
+    </span>
+  </span>
+</nav>
+
+{# ── Blob metadata + actions ─────────────────────────────────── #}
+<div class="file-meta">
+  <span class="file-meta-item">
+    <span class="file-meta-key">on</span>
+    <span class="bookmark-glyph-sm">※</span>
+    <a class="file-meta-link" href="/{{ repo }}/log">{{ bookmark }}</a>
+  </span>
+  <span class="repo-meta-dot">·</span>
+  <span class="file-meta-item">
+    <span class="file-meta-key">at</span>
+    <a class="change-id" href="/{{ repo }}/log" title="commit {{ sha_short }}">
+      <span class="change-head">{{ last_change_head }}</span><span class="change-tail">{{ last_change_tail }}</span>
+    </a>
+  </span>
+  <span class="repo-meta-dot">·</span>
+  <span class="file-meta-val">{{ line_count }} lines</span>
+  <span class="repo-meta-dot">·</span>
+  <span class="file-meta-val">{{ file_size }}</span>
+  <span class="repo-meta-dot">·</span>
+  <span class="file-meta-val lang-badge">{{ language }}</span>
+  <span class="repo-meta-dot">·</span>
+  <span class="file-meta-val">mode {{ mode }}</span>
+  <span class="repo-meta-dot">·</span>
+  <span class="file-meta-val">{{ encoding }}, {{ line_ending }}</span>
+  <span class="file-meta-spacer"></span>
+  <span class="file-actions">
+    <a class="file-action-link" href="/{{ repo }}/raw/{{ path }}">raw</a>
+    <a class="file-action-link file-action-link--muted" href="/{{ repo }}/blame/{{ path }}">blame</a>
+    <a class="file-action-link file-action-link--muted" href="/{{ repo }}/log/{{ path }}">history</a>
+  </span>
+</div>
+
+{# ── Last change strip ───────────────────────────────────────── #}
+<div class="file-last-change">
+  <a class="change-id" href="/{{ repo }}/log" title="commit {{ last_change_sha }}">
+    <span class="change-head">{{ last_change_head }}</span><span class="change-tail">{{ last_change_tail }}</span>
+  </a>
+  <span class="file-last-change-msg">{{ last_change_msg }}</span>
+  <span class="file-last-change-author">{{ last_change_author }}</span>
+  <span class="file-last-change-age">{{ last_change_age }}</span>
+</div>
+
+{# ── Code surface — full width, gutter + content ─────────────── #}
+<div class="code-surface">
+  <div class="code-gutter">
+    {% for line_num in line_nums %}
+    <div class="code-line-num">{{ line_num }}</div>
+    {% endfor %}
+  </div>
+  <div class="code-body">
+    {% for line in lines %}
+    <div class="code-line"><pre>{{ line }}</pre></div>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

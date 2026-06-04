@@ -1,11 +1,13 @@
 //! Route handlers for the web view.
 
 mod ci;
+mod file;
 mod git;
 mod repo;
 mod tree;
 
 pub use ci::{run_detail, run_list};
+pub use file::file_view;
 pub use repo::repo_home;
 pub use tree::{tree_view, tree_view_path};
 

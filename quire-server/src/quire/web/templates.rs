@@ -468,6 +468,14 @@ impl TreeTemplate {
         self.entries.iter().filter(|e| e.is_file()).count()
     }
 
+    pub fn file_entry_url(&self, name: &str) -> String {
+        if self.path.is_empty() {
+            format!("/{}/blob/{}", self.repo, name)
+        } else {
+            format!("/{}/blob/{}/{}", self.repo, self.path, name)
+        }
+    }
+
     pub fn sha_head(&self) -> &str {
         &self.sha_short[..self.sha_short.len().min(4)]
     }
@@ -526,6 +534,41 @@ pub struct ErrorTemplate {
 }
 
 impl ErrorTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+}
+
+// ── File view ─────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "file.html")]
+pub struct FileViewTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub sections: Vec<SectionLink>,
+    pub path: String,
+    pub bookmark: String,
+    pub sha_short: String,
+    pub sha_head: String,
+    pub sha_tail: String,
+    pub last_change_sha: String,
+    pub last_change_head: String,
+    pub last_change_tail: String,
+    pub last_change_msg: String,
+    pub last_change_author: String,
+    pub last_change_age: String,
+    pub line_count: usize,
+    pub file_size: String,
+    pub language: String,
+    pub mode: String,
+    pub encoding: String,
+    pub line_ending: String,
+    pub line_nums: Vec<usize>,
+    pub lines: Vec<String>,
+}
+
+impl FileViewTemplate {
     pub fn version(&self) -> &'static str {
         pkg_version()
     }
