@@ -801,6 +801,7 @@ pre code[data-lang] {
   border-right: 1px solid var(--rule);
   min-width: 0;
   padding-top: var(--space-xs);
+  padding-bottom: var(--space-xs);
 }
 
 .tree-row {
@@ -866,7 +867,7 @@ pre code[data-lang] {
 /* Tree sidebar — right column, recent commit log */
 
 .tree-sidebar {
-  padding: var(--space-2xs) var(--space-xl) 0 var(--space-l);
+  padding: var(--space-2xs) var(--space-s) var(--space-2xs) var(--space-s);
   font-family: var(--font-mono);
   font-size: 12.5px;
   min-width: 0;
@@ -966,8 +967,23 @@ pre code[data-lang] {
 
   .tree-sidebar {
     border-top: 1px solid var(--rule);
-    padding: var(--space-s) var(--space-xl) 0;
+    padding: var(--space-s) var(--space-s) var(--space-s);
   }
+
+  .tree-path-crumb,
+  .tree-commit-strip,
+  .tree-footer {
+    padding-left: var(--space-s);
+    padding-right: var(--space-s);
+  }
+
+  .tree-row {
+    grid-template-columns: 18px minmax(0, 1fr) max-content;
+    padding-left: var(--space-s);
+    padding-right: var(--space-s);
+  }
+
+  .tree-msg { display: none; }
 }
 
 /* ── Mobile (≤768px) ───────────────────────────────────────────── */

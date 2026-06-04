@@ -1,8 +1,34 @@
-//! Auth middleware for the web view.
+//! Auth middleware and extractor for the web view.
 
+use std::convert::Infallible;
+
+use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+
+/// Extractor that resolves to `true` when the `Remote-User` header is present.
+pub struct Auth(pub bool);
+
+impl<S: Send + Sync> FromRequestParts<S> for Auth {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Auth(parts.headers.contains_key("Remote-User")))
+    }
+}
+
+/// Dev-only middleware that injects a synthetic `Remote-User` header so the
+/// `Auth` extractor behaves as if a real user is present.
+#[cfg(feature = "dev")]
+pub async fn inject_dev_user(mut request: axum::extract::Request, next: Next) -> Response {
+    request.headers_mut().insert(
+        "Remote-User",
+        axum::http::HeaderValue::from_static("dev"),
+    );
+    next.run(request).await
+}
 
 /// Middleware that rejects unauthenticated requests.
 ///

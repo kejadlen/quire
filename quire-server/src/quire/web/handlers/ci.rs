@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use super::super::db;
 use super::super::templates::{
     Crumb, DetailJob, DetailRun, DetailShEvent, RunDetailTemplate, RunListRow, RunListTemplate,
+    nav_sections,
 };
 use super::git::RepoView;
 use super::{render, render_error};
@@ -60,12 +61,12 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
         .collect();
 
     let tmpl = RunListTemplate {
+        sections: nav_sections(&repo_display, "ci", true),
         repo: repo_display,
         crumbs: vec![],
         runs: template_runs,
         bookmarks,
         tags,
-        active_section: "ci".to_string(),
     };
     render(&tmpl)
 }
@@ -210,6 +211,7 @@ pub async fn run_detail(
         Crumb::new(detail_run.sha_short()),
     ];
     let tmpl = RunDetailTemplate {
+        sections: nav_sections(&repo_display, "ci", true),
         repo: repo_display,
         crumbs,
         run: detail_run,
@@ -217,7 +219,6 @@ pub async fn run_detail(
         quire_ci_log,
         bookmarks,
         tags,
-        active_section: "ci".to_string(),
     };
     render(&tmpl)
 }

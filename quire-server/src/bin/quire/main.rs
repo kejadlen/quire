@@ -147,14 +147,17 @@ async fn main() -> Result<()> {
             let web_routes = {
                 let public = quire::quire::web::public_router(quire.clone());
                 let ci = quire::quire::web::ci_router(quire.clone());
-                let ci = if dev {
-                    ci
-                } else {
-                    ci.layer(axum::middleware::from_fn(
-                        quire::quire::web::auth::require_auth,
+                let ci = ci.layer(axum::middleware::from_fn(
+                    quire::quire::web::auth::require_auth,
+                ));
+                let merged = public.merge(ci);
+                if dev {
+                    merged.layer(axum::middleware::from_fn(
+                        quire::quire::web::auth::inject_dev_user,
                     ))
-                };
-                public.merge(ci)
+                } else {
+                    merged
+                }
             };
             let api_routes = quire::quire::web::api::router(quire.clone());
             commands::serve::run(&quire, web_routes, api_routes).await?

@@ -5,13 +5,18 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 
+use super::super::auth::Auth;
 use super::super::db;
-use super::super::templates::{RepoHomeTemplate, RunListRow};
+use super::super::templates::{RepoHomeTemplate, RunListRow, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
 
-pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
+pub async fn repo_home(
+    State(quire): State<Quire>,
+    auth: Auth,
+    AxumPath(repo): AxumPath<String>,
+) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
     let git_repo = match quire.repo(&repo_name) {
@@ -52,6 +57,7 @@ pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<Stri
             .unwrap_or_default();
 
     let tmpl = RepoHomeTemplate {
+        sections: nav_sections(&repo_display, "overview", auth.0),
         repo: repo_display,
         crumbs: vec![],
         head,
@@ -60,7 +66,6 @@ pub async fn repo_home(State(quire): State<Quire>, AxumPath(repo): AxumPath<Stri
         tags,
         recent_runs,
         recent_changes,
-        active_section: "overview".to_string(),
     };
     render(&tmpl)
 }

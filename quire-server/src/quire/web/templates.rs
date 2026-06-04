@@ -9,6 +9,39 @@ fn pkg_version() -> &'static str {
     env!("QUIRE_VERSION")
 }
 
+/// A section nav link in the repo tab bar.
+pub struct SectionLink {
+    pub label: &'static str,
+    pub href: String,
+    pub active: bool,
+}
+
+/// Build the section nav links for a repo page.
+///
+/// CI is included only when `authed` — the decision belongs here, not in the
+/// template.
+pub fn nav_sections(repo: &str, active: &str, authed: bool) -> Vec<SectionLink> {
+    let mut sections = vec![
+        SectionLink { label: "overview", href: format!("/{repo}"), active: active == "overview" },
+        SectionLink { label: "tree", href: format!("/{repo}/tree"), active: active == "tree" },
+        SectionLink { label: "log", href: format!("/{repo}/log"), active: active == "log" },
+        SectionLink {
+            label: "bookmarks",
+            href: format!("/{repo}/bookmarks"),
+            active: active == "bookmarks",
+        },
+        SectionLink { label: "tags", href: format!("/{repo}/tags"), active: active == "tags" },
+    ];
+    if authed {
+        sections.push(SectionLink {
+            label: "ci",
+            href: format!("/{repo}/ci"),
+            active: active == "ci",
+        });
+    }
+    sections
+}
+
 /// A navigation breadcrumb entry.
 ///
 /// When `href` is `Some`, the crumb renders as a clickable link.
@@ -43,7 +76,7 @@ pub struct RunListTemplate {
     pub runs: Vec<RunListRow>,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
-    pub active_section: String,
+    pub sections: Vec<SectionLink>,
 }
 
 impl RunListTemplate {
@@ -104,7 +137,7 @@ pub struct RunDetailTemplate {
     pub quire_ci_log: String,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
-    pub active_section: String,
+    pub sections: Vec<SectionLink>,
 }
 
 impl RunDetailTemplate {
@@ -246,7 +279,7 @@ pub struct RepoHomeTemplate {
     pub tags: Vec<TagRow>,
     pub recent_runs: Vec<RunListRow>,
     pub recent_changes: Vec<ChangeRow>,
-    pub active_section: String,
+    pub sections: Vec<SectionLink>,
 }
 
 impl RepoHomeTemplate {
@@ -373,7 +406,7 @@ pub struct TreeTemplate {
     pub crumbs: Vec<Crumb>,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
-    pub active_section: String,
+    pub sections: Vec<SectionLink>,
     /// Current directory path relative to repo root ("" = root).
     pub path: String,
     /// Active bookmark name (e.g. "main").

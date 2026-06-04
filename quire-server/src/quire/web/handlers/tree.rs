@@ -4,24 +4,30 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+use super::super::auth::Auth;
 use super::super::db;
-use super::super::templates::{Crumb, TreeEntry, TreeEntryKind, TreeTemplate};
+use super::super::templates::{Crumb, TreeEntry, TreeEntryKind, TreeTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
 
-pub async fn tree_view(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
-    tree_at_path(quire, repo, String::new()).await
+pub async fn tree_view(
+    State(quire): State<Quire>,
+    auth: Auth,
+    AxumPath(repo): AxumPath<String>,
+) -> Response {
+    tree_at_path(quire, repo, String::new(), auth.0).await
 }
 
 pub async fn tree_view_path(
     State(quire): State<Quire>,
+    auth: Auth,
     AxumPath((repo, path)): AxumPath<(String, String)>,
 ) -> Response {
-    tree_at_path(quire, repo, path).await
+    tree_at_path(quire, repo, path, auth.0).await
 }
 
-async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
+async fn tree_at_path(quire: Quire, repo: String, path: String, authed: bool) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
     let git_repo = match quire.repo(&repo_name) {
@@ -57,11 +63,11 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
     };
 
     let tmpl = TreeTemplate {
+        sections: nav_sections(&repo_display, "tree", authed),
         repo: repo_display,
         crumbs,
         bookmarks,
         tags,
-        active_section: "tree".to_string(),
         path,
         bookmark: tree_data.bookmark,
         sha_short: tree_data.sha_short,
