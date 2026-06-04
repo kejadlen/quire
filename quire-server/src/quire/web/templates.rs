@@ -22,15 +22,31 @@ pub struct SectionLink {
 /// template.
 pub fn nav_sections(repo: &str, active: &str, authed: bool) -> Vec<SectionLink> {
     let mut sections = vec![
-        SectionLink { label: "overview", href: format!("/{repo}"), active: active == "overview" },
-        SectionLink { label: "tree", href: format!("/{repo}/tree"), active: active == "tree" },
-        SectionLink { label: "log", href: format!("/{repo}/log"), active: active == "log" },
+        SectionLink {
+            label: "overview",
+            href: format!("/{repo}"),
+            active: active == "overview",
+        },
+        SectionLink {
+            label: "tree",
+            href: format!("/{repo}/tree"),
+            active: active == "tree",
+        },
+        SectionLink {
+            label: "log",
+            href: format!("/{repo}/log"),
+            active: active == "log",
+        },
         SectionLink {
             label: "bookmarks",
             href: format!("/{repo}/bookmarks"),
             active: active == "bookmarks",
         },
-        SectionLink { label: "tags", href: format!("/{repo}/tags"), active: active == "tags" },
+        SectionLink {
+            label: "tags",
+            href: format!("/{repo}/tags"),
+            active: active == "tags",
+        },
     ];
     if authed {
         sections.push(SectionLink {

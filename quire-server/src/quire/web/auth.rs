@@ -23,10 +23,9 @@ impl<S: Send + Sync> FromRequestParts<S> for Auth {
 /// `Auth` extractor behaves as if a real user is present.
 #[cfg(feature = "dev")]
 pub async fn inject_dev_user(mut request: axum::extract::Request, next: Next) -> Response {
-    request.headers_mut().insert(
-        "Remote-User",
-        axum::http::HeaderValue::from_static("dev"),
-    );
+    request
+        .headers_mut()
+        .insert("Remote-User", axum::http::HeaderValue::from_static("dev"));
     next.run(request).await
 }
 

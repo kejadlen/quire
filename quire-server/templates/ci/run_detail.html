@@ -7,54 +7,99 @@
 {% endblock %}
 
 {% block fullpage %}
+
 <nav class="repo-section-nav">
   {% include "_repo_section_nav.html" %}
+  <span class="repo-position">
+    <span class="ci-commit-link">{{ run.sha_short() }}</span>
+    <span class="repo-meta-dot">·</span>
+    <span>{{ run.branch_short() }}</span>
+    <span class="repo-meta-dot">·</span>
+    <span class="ci-state-label {{ run.state_class() }}"><span class="ci-status-dot {{ run.state_class() }}"></span> {{ run.state() }}</span>
+  </span>
 </nav>
-<main class="page-main">
-<div class="ci-meta">
-  <div class="ci-meta-primary">
-    <span class="c-accent">{{ run.sha_short() }}</span>
-    · {{ run.branch_short() }}
-    · <span class="ci-state-label {{ run.state_class() }}"><span class="ci-status-dot {{ run.state_class() }}"></span> {{ run.state() }}</span>
-  </div>
-  <div class="ci-meta-secondary">
-    {% if run.is_terminal() %}
-    queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
-    · ran <span title="started {{ run.started_iso() }}\nfinished {{ run.finished_iso() }}">{{ run.duration_display() }}</span>
-    {% elif run.has_started() %}
-    queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
-    · started <time title="{{ run.started_iso() }}">{{ run.started_display() }}</time>
+
+<div class="repo-body">
+
+  <article class="ci-detail">
+    <div class="ci-meta">
+      {% if run.is_terminal() %}
+      queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+      <span class="repo-meta-dot">·</span>
+      ran <span title="started {{ run.started_iso() }}\nfinished {{ run.finished_iso() }}">{{ run.duration_display() }}</span>
+      {% elif run.has_started() %}
+      queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+      <span class="repo-meta-dot">·</span>
+      started <time title="{{ run.started_iso() }}">{{ run.started_display() }}</time>
+      {% else %}
+      queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+      {% endif %}
+    </div>
+
+    {% for job in jobs %}
+    <div class="ci-job">
+      <div class="ci-job-header">
+        {{ job.job_id }}<span class="repo-meta-dot">·</span>{{ job.duration_display() }}{% if let Some(code) = job.exit_code_filter_nonzero() %}<span class="repo-meta-dot">·</span>exit {{ code }}{% endif %}
+        <span class="repo-meta-dot">·</span>
+        <span class="ci-state-label {{ job.state_class() }}"><span class="ci-status-dot {{ job.state_class() }}"></span> {{ job.state }}</span>
+      </div>
+      {% for sh in job.sh_events %}
+      <div class="ci-sh">
+        <div class="ci-sh-cmd">
+          {{ sh.cmd_display() }}
+          <span class="ci-sh-meta">{{ sh.duration_display() }}{% if sh.exit_code != 0 %} · exit {{ sh.exit_code }}{% endif %}</span>
+        </div>
+        {% if !sh.log_content.is_empty() %}
+        <pre class="ci-sh-log">{{ sh.log_content }}</pre>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
     {% else %}
-    queued <time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time>
+    <div class="ci-empty">no jobs recorded</div>
+    {% endfor %}
+
+    {% if !quire_ci_log.is_empty() %}
+    <div class="ci-job">
+      <div class="ci-job-header">quire-ci</div>
+      <pre class="ci-sh-log">{{ quire_ci_log }}</pre>
+    </div>
     {% endif %}
-  </div>
+  </article>
+
+  <aside class="repo-sidebar">
+    {% if !bookmarks.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Bookmarks</div>
+      <div class="bookmark-list">
+        {% for b in bookmarks %}
+        <div class="bookmark-row">
+          <span class="bookmark-kind {% if loop.first %}bookmark-kind--trunk{% endif %}">{% if loop.first %}trunk{% else %}local{% endif %}</span>
+          <a class="bookmark-link" href="/{{ repo }}/log">
+            <span class="bookmark-glyph-sm">※</span>{{ b.name }}
+          </a>
+          <span class="bookmark-age">{{ b.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if !tags.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Tags</div>
+      <div class="bookmark-list">
+        {% for t in tags %}
+        <div class="bookmark-row">
+          <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
+          <span class="bookmark-age">{{ t.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </aside>
+
 </div>
 
-{% for job in jobs %}
-<div class="ci-job">
-  <div class="ci-job-header">
-    {{ job.job_id }} · {{ job.duration_display() }}{% if let Some(code) = job.exit_code_filter_nonzero() %} · exit {{ code }}{% endif %}
-    · <span class="ci-state-label {{ job.state_class() }}"><span class="ci-status-dot {{ job.state_class() }}"></span> {{ job.state }}</span>
-  </div>
-  {% for sh in job.sh_events %}
-  <div class="ci-sh">
-    <div class="ci-sh-cmd">
-      {{ sh.cmd_display() }} <span class="ci-sh-meta">{{ sh.duration_display() }}{% if sh.exit_code != 0 %} · exit {{ sh.exit_code }}{% endif %}</span>
-    </div>
-    {% if !sh.log_content.is_empty() %}
-    <pre class="ci-sh-log">{{ sh.log_content }}</pre>
-    {% endif %}
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="ci-empty">no jobs recorded</div>
-{% endfor %}
-{% if !quire_ci_log.is_empty() %}
-<div class="ci-job">
-  <div class="ci-job-header">quire-ci</div>
-  <pre class="ci-sh-log">{{ quire_ci_log }}</pre>
-</div>
-{% endif %}
-</main>
 {% endblock %}

@@ -15,37 +15,62 @@
       </svg>
       <span class="nav-wordmark-text">quire</span>
     </a>
-    {% for crumb in crumbs %}
     <span class="sep">/</span>
-    {% if let Some(href) = crumb.href %}
-    <a class="nav-crumb" href="{{ href }}">{{ crumb.label }}</a>
-    {% else %}
-    <span class="nav-crumb">{{ crumb.label }}</span>
-    {% endif %}
-    {% endfor %}
+    <span class="nav-crumb">config</span>
   </div>
 </nav>
 {% endblock %}
 
-{% block content %}
-<h2 class="ci-heading">config</h2>
-<table class="ci-table">
-  <tbody>
-    <tr><th>port</th><td>{{ config.port }}</td></tr>
-    <tr><th>ci.executor</th><td>{{ config.ci.executor }}</td></tr>
+{% block fullpage %}
+
+<nav class="repo-section-nav">
+  <span class="repo-position">config</span>
+</nav>
+
+<div class="repo-body">
+
+  <article class="config-table">
+    <div class="config-row">
+      <span class="config-key">port</span>
+      <span class="config-val">{{ config.port }}</span>
+    </div>
+    <div class="config-row">
+      <span class="config-key">ci.executor</span>
+      <span class="config-val">{{ config.ci.executor }}</span>
+    </div>
     {% if let Some(sentry) = config.sentry %}
-    <tr><th>sentry.dsn</th><td>{{ sentry.dsn }}</td></tr>
+    <div class="config-row">
+      <span class="config-key">sentry.dsn</span>
+      <span class="config-val">{{ sentry.dsn }}</span>
+    </div>
     {% else %}
-    <tr><th>sentry</th><td class="empty">disabled</td></tr>
+    <div class="config-row">
+      <span class="config-key">sentry</span>
+      <span class="config-val config-val--empty">disabled</span>
+    </div>
     {% endif %}
     {% if let Some(token) = config.github.mirror_token %}
-    <tr><th>github.mirror-token</th><td>{{ token }}</td></tr>
+    <div class="config-row">
+      <span class="config-key">github.mirror-token</span>
+      <span class="config-val">{{ token }}</span>
+    </div>
     {% else %}
-    <tr><th>github.mirror-token</th><td class="empty">not set</td></tr>
+    <div class="config-row">
+      <span class="config-key">github.mirror-token</span>
+      <span class="config-val config-val--empty">not set</span>
+    </div>
     {% endif %}
     {% for (key, value) in sorted_secrets() %}
-    <tr><th>secrets.{{ key }}</th><td>{{ value }}</td></tr>
+    <div class="config-row">
+      <span class="config-key">secrets.{{ key }}</span>
+      <span class="config-val">{{ value }}</span>
+    </div>
     {% endfor %}
-  </tbody>
-</table>
+  </article>
+
+  <aside class="repo-sidebar">
+  </aside>
+
+</div>
+
 {% endblock %}

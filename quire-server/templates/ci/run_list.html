@@ -7,34 +7,60 @@
 {% endblock %}
 
 {% block fullpage %}
+
 <nav class="repo-section-nav">
   {% include "_repo_section_nav.html" %}
 </nav>
-<main class="page-main">
-<h2 class="ci-heading">ci runs</h2>
-<table class="ci-table">
-  <thead>
-    <tr>
-      <th></th>
-      <th>commit</th>
-      <th>ref</th>
-      <th>queued</th>
-      <th>duration</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for run in runs %}
-    <tr>
-      <td><span class="ci-status-dot {{ run.state_class() }}"></span></td>
-      <td><a href="/{{ repo }}/ci/{{ run.id }}" class="ci-commit-link">{{ run.sha_short() }}</a></td>
-      <td>{{ run.branch_short() }}</td>
-      <td><time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time></td>
-      <td>{{ run.duration_display() }}</td>
-    </tr>
-  {% else %}
-    <tr><td colspan="5" class="empty">no runs yet</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</main>
+
+<div class="repo-body">
+
+  <article class="ci-run-list">
+    {% for run in runs %}
+    <div class="ci-run-row">
+      <span class="ci-status-dot {{ run.state_class() }}"></span>
+      <a class="ci-commit-link" href="/{{ repo }}/ci/{{ run.id }}">{{ run.sha_short() }}</a>
+      <span class="ci-run-branch">{{ run.branch_short() }}</span>
+      <span class="ci-run-age"><time title="{{ run.queued_iso() }}">{{ run.queued_relative() }}</time></span>
+      <span class="ci-run-dur">{{ run.duration_display() }}</span>
+    </div>
+    {% else %}
+    <p class="ci-empty">no runs yet</p>
+    {% endfor %}
+  </article>
+
+  <aside class="repo-sidebar">
+    {% if !bookmarks.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Bookmarks</div>
+      <div class="bookmark-list">
+        {% for b in bookmarks %}
+        <div class="bookmark-row">
+          <span class="bookmark-kind {% if loop.first %}bookmark-kind--trunk{% endif %}">{% if loop.first %}trunk{% else %}local{% endif %}</span>
+          <a class="bookmark-link" href="/{{ repo }}/log">
+            <span class="bookmark-glyph-sm">※</span>{{ b.name }}
+          </a>
+          <span class="bookmark-age">{{ b.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if !tags.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Tags</div>
+      <div class="bookmark-list">
+        {% for t in tags %}
+        <div class="bookmark-row">
+          <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
+          <span class="bookmark-age">{{ t.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </aside>
+
+</div>
+
 {% endblock %}

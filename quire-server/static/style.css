@@ -99,33 +99,6 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 /* CI run list */
 
-.ci-heading {
-  font-family: var(--font-mono);
-  font-size: var(--step-1);
-  font-weight: 600;
-  margin: 0 0 var(--space-s);
-}
-
-.ci-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--font-mono);
-  font-size: var(--step--1);
-  line-height: 1.6;
-}
-
-.ci-table thead th {
-  text-align: left;
-  padding: var(--space-3xs) var(--space-2xs);
-  font-weight: 400;
-  color: var(--mutedFaint);
-}
-
-.ci-table thead tr { border-bottom: 1px solid var(--rule2); }
-.ci-table tbody { border-top: 1px solid var(--rule); }
-.ci-table td { padding: var(--space-3xs) var(--space-2xs); }
-.ci-table .empty { padding: var(--space-s); color: var(--muted); }
-
 .ci-status-dot {
   display: inline-block;
   width: 6px;
@@ -144,26 +117,6 @@ pre { white-space: pre-wrap; word-break: break-word; }
   color: var(--accent);
   text-decoration: none;
   border-bottom: 1px dotted var(--rule2);
-}
-
-/* CI run detail */
-
-.ci-meta {
-  padding: var(--space-s) 0;
-  border-bottom: 1px solid var(--rule);
-}
-
-.ci-meta-primary {
-  font-family: var(--font-mono);
-  font-size: var(--step-0);
-  line-height: 1.6;
-}
-
-.ci-meta-secondary {
-  font-family: var(--font-mono);
-  font-size: var(--step--1);
-  color: var(--mutedFaint);
-  margin-top: var(--space-3xs);
 }
 
 /* CI jobs */
@@ -306,7 +259,7 @@ html.dark {
 
 .repo-meta-sep { color: var(--rule2); }
 .repo-meta-dot { color: var(--rule2); }
-.ci-inline { display: inline-flex; align-items: center; gap: var(--space-3xs); }
+.ci-inline { display: inline-flex; align-items: baseline; gap: var(--space-3xs); }
 
 .bookmark-glyph { color: var(--mutedFaint); }
 .bookmark-name { color: var(--accent); }
@@ -659,6 +612,89 @@ html.dark {
 .no-desc {
   font-style: italic;
   color: var(--mutedFaint);
+}
+
+/* ── CI run list (full page) ───────────────────────────────────── */
+
+.ci-run-list {
+  padding: var(--space-l) var(--space-xl);
+  min-width: 0;
+}
+
+.ci-run-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 2;
+}
+
+.ci-run-row .ci-status-dot {
+  flex-shrink: 0;
+}
+
+.ci-run-branch {
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ci-run-age {
+  color: var(--mutedFaint);
+  white-space: nowrap;
+}
+
+.ci-run-dur {
+  color: var(--muted);
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+/* ── CI run detail ─────────────────────────────────────────────── */
+
+.ci-detail {
+  padding: var(--space-l) var(--space-xl);
+  min-width: 0;
+}
+
+.ci-detail .ci-meta {
+  padding: 0 0 var(--space-s);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ── Config ────────────────────────────────────────────────────── */
+
+.config-table {
+  padding: var(--space-l) var(--space-xl);
+  min-width: 0;
+}
+
+.config-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-s);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 2;
+}
+
+.config-key {
+  color: var(--muted);
+  min-width: 200px;
+}
+
+.config-val {
+  color: var(--ink);
+}
+
+.config-val--empty {
+  color: var(--mutedFaint);
+  font-style: italic;
 }
 
 /* ── Arborium syntax highlighting integration ──────────────────── */
