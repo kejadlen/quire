@@ -306,7 +306,7 @@ html.dark {
 
 .repo-meta-sep { color: var(--rule2); }
 .repo-meta-dot { color: var(--rule2); }
-.ci-inline { display: inline-flex; align-items: center; gap: 6px; }
+.ci-inline { display: inline-flex; align-items: center; gap: var(--space-3xs); }
 
 .bookmark-glyph { color: var(--mutedFaint); }
 .bookmark-name { color: var(--accent); }
@@ -332,8 +332,8 @@ html.dark {
 .repo-section-nav {
   display: flex;
   align-items: center;
-  gap: 28px;
-  padding: 0 56px;
+  gap: var(--space-m);
+  padding: 0 var(--space-xl);
   font-family: var(--font-mono);
   font-size: 13px;
   border-bottom: 1px solid var(--rule);
@@ -343,7 +343,7 @@ html.dark {
   margin-left: auto;
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--space-3xs);
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
@@ -355,8 +355,8 @@ html.dark {
 .section-link {
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
-  padding: 12px 0;
+  gap: var(--space-3xs);
+  padding: var(--space-2xs) 0;
   margin-bottom: -1px;
   color: var(--muted);
   text-decoration: none;
@@ -384,7 +384,7 @@ html.dark {
 }
 
 .repo-readme {
-  padding: 32px 44px 56px 56px;
+  padding: var(--space-l) var(--space-xl) var(--space-xl) var(--space-xl);
   border-right: 1px solid var(--rule);
   font-family: var(--font-humanist);
   font-size: 16px;
@@ -399,7 +399,7 @@ html.dark {
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 16px;
+  margin-bottom: var(--space-xs);
 }
 
 .readme-empty {
@@ -422,7 +422,7 @@ html.dark {
   font-family: var(--font-humanist);
   font-size: 22px;
   font-weight: 600;
-  margin: 28px 0 10px;
+  margin: var(--space-m) 0 var(--space-2xs);
   line-height: 1.3;
 }
 
@@ -430,20 +430,20 @@ html.dark {
   font-family: var(--font-humanist);
   font-size: 18px;
   font-weight: 600;
-  margin: 20px 0 8px;
+  margin: var(--space-s) 0 var(--space-2xs);
 }
 
-.readme-content p { margin: 0 0 16px; }
+.readme-content p { margin: 0 0 var(--space-xs); }
 
 .readme-content p:last-child { margin-bottom: 0; }
 
 .readme-content ul,
 .readme-content ol {
-  margin: 0 0 20px;
-  padding-left: 22px;
+  margin: 0 0 var(--space-s);
+  padding-left: var(--space-s);
 }
 
-.readme-content li { margin: 5px 0; }
+.readme-content li { margin: var(--space-3xs) 0; }
 
 .readme-content code {
   font-family: var(--font-mono);
@@ -458,8 +458,8 @@ html.dark {
   line-height: 1.65;
   background: var(--code);
   color: var(--ink);
-  padding: 14px 18px;
-  margin: 0 0 20px;
+  padding: var(--space-xs) var(--space-s);
+  margin: 0 0 var(--space-s);
   border-left: 2px solid var(--accent);
   overflow: auto;
   white-space: pre;
@@ -481,22 +481,22 @@ html.dark {
 
 .readme-content blockquote {
   border-left: 2px solid var(--rule2);
-  margin: 0 0 16px;
-  padding: 4px 16px;
+  margin: 0 0 var(--space-xs);
+  padding: 4px var(--space-xs);
   color: var(--muted);
 }
 
 /* ── Sidebar ───────────────────────────────────────────────────── */
 
 .repo-sidebar {
-  padding: 32px 56px 56px 44px;
+  padding: var(--space-l) var(--space-xl) var(--space-xl) var(--space-xl);
   font-family: var(--font-mono);
   font-size: 12.5px;
   min-width: 0;
 }
 
 .side-block {
-  margin-bottom: 24px;
+  margin-bottom: var(--space-m);
 }
 
 .side-block--last { margin-bottom: 0; }
@@ -507,8 +507,8 @@ html.dark {
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 8px;
-  padding-bottom: 6px;
+  margin-bottom: var(--space-2xs);
+  padding-bottom: var(--space-3xs);
   border-bottom: 1px solid var(--rule2);
 }
 
@@ -519,7 +519,7 @@ html.dark {
   letter-spacing: 0.8px;
   text-transform: uppercase;
   margin-bottom: 3px;
-  margin-top: 8px;
+  margin-top: var(--space-2xs);
 }
 
 .clone-label:first-of-type { margin-top: 0; }
@@ -576,13 +576,13 @@ html.dark {
 .bookmark-age {
   color: var(--muted);
   font-size: 11.5px;
-  margin-left: 10px;
+  margin-left: var(--space-2xs);
   white-space: nowrap;
 }
 
 .side-more {
   display: block;
-  margin-top: 6px;
+  margin-top: var(--space-3xs);
   color: var(--muted);
   font-size: 12px;
   text-decoration: none;
@@ -596,7 +596,7 @@ html.dark {
   font-size: 12.5px;
   display: grid;
   grid-template-columns: 10px 64px 1fr auto auto;
-  column-gap: 8px;
+  column-gap: var(--space-2xs);
   row-gap: 0;
   align-items: baseline;
   line-height: 1.85;
@@ -630,7 +630,7 @@ html.dark {
 .change-mini-list { }
 
 .change-mini-row {
-  padding: 5px 0;
+  padding: var(--space-3xs) 0;
   border-bottom: 1px dotted var(--rule2);
 }
 
@@ -639,7 +639,7 @@ html.dark {
 .change-mini-header {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2xs);
   margin-bottom: 2px;
 }
 
@@ -684,7 +684,7 @@ pre code[data-lang] {
 /* ── Tree browser ──────────────────────────────────────────────── */
 
 .tree-path-crumb {
-  padding: 10px var(--space-xl);
+  padding: var(--space-2xs) var(--space-xl);
   font-family: var(--font-mono);
   font-size: 14px;
   color: var(--muted);
@@ -723,12 +723,12 @@ pre code[data-lang] {
 }
 
 .tree-meta-row {
-  margin-top: 12px;
+  margin-top: var(--space-2xs);
   font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--muted);
   display: flex;
-  gap: 22px;
+  gap: var(--space-s);
   flex-wrap: wrap;
   align-items: center;
 }
@@ -738,7 +738,7 @@ pre code[data-lang] {
   letter-spacing: 0.8px;
   text-transform: uppercase;
   color: var(--mutedFaint);
-  margin-right: 6px;
+  margin-right: var(--space-3xs);
 }
 
 .tree-ref-name {
@@ -752,7 +752,7 @@ pre code[data-lang] {
 
 .tree-meta-spacer { flex: 1; }
 
-.tree-meta-links { display: inline-flex; gap: 12px; }
+.tree-meta-links { display: inline-flex; gap: var(--space-2xs); }
 
 .tree-meta-link {
   color: var(--muted);
@@ -766,11 +766,11 @@ pre code[data-lang] {
 /* Commit strip */
 
 .tree-commit-strip {
-  padding: 10px var(--space-xl);
+  padding: var(--space-2xs) var(--space-xl);
   font-family: var(--font-mono);
   font-size: 12.5px;
   display: flex;
-  gap: 16px;
+  gap: var(--space-xs);
   align-items: baseline;
 }
 
@@ -800,14 +800,14 @@ pre code[data-lang] {
 .tree-table-col {
   border-right: 1px solid var(--rule);
   min-width: 0;
-  padding-top: 16px;
+  padding-top: var(--space-xs);
 }
 
 .tree-row {
   display: grid;
-  grid-template-columns: 18px 240px minmax(0, 1fr) 96px;
-  gap: 16px;
-  padding: 6px var(--space-xl);
+  grid-template-columns: 18px 240px minmax(0, 1fr) max-content;
+  gap: var(--space-xs);
+  padding: var(--space-3xs) var(--space-xl);
   align-items: baseline;
   font-family: var(--font-mono);
   font-size: 13px;
@@ -860,12 +860,13 @@ pre code[data-lang] {
   color: var(--mutedFaint);
   font-size: 12px;
   text-align: right;
+  white-space: nowrap;
 }
 
 /* Tree sidebar — right column, recent commit log */
 
 .tree-sidebar {
-  padding: 12px var(--space-xl) 0 40px;
+  padding: var(--space-2xs) var(--space-xl) 0 var(--space-l);
   font-family: var(--font-mono);
   font-size: 12.5px;
   min-width: 0;
@@ -873,7 +874,7 @@ pre code[data-lang] {
 
 .tree-log-item {
   display: block;
-  padding: 10px 0;
+  padding: var(--space-2xs) 0;
   text-decoration: none;
 }
 
@@ -891,7 +892,7 @@ pre code[data-lang] {
   margin-top: 4px;
   font-size: 11px;
   display: flex;
-  gap: 10px;
+  gap: var(--space-2xs);
   align-items: baseline;
 }
 
@@ -901,7 +902,7 @@ pre code[data-lang] {
 
 .tree-log-more {
   display: block;
-  margin-top: 12px;
+  margin-top: var(--space-2xs);
   color: var(--mutedFaint);
   text-decoration: none;
   font-size: 12px;
@@ -914,7 +915,7 @@ pre code[data-lang] {
   font-size: 13.5px;
   line-height: 1.6;
   color: var(--muted);
-  padding: 10px 14px;
+  padding: var(--space-2xs) var(--space-xs);
   background: var(--code);
   border-left: 2px solid var(--accent);
   white-space: pre-wrap;
@@ -926,7 +927,7 @@ pre code[data-lang] {
 /* Keyboard hint footer */
 
 .tree-footer {
-  padding: 16px var(--space-xl) 24px;
+  padding: var(--space-xs) var(--space-xl) var(--space-m);
   border-top: 1px solid var(--rule);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -938,7 +939,7 @@ pre code[data-lang] {
 
 .tree-footer-hints {
   display: inline-flex;
-  gap: 14px;
+  gap: var(--space-xs);
 }
 
 .tree-footer kbd,
@@ -965,6 +966,49 @@ pre code[data-lang] {
 
   .tree-sidebar {
     border-top: 1px solid var(--rule);
-    padding: 18px var(--space-xl) 0;
+    padding: var(--space-s) var(--space-xl) 0;
+  }
+}
+
+/* ── Mobile (≤768px) ───────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .page-nav {
+    padding-left: var(--space-s);
+    padding-right: var(--space-s);
+  }
+
+  .page-main {
+    padding-left: var(--space-s);
+    padding-right: var(--space-s);
+  }
+
+  .page-footer {
+    padding-left: var(--space-s);
+    padding-right: var(--space-s);
+  }
+
+  .repo-section-nav {
+    padding-left: var(--space-s);
+    padding-right: var(--space-s);
+    gap: var(--space-m);
+    overflow-x: auto;
+  }
+
+  .repo-position {
+    display: none;
+  }
+
+  .repo-body {
+    grid-template-columns: 1fr;
+  }
+
+  .repo-sidebar {
+    display: none;
+  }
+
+  .repo-readme {
+    padding: var(--space-m) var(--space-s) var(--space-l);
+    border-right: none;
   }
 }

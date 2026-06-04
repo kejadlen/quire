@@ -79,7 +79,7 @@ mutants:
     exit "$rc"
 
 dev:
-    fd -e rs -e html -e css -e toml --exclude target | entr -rc cargo run -p quire-server --features dev -- serve --seed
+    fd -e rs -e html -e css -e toml --exclude target | entr -rc cargo run -p quire-server --features dev -- serve --dev
 
 all: fmt clippy test
 
