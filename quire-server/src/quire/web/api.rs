@@ -9,10 +9,10 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use axum::extract::{FromRequestParts, Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response, Result};
+use axum::response::{IntoResponse, Response};
 use axum_extra::TypedHeader;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
@@ -95,24 +95,16 @@ impl IntoResponse for ApiError {
 /// On success, injects the resolved run ID as a request extension so handlers can use it.
 async fn verify_run_token(
     State(quire): State<Quire>,
-    req: axum::extract::Request,
+    bearer: Option<TypedHeader<Authorization<Bearer>>>,
+    mut req: axum::extract::Request,
     next: Next,
-) -> Result<Response, ApiError> {
-    let (mut parts, body) = req.into_parts();
-
-    let Some(TypedHeader(Authorization(bearer))) =
-        <TypedHeader<Authorization<Bearer>> as FromRequestParts<()>>::from_request_parts(
-            &mut parts,
-            &(),
-        )
-        .await
-        .ok()
-    else {
+) -> std::result::Result<Response, ApiError> {
+    let Some(TypedHeader(Authorization(bearer))) = bearer else {
         return Err(ApiError::Unauthorized);
     };
     let token = bearer.token().to_string();
 
-    let run_id = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
+    let run_id = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         let db = quire.db_pool();
         let result: rusqlite::Result<String> = db.query_row(
             "SELECT id FROM runs WHERE run_token = ?1",
@@ -127,7 +119,6 @@ async fn verify_run_token(
     })
     .await??;
 
-    let mut req = axum::extract::Request::from_parts(parts, body);
     req.extensions_mut().insert(run_id);
     Ok(next.run(req).await)
 }
@@ -144,7 +135,7 @@ async fn verify_run_token(
 async fn get_bootstrap(
     State(quire): State<Quire>,
     axum::Extension(run_id): axum::Extension<String>,
-) -> Result<axum::Json<Bootstrap>, ApiError> {
+) -> std::result::Result<axum::Json<Bootstrap>, ApiError> {
     let bootstrap =
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
             let db = crate::db::open(&quire.db_path())?;
@@ -214,7 +205,7 @@ struct SecretPath {
 async fn get_secret(
     State(quire): State<Quire>,
     AxumPath(SecretPath { name }): AxumPath<SecretPath>,
-) -> Result<axum::Json<serde_json::Value>, ApiError> {
+) -> std::result::Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         Ok(quire
             .config
