@@ -135,8 +135,7 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         } else {
             format!("{}/{}", path, name)
         };
-        let commit_info =
-            reader.run(&["log", "-1", "--format=%s|%ar", "HEAD", "--", &entry_path]);
+        let commit_info = reader.run(&["log", "-1", "--format=%s|%ar", "HEAD", "--", &entry_path]);
         let (last_msg, age) = commit_info
             .and_then(|s| {
                 let mut it = s.splitn(2, '|');
@@ -151,5 +150,9 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         });
     }
 
-    Some(TreeData { bookmark, sha_short, entries })
+    Some(TreeData {
+        bookmark,
+        sha_short,
+        entries,
+    })
 }

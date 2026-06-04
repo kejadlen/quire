@@ -53,7 +53,12 @@ impl<'a> RepoView<'a> {
         let sha = lines.next()?.to_string();
         let description = lines.next().unwrap_or("").to_string();
         let age = lines.next().unwrap_or("").to_string();
-        Some(HeadInfo { sha, description, age, bookmark })
+        Some(HeadInfo {
+            sha,
+            description,
+            age,
+            bookmark,
+        })
     }
 
     pub(super) fn readme(&self) -> Option<String> {
