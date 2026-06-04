@@ -47,8 +47,8 @@ impl<'a> RepoView<'a> {
         let bookmark = self
             .run(&["symbolic-ref", "--short", "HEAD"])
             .unwrap_or_else(|| "main".to_string());
-        // %H = full sha, %s = subject, %ar = relative age
-        let log = self.run(&["log", "-1", "--format=%H%n%s%n%ar"])?;
+        // %H = full sha, %s = subject, %cr = committer date relative
+        let log = self.run(&["log", "-1", "--format=%H%n%s%n%cr"])?;
         let mut lines = log.lines();
         let sha = lines.next()?.to_string();
         let description = lines.next().unwrap_or("").to_string();
@@ -116,7 +116,7 @@ impl<'a> RepoView<'a> {
 
     pub(super) fn recent_changes(&self) -> Vec<ChangeRow> {
         let out = self
-            .run(&["log", "-12", "--format=%H|%s|%ar"])
+            .run(&["log", "-12", "--format=%H|%s|%cr"])
             .unwrap_or_default();
 
         out.lines()

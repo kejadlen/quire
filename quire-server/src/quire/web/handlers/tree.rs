@@ -49,7 +49,7 @@ async fn tree_at_path(quire: Quire, repo: String, path: String) -> Response {
         let mut c = vec![Crumb::with_href("tree", format!("/{}/tree", repo_display))];
         if !path.is_empty() {
             c.push(Crumb::new(
-                path.split('/').last().unwrap_or(&path).to_string(),
+                path.split('/').next_back().unwrap_or(&path).to_string(),
             ));
         }
         c
@@ -135,7 +135,7 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         } else {
             format!("{}/{}", path, name)
         };
-        let commit_info = reader.run(&["log", "-1", "--format=%s|%ar", "HEAD", "--", &entry_path]);
+        let commit_info = reader.run(&["log", "-1", "--format=%s|%cr", "HEAD", "--", &entry_path]);
         let (last_msg, age) = commit_info
             .and_then(|s| {
                 let mut it = s.splitn(2, '|');
