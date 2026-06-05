@@ -37,16 +37,6 @@ pub fn nav_sections(repo: &str, active: &str, authed: bool) -> Vec<SectionLink> 
             href: format!("/{repo}/log"),
             active: active == "log",
         },
-        SectionLink {
-            label: "bookmarks",
-            href: format!("/{repo}/bookmarks"),
-            active: active == "bookmarks",
-        },
-        SectionLink {
-            label: "tags",
-            href: format!("/{repo}/tags"),
-            active: active == "tags",
-        },
     ];
     if authed {
         sections.push(SectionLink {
@@ -511,6 +501,70 @@ impl TreeEntry {
 
     pub fn is_dir_like(&self) -> bool {
         matches!(self.kind, TreeEntryKind::Dir | TreeEntryKind::Submodule)
+    }
+}
+
+// ── Commit log ────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "log.html")]
+pub struct LogTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub sections: Vec<SectionLink>,
+    pub changes: Vec<ChangeRow>,
+    pub bookmark: String,
+    pub sha_short: String,
+}
+
+impl LogTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+
+    pub fn sha_head(&self) -> &str {
+        &self.sha_short[..self.sha_short.len().min(4)]
+    }
+
+    pub fn sha_tail(&self) -> &str {
+        let start = self.sha_short.len().min(4);
+        &self.sha_short[start..]
+    }
+}
+
+// ── Bookmarks ────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "bookmarks.html")]
+pub struct BookmarksTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub bookmarks: Vec<BookmarkRow>,
+    pub tags: Vec<TagRow>,
+    pub sections: Vec<SectionLink>,
+}
+
+impl BookmarksTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+}
+
+// ── Tags ─────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "tags.html")]
+pub struct TagsTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub bookmarks: Vec<BookmarkRow>,
+    pub tags: Vec<TagRow>,
+    pub sections: Vec<SectionLink>,
+}
+
+impl TagsTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
     }
 }
 

@@ -1,0 +1,50 @@
+{% extends "_base.html" %}
+
+{% block title %}tags · {{ repo }}{% endblock %}
+
+{% block nav %}
+{% include "_nav.html" %}
+{% endblock %}
+
+{% block fullpage %}
+
+<nav class="repo-section-nav">
+  {% include "_repo_section_nav.html" %}
+</nav>
+
+<div class="repo-body">
+
+  <article class="ref-list">
+    {% for t in tags %}
+    <div class="ref-row">
+      <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
+      <span class="ref-age">{{ t.age }}</span>
+    </div>
+    {% else %}
+    <p class="ref-empty">no tags</p>
+    {% endfor %}
+  </article>
+
+  <aside class="repo-sidebar">
+    {% if !bookmarks.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Bookmarks</div>
+      <div class="bookmark-list">
+        {% for b in bookmarks %}
+        <div class="bookmark-row">
+          <span class="bookmark-kind {% if loop.first %}bookmark-kind--trunk{% endif %}">{% if loop.first %}trunk{% else %}local{% endif %}</span>
+          <a class="bookmark-link" href="/{{ repo }}/bookmarks">
+            <span class="bookmark-glyph-sm">※</span>{{ b.name }}
+          </a>
+          <span class="bookmark-age">{{ b.age }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      <a class="side-more" href="/{{ repo }}/bookmarks">all bookmarks →</a>
+    </div>
+    {% endif %}
+  </aside>
+
+</div>
+
+{% endblock %}

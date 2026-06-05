@@ -2,10 +2,14 @@
 
 mod ci;
 mod git;
+mod log_view;
+mod refs;
 mod repo;
 mod tree;
 
 pub use ci::{run_detail, run_list};
+pub use log_view::log_view;
+pub use refs::{bookmarks_view, tags_view};
 pub use repo::repo_home;
 pub use tree::{tree_view, tree_view_path};
 

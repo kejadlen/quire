@@ -1138,6 +1138,52 @@ pre code[data-lang] {
   .tree-msg { display: none; }
 }
 
+/* ── Commit log ────────────────────────────────────────────────── */
+
+.log-body {
+  max-width: 820px;
+  padding-top: var(--space-xs);
+  padding-bottom: var(--space-xs);
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+  padding: var(--space-3xs) var(--space-xl);
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.log-subject {
+  color: var(--ink);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-subject:hover {
+  color: var(--accent);
+}
+
+.log-sha {
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.log-age {
+  color: var(--mutedFaint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.log-empty {
+  padding: var(--space-l) var(--space-xl);
+  color: var(--muted);
+}
+
 /* ── Mobile (≤768px) ───────────────────────────────────────────── */
 
 @media (max-width: 768px) {

@@ -19,11 +19,14 @@ use axum_extra::routing::RouterExt;
 use crate::{
     Quire,
     quire::web::handlers::{
-        config, repo_home, run_detail, run_list, stylesheet, tree_view, tree_view_path,
+        bookmarks_view, config, log_view, repo_home, run_detail, run_list, stylesheet, tags_view,
+        tree_view, tree_view_path,
     },
 };
 
-pub use paths::{RepoPath, RunDetailPath, RunListPath, TreePath, TreeRootPath};
+pub use paths::{
+    BookmarksPath, LogPath, RepoPath, RunDetailPath, RunListPath, TagsPath, TreePath, TreeRootPath,
+};
 
 pub mod paths {
     use axum_extra::routing::TypedPath;
@@ -60,6 +63,24 @@ pub mod paths {
         pub repo: String,
         pub path: String,
     }
+
+    #[derive(TypedPath, Deserialize)]
+    #[typed_path("/{repo}/log")]
+    pub struct LogPath {
+        pub repo: String,
+    }
+
+    #[derive(TypedPath, Deserialize)]
+    #[typed_path("/{repo}/bookmarks")]
+    pub struct BookmarksPath {
+        pub repo: String,
+    }
+
+    #[derive(TypedPath, Deserialize)]
+    #[typed_path("/{repo}/tags")]
+    pub struct TagsPath {
+        pub repo: String,
+    }
 }
 
 /// Routes that require authentication.
@@ -79,6 +100,9 @@ pub fn public_router(quire: Quire) -> Router {
         .typed_get(repo_home)
         .typed_get(tree_view)
         .typed_get(tree_view_path)
+        .typed_get(log_view)
+        .typed_get(bookmarks_view)
+        .typed_get(tags_view)
         .route("/config", get(config))
         .with_state(quire)
 }
