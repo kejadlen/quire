@@ -803,6 +803,37 @@ html.dark {
   white-space: pre;
 }
 
+.code-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--rule2);
+  background: var(--code);
+}
+
+.code-toolbar-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--rule2);
+  color: var(--mutedFaint);
+  cursor: pointer;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  line-height: 1.6;
+}
+
+.code-toolbar-btn:hover {
+  color: var(--muted);
+  border-color: var(--muted);
+}
+
+.code-toolbar-btn.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .code-body {
   padding: 18px 56px 18px 20px;
   overflow: auto;
@@ -813,6 +844,15 @@ html.dark {
   line-height: inherit;
 }
 
+.code-body--wrap {
+  white-space: pre-wrap !important;
+  word-break: break-all;
+}
+
+.code-body > code[data-lang] {
+  display: block;
+}
+
 /* ── Arborium syntax highlighting integration ──────────────────── */
 
 /* Keep quire's paper-toned code background; strip any theme-imposed radius. */
@@ -820,7 +860,11 @@ pre:has(code[class*="language-"]),
 pre:has(code[data-lang]) {
   background: var(--code) !important;
   border-radius: 0 !important;
-  /* Preserve the design's left-rail accent. */
+}
+
+/* Left-rail accent only for standalone code blocks, not the file view grid. */
+:not(.code-body):has(code[class*="language-"]),
+:not(.code-body):has(code[data-lang]) {
   border-left: 2px solid var(--accent) !important;
 }
 
