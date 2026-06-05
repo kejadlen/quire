@@ -22,7 +22,7 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
-use super::templates::{ConfigTemplate, Crumb, ErrorTemplate};
+use super::templates::{ConfigTemplate, ErrorTemplate};
 use crate::Quire;
 
 /// Render a template into an HTML response, returning 500 on render failure.
@@ -49,7 +49,7 @@ pub(super) fn render_error(
 ) -> Response {
     let tmpl = ErrorTemplate {
         repo,
-        crumbs: vec![Crumb::new("error")],
+        crumbs: None,
         title: title.to_string(),
         detail: detail.clone(),
     };
@@ -76,7 +76,7 @@ pub async fn stylesheet() -> Response {
 
 pub async fn config(State(quire): State<Quire>) -> Response {
     let tmpl = ConfigTemplate {
-        crumbs: vec![Crumb::new("config")],
+        crumbs: None,
         config: quire.config.clone(),
     };
     render(&tmpl)

@@ -10,8 +10,8 @@
       </svg>
 
     </a>
-    <span class="sep">/</span>
     <a class="nav-repo" href="/{{ repo }}">{{ repo }}</a>
+    {% if let Some(crumbs) = crumbs %}
     {% for crumb in crumbs %}
     <span class="sep">/</span>
     {% if let Some(href) = crumb.href %}
@@ -20,5 +20,6 @@
     <span class="nav-crumb">{{ crumb.label }}</span>
     {% endif %}
     {% endfor %}
+    {% endif %}
   </div>
 </nav>

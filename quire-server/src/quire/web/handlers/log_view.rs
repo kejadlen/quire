@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 
-use super::super::templates::{Crumb, LogTemplate, nav_sections};
+use super::super::templates::{LogTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -38,11 +38,10 @@ pub async fn log_view(
     .await
     .unwrap_or_default();
 
-    let crumbs = vec![Crumb::new("log")];
     let tmpl = LogTemplate {
         sections: nav_sections(&repo_display, "log", auth.is_authenticated()),
         repo: repo_display,
-        crumbs,
+        crumbs: None,
         changes,
         bookmark,
         sha_short,

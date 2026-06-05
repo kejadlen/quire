@@ -63,7 +63,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             let tmpl = TreeTemplate {
                 sections: nav_sections(&repo_display, "tree", authed),
                 repo: repo_display,
-                crumbs,
+                crumbs: Some(crumbs),
                 bookmarks,
                 tags,
                 path,
@@ -80,7 +80,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             let tmpl = FileViewTemplate {
                 sections: nav_sections(&repo_display, "tree", authed),
                 repo: repo_display.clone(),
-                crumbs,
+                crumbs: Some(crumbs),
                 path,
                 bookmark: file_data.bookmark,
                 sha_short: file_data.sha_short.clone(),
@@ -229,7 +229,7 @@ struct FileData {
 }
 
 fn build_file_crumbs(repo: &str, path: &str) -> Vec<Crumb> {
-    let mut crumbs = vec![Crumb::with_href("tree", format!("/{repo}/tree"))];
+    let mut crumbs = vec![];
     if path.is_empty() {
         return crumbs;
     }

@@ -796,7 +796,10 @@ html.dark {
   line-height: 1.7;
   display: grid;
   grid-template-columns: auto 1fr;
-  background: var(--code);
+  background: var(--bg);
+  /* Override arborium's theme background variables so they don't clash. */
+  --arb-bg-light: transparent;
+  --arb-bg-dark: transparent;
 }
 
 .code-gutter {
@@ -816,37 +819,21 @@ html.dark {
   padding: 16px 16px 16px 12px;
   overflow: auto;
   margin: 0;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
-  background: transparent !important;
-  border-radius: 0 !important;
-}
-
-.code-body > code[data-lang],
-.code-body > code[data-lang] * {
-  background: transparent !important;
+  background: var(--bg);
 }
 
 /* ── Arborium syntax highlighting integration ──────────────────── */
 
-/* Strip any background arborium injects on the code element or any wrapper it adds. */
-.code-body,
-.code-body * {
-  background: transparent !important;
-}
-
-/* Restore the code surface background on the pre itself. */
-.code-body {
-  background: var(--code) !important;
-}
-
 /* Left-rail accent only for standalone code blocks, not the file view grid. */
-:not(.code-body):has(code[class*="language-"]),
-:not(.code-body):has(code[data-lang]) {
+pre:not(.code-body):has(code[class*="language-"]),
+pre:not(.code-body):has(code[data-lang]) {
   border-left: 2px solid var(--accent) !important;
-  background: var(--code) !important;
+  background: var(--bg) !important;
   border-radius: 0 !important;
 }
 

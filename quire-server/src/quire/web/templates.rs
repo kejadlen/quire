@@ -78,7 +78,7 @@ impl Crumb {
 #[template(path = "ci/run_list.html")]
 pub struct RunListTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub runs: Vec<RunListRow>,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
@@ -137,7 +137,7 @@ impl RunListRow {
 #[template(path = "ci/run_detail.html")]
 pub struct RunDetailTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
     pub quire_ci_log: String,
@@ -297,7 +297,7 @@ pub struct ListedRepo {
 #[template(path = "repo_home.html")]
 pub struct RepoHomeTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub head: Option<HeadInfo>,
     pub readme_html: Option<String>,
     pub bookmarks: Vec<BookmarkRow>,
@@ -407,7 +407,7 @@ impl ChangeRow {
 #[derive(Template)]
 #[template(path = "config.html")]
 pub struct ConfigTemplate {
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub config: crate::GlobalConfig,
 }
 
@@ -429,7 +429,7 @@ impl ConfigTemplate {
 #[template(path = "tree.html")]
 pub struct TreeTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
     pub sections: Vec<SectionLink>,
@@ -530,7 +530,7 @@ impl TreeEntry {
 #[template(path = "commit.html")]
 pub struct CommitTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub sections: Vec<SectionLink>,
     pub sha: String,
     pub sha_short: String,
@@ -578,7 +578,7 @@ impl CommitParent {
 #[template(path = "log.html")]
 pub struct LogTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub sections: Vec<SectionLink>,
     pub changes: Vec<ChangeRow>,
     pub bookmark: String,
@@ -606,7 +606,7 @@ impl LogTemplate {
 #[template(path = "bookmarks.html")]
 pub struct BookmarksTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
     pub sections: Vec<SectionLink>,
@@ -624,7 +624,7 @@ impl BookmarksTemplate {
 #[template(path = "tags.html")]
 pub struct TagsTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub bookmarks: Vec<BookmarkRow>,
     pub tags: Vec<TagRow>,
     pub sections: Vec<SectionLink>,
@@ -642,7 +642,7 @@ impl TagsTemplate {
 #[template(path = "error.html")]
 pub struct ErrorTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub title: String,
     pub detail: String,
 }
@@ -659,7 +659,7 @@ impl ErrorTemplate {
 #[template(path = "file.html")]
 pub struct FileViewTemplate {
     pub repo: String,
-    pub crumbs: Vec<Crumb>,
+    pub crumbs: Option<Vec<Crumb>>,
     pub sections: Vec<SectionLink>,
     pub path: String,
     pub bookmark: String,

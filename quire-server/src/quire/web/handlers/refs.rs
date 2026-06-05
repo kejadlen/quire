@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 
-use super::super::templates::{BookmarksTemplate, Crumb, TagsTemplate, nav_sections};
+use super::super::templates::{BookmarksTemplate, TagsTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -30,11 +30,10 @@ pub async fn bookmarks_view(
     .await
     .unwrap_or_default();
 
-    let crumbs = vec![Crumb::new("bookmarks")];
     let tmpl = BookmarksTemplate {
         sections: nav_sections(&repo_display, "bookmarks", auth.is_authenticated()),
         repo: repo_display,
-        crumbs,
+        crumbs: None,
         bookmarks,
         tags,
     };
@@ -60,11 +59,10 @@ pub async fn tags_view(
     .await
     .unwrap_or_default();
 
-    let crumbs = vec![Crumb::new("tags")];
     let tmpl = TagsTemplate {
         sections: nav_sections(&repo_display, "tags", auth.is_authenticated()),
         repo: repo_display,
-        crumbs,
+        crumbs: None,
         bookmarks,
         tags,
     };

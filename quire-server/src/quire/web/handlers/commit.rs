@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 
-use super::super::templates::{CommitParent, CommitTemplate, Crumb, nav_sections};
+use super::super::templates::{CommitParent, CommitTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -104,11 +104,10 @@ pub async fn commit_view(
         sha.clone()
     };
 
-    let crumbs = vec![Crumb::with_href("log", format!("/{repo_display}/log"))];
     let tmpl = CommitTemplate {
         sections: nav_sections(&repo_display, "log", auth.is_authenticated()),
         repo: repo_display,
-        crumbs,
+        crumbs: None,
         sha: sha.clone(),
         sha_short,
         sha_head: sha[..sha.len().min(4)].to_string(),
