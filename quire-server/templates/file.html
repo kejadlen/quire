@@ -66,7 +66,7 @@
     <div class="side-block">
       <div class="side-block-title">Last change</div>
       <div class="file-last-change-side">
-        <a class="change-id" href="/{{ repo }}/log" title="commit {{ last_change_sha }}">
+        <a class="change-id" href="/{{ repo }}/commits/{{ last_change_sha }}" title="commit {{ last_change_sha }}">
           <span class="change-head">{{ last_change_head }}</span><span class="change-tail">{{ last_change_tail }}</span>
         </a>
         <div class="file-last-change-msg">{{ last_change_msg }}</div>

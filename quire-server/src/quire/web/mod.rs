@@ -84,7 +84,7 @@ pub mod paths {
     }
 
     #[derive(TypedPath, Deserialize)]
-    #[typed_path("/{repo}/commit/{sha}")]
+    #[typed_path("/{repo}/commits/{sha}")]
     pub struct CommitPath {
         pub repo: String,
         pub sha: String,

@@ -39,6 +39,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
     };
 
     let path_clone = path.clone();
+    let repo_d = repo_display.clone();
     let result = tokio::task::spawn_blocking(move || {
         let reader = RepoView::new(&git_repo);
 
@@ -46,7 +47,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
         if let Some(tree_data) = read_tree_data(&reader, &path_clone) {
             let bookmarks = reader.bookmarks();
             let tags = reader.tags();
-            let recent_changes = reader.recent_changes_for(Some(&path_clone));
+            let recent_changes = reader.recent_changes_for(Some(&path_clone), &repo_d);
             Some(Ok((tree_data, bookmarks, tags, recent_changes)))
         } else {
             // ls-tree failed — try reading as a file blob.

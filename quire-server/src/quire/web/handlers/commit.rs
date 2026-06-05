@@ -61,10 +61,10 @@ pub async fn commit_view(
 
         let timestamp_ms: i64 = timestamp_str.parse().ok().map(|secs: i64| secs * 1000)?;
 
-        let parents: Vec<CommitParent> = parents_str
+        let parent_shars: Vec<String> = parents_str
             .split_whitespace()
             .filter(|s| !s.is_empty())
-            .map(|p| CommitParent { sha: p.to_string() })
+            .map(|p| p.to_string())
             .collect();
 
         let diff = reader
@@ -78,17 +78,25 @@ pub async fn commit_view(
             timestamp_ms,
             subject,
             body,
-            parents,
+            parent_shars,
             diff,
         ))
     })
     .await
     .unwrap_or(None);
 
-    let (sha, author, email, timestamp_ms, subject, body, parents, diff) = match result {
+    let (sha, author, email, timestamp_ms, subject, body, parent_shas, diff) = match result {
         Some(data) => data,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
+
+    let parents: Vec<CommitParent> = parent_shas
+        .into_iter()
+        .map(|p| CommitParent {
+            commit_url: format!("/{repo_display}/commits/{p}"),
+            sha: p,
+        })
+        .collect();
 
     let sha_short = if sha.len() >= 8 {
         sha[..8].to_string()

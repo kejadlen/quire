@@ -16,7 +16,7 @@
     <span class="bookmark-glyph">※</span>
     <span class="bookmark-name">{{ h.bookmark }}</span>
     <span class="repo-meta-sep">→</span>
-    <a class="change-id" href="/{{ repo }}/commit/{{ h.sha }}" title="commit {{ h.sha_short() }}">
+    <a class="change-id" href="/{{ repo }}/commits/{{ h.sha }}" title="commit {{ h.sha_short() }}">
       <span class="change-head">{{ h.change_head() }}</span><span class="change-tail">{{ h.change_tail() }}</span>
     </a>
     <span class="commit-id-secondary">{{ h.sha_short() }}</span>
@@ -115,13 +115,13 @@
         {% for ch in recent_changes %}
         <div class="change-mini-row">
           <div class="change-mini-header">
-            <a class="change-id" href="/{{ repo }}/commit/{{ ch.sha_full() }}" title="commit {{ ch.sha_full() }}">
+            <a class="change-id" href="{{ ch.commit_url }}" title="commit {{ ch.sha_full() }}">
               <span class="change-head">{{ ch.change_head() }}</span><span class="change-tail">{{ ch.change_tail() }}</span>
             </a>
             <span class="change-mini-age">{{ ch.age }}</span>
           </div>
           <div class="change-mini-desc">
-            <a class="change-mini-desc-link" href="/{{ repo }}/commit/{{ ch.sha_full() }}">
+            <a class="change-mini-desc-link" href="{{ ch.commit_url }}">
             {% if ch.description.is_empty() %}<span class="no-desc">(no description set)</span>{% else %}{{ ch.description }}{% endif %}
             </a>
           </div>

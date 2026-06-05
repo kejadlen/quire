@@ -23,9 +23,10 @@ pub async fn log_view(
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
+    let repo_d = repo_display.clone();
     let (changes, bookmark, sha_short) = tokio::task::spawn_blocking(move || {
         let reader = RepoView::new(&git_repo);
-        let changes = reader.recent_changes();
+        let changes = reader.recent_changes(&repo_d);
         let bookmark = reader
             .run(&["symbolic-ref", "--short", "HEAD"])
             .unwrap_or_else(|| "main".to_string());

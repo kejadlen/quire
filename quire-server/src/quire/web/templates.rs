@@ -382,6 +382,7 @@ pub struct ChangeRow {
     pub sha: String,
     pub description: String,
     pub age: String,
+    pub commit_url: String,
 }
 
 impl ChangeRow {
@@ -553,6 +554,7 @@ impl CommitTemplate {
 
 pub struct CommitParent {
     pub sha: String,
+    pub commit_url: String,
 }
 
 impl CommitParent {

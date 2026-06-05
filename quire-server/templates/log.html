@@ -23,10 +23,10 @@
 <div class="log-body">
   {% for change in changes %}
   <div class="log-row">
-    <a class="log-sha" href="/{{ repo }}/commit/{{ change.sha_full() }}" title="commit {{ change.sha_full() }}">
+    <a class="log-sha" href="{{ change.commit_url }}" title="commit {{ change.sha_full() }}">
       <span class="change-head">{{ change.change_head() }}</span><span class="change-tail">{{ change.change_tail() }}</span>
     </a>
-    <a class="log-subject" href="/{{ repo }}/commit/{{ change.sha_full() }}">
+    <a class="log-subject" href="{{ change.commit_url }}">
       {% if change.description.is_empty() %}<span class="no-desc">(no description set)</span>{% else %}{{ change.description }}{% endif %}
     </a>
     <span class="log-age"><time>{{ change.age }}</time></span>

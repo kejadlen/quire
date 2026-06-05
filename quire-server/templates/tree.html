@@ -69,7 +69,7 @@
   {# RIGHT — recent commit log for this ref #}
   <aside class="tree-sidebar">
     {% for change in recent_changes %}
-    <a class="tree-log-item" href="/{{ repo }}/commit/{{ change.sha_full() }}">
+    <a class="tree-log-item" href="{{ change.commit_url }}">
       <div class="tree-log-subject">{{ change.description }}</div>
       <div class="tree-log-meta">
         <span class="tree-log-sha">{{ change.change_head() }}{{ change.change_tail() }}</span>

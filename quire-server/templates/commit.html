@@ -49,7 +49,7 @@
         <span class="commit-meta-key">parent{% if parents.len() > 1 %}s{% endif %}</span>
         <span class="commit-meta-val">
           {% for p in parents %}
-          <a class="change-id" href="/{{ repo }}/commit/{{ p.sha_full() }}" title="commit {{ p.sha_full() }}">
+          <a class="change-id" href="{{ p.commit_url }}" title="commit {{ p.sha_full() }}">
             <span class="change-head">{{ p.sha_head() }}</span><span class="change-tail">{{ p.sha_tail() }}</span>
           </a>
           {% endfor %}

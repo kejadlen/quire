@@ -33,13 +33,13 @@ impl<'a> RepoView<'a> {
     }
 
     /// Read all summary data from the repo for the home page.
-    pub(super) fn read_all(&self) -> GitData {
+    pub(super) fn read_all(&self, repo: &str) -> GitData {
         (
             self.head_info(),
             self.readme(),
             self.bookmarks(),
             self.tags(),
-            self.recent_changes(),
+            self.recent_changes(repo),
         )
     }
 
@@ -114,11 +114,11 @@ impl<'a> RepoView<'a> {
             .collect()
     }
 
-    pub(super) fn recent_changes(&self) -> Vec<ChangeRow> {
-        self.recent_changes_for(None)
+    pub(super) fn recent_changes(&self, repo: &str) -> Vec<ChangeRow> {
+        self.recent_changes_for(None, repo)
     }
 
-    pub(super) fn recent_changes_for(&self, path: Option<&str>) -> Vec<ChangeRow> {
+    pub(super) fn recent_changes_for(&self, path: Option<&str>, repo: &str) -> Vec<ChangeRow> {
         let mut args = vec!["log", "-12", "--format=%H|%s|%cr"];
         if let Some(p) = path
             && !p.is_empty()
@@ -131,8 +131,10 @@ impl<'a> RepoView<'a> {
         out.lines()
             .filter_map(|line| {
                 let mut parts = line.splitn(3, '|');
+                let sha = parts.next()?.to_string();
                 Some(ChangeRow {
-                    sha: parts.next()?.to_string(),
+                    commit_url: format!("/{repo}/commits/{sha}"),
+                    sha,
                     description: parts.next().unwrap_or("").to_string(),
                     age: parts.next().unwrap_or("").to_string(),
                 })
