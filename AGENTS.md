@@ -6,7 +6,7 @@ The backlog lives in the `ranger` CLI, not GitHub Issues. Use `ranger` to read a
 
 Skip pre-flight verification of things already guaranteed. `RANGER_DEFAULT_BACKLOG=quire` is set in the shell — don't `echo` it, don't pass `--backlog`, don't run `ranger backlog list` to "confirm." Ranger creates tags on first use, so `ranger tag list` before `tag add` is unnecessary. Investigation commands (`ranger task list`, `ranger task show`, reading code) are fine when they're actually useful for the work at hand — just don't run them reflexively before every operation.
 
-When the user asks to add a task, run `ranger task create` (plus `ranger tag add` for tags). Look at code, recent tasks, or whatever else if the task genuinely needs that context — e.g., capturing a finding from the conversation you just had. Write the description from what was discussed; don't pad it with material the user didn't raise.
+When the user asks to add a task, run `ranger task create` followed by `ranger tag add` to apply relevant tags. Always tag new tasks — look at the existing tag list and apply whatever fits. Write the description from what was discussed; don't pad it with material the user didn't raise.
 
 The backlog shifts between sessions and even within a session — tasks get reordered, retitled, moved between states, closed, or added by the user without notice. Before acting on a task you remember (or one referenced earlier in the conversation), re-run `ranger task show <key>` and confirm state, ordering, and description against ground truth. Do not trust earlier `ranger task list` output to still be accurate; refetch when placement matters (e.g. moving to top/back of ready).
 
