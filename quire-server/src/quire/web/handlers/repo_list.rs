@@ -32,5 +32,5 @@ pub async fn repo_list(State(quire): State<Quire>) -> Response {
     };
 
     let tmpl = RepoListTemplate { repos };
-    render(&tmpl)
+    render(tmpl.render())
 }

@@ -1,13 +1,14 @@
-//! Askama template structs and their formatting methods.
+//! Maud template rendering.
 
-use askama::Template;
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use super::format;
 
-/// The build version, exposed to every template for the footer.
 fn pkg_version() -> &'static str {
     env!("QUIRE_VERSION")
 }
+
+// ── Shared types ────────────────────────────────────────────────────
 
 /// A section nav link in the repo tab bar.
 pub struct SectionLink {
@@ -72,10 +73,147 @@ impl Crumb {
     }
 }
 
+// ── Layout helpers ─────────────────────────────────────────────────
+
+const QUIRE_APP_JS: &str = r#"
+function quireApp() {
+  return {
+    darkMode: false,
+    init() {
+      const stored = localStorage.getItem('quire-dark');
+      if (stored !== null) {
+        this.darkMode = stored === '1';
+      } else {
+        this.darkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      }
+      this._highlight();
+    },
+    toggleDark() {
+      this.darkMode = !this.darkMode;
+      localStorage.setItem('quire-dark', this.darkMode ? '1' : '0');
+      this._highlight();
+    },
+    _highlight() {
+      const arborium = window.arborium;
+      if (!arborium) return;
+      const theme = this.darkMode ? 'github-dark' : 'github-light';
+      arborium.highlightAll({ theme });
+    }
+  }
+}
+"#;
+
+fn q_mark_svg() -> Markup {
+    html! {
+        svg class="q-mark" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" {
+            rect x="2" y="2" width="12" height="12" rx="1.2" fill="none"
+                stroke="currentColor" stroke-width="1.2" {}
+            line x1="4.5" y1="6" x2="11.5" y2="6"
+                stroke="currentColor" stroke-width="0.8" {}
+            line x1="4.5" y1="8" x2="11.5" y2="8"
+                stroke="currentColor" stroke-width="0.8" {}
+            line x1="4.5" y1="10" x2="9" y2="10"
+                stroke="currentColor" stroke-width="0.8" {}
+            circle cx="11" cy="11" r="3" fill="none"
+                stroke="currentColor" stroke-width="0.8"
+                stroke-dasharray="1.2 1.2" opacity="0.35" {}
+        }
+    }
+}
+
+fn footer() -> Markup {
+    html! {
+        footer class="page-footer" {
+            span { "quire v" (pkg_version()) }
+            button class="dark-toggle"
+                "@click"="toggleDark()"
+                ":aria-label"="darkMode ? 'switch to light' : 'switch to dark'"
+                title="toggle dark mode" {
+                span "x-show"="!darkMode" { "◐" }
+                span "x-show"="darkMode" { "◑" }
+            }
+        }
+    }
+}
+
+fn page_nav(repo: &str, crumbs: Option<&[Crumb]>) -> Markup {
+    html! {
+        nav class="page-nav" {
+            div class="nav-bar" {
+                a class="nav-wordmark" href="/" aria-label="quire home" {
+                    (q_mark_svg())
+                    span class="nav-wordmark-text" { "quire" }
+                }
+                span class="sep" { "/" }
+                a class="nav-repo" href=(format!("/{repo}")) { (repo) }
+                @if let Some(crumbs) = crumbs {
+                    @for crumb in crumbs {
+                        span class="sep" { "/" }
+                        @if let Some(href) = &crumb.href {
+                            a class="nav-crumb" href=(href) { (crumb.label) }
+                        } @else {
+                            span class="nav-crumb" { (crumb.label) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn config_page_nav() -> Markup {
+    html! {
+        nav class="page-nav" {
+            div class="nav-bar" {
+                a class="nav-wordmark" href="/" aria-label="quire home" {
+                    (q_mark_svg())
+                    span class="nav-wordmark-text" { "quire" }
+                }
+                span class="sep" { "/" }
+                span class="nav-crumb" { "config" }
+            }
+        }
+    }
+}
+
+fn section_nav_links(sections: &[SectionLink]) -> Markup {
+    html! {
+        @for s in sections {
+            a class=(if s.active { "section-link section-link--active" } else { "section-link" })
+              href=(s.href) {
+                (s.label)
+            }
+        }
+    }
+}
+
+fn base(title: &str, nav: Markup, body: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" "x-data"="quireApp()" ":class"="{ dark: darkMode }" "x-init"="init()" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) }
+                link rel="stylesheet" href="/style.css";
+                script defer="" data-manual=""
+                    src="https://cdn.jsdelivr.net/npm/@arborium/arborium@2/dist/arborium.iife.js" {}
+                script defer=""
+                    src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" {}
+            }
+            body {
+                (nav)
+                (body)
+                (footer())
+            }
+            script { (PreEscaped(QUIRE_APP_JS)) }
+        }
+    }
+}
+
+
 // ── Run list ───────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "ci/run_list.html")]
 pub struct RunListTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -84,8 +222,40 @@ pub struct RunListTemplate {
 }
 
 impl RunListTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+            }
+            div class="repo-body" {
+                article class="ci-run-list" {
+                    @if self.runs.is_empty() {
+                        p class="ci-empty" { "no runs yet" }
+                    } @else {
+                        @for run in &self.runs {
+                            div class="ci-run-row" {
+                                span class=(format!("ci-status-dot {}", run.state_class())) {}
+                                a class="ci-commit-link"
+                                  href=(format!("/{}/ci/{}", self.repo, run.id)) {
+                                    (run.sha_short())
+                                }
+                                span class="ci-run-branch" { (run.branch_short()) }
+                                span class="ci-run-age" {
+                                    time title=(run.queued_iso()) { (run.queued_relative()) }
+                                }
+                                span class="ci-run-dur" { (run.duration_display()) }
+                            }
+                        }
+                    }
+                }
+                aside class="repo-sidebar" {}
+            }
+        };
+        base(
+            &format!("ci · {}", self.repo),
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 }
 
@@ -131,8 +301,6 @@ impl RunListRow {
 
 // ── Run detail ─────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "ci/run_detail.html")]
 pub struct RunDetailTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -143,8 +311,96 @@ pub struct RunDetailTemplate {
 }
 
 impl RunDetailTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+                span class="repo-position" {
+                    span class="ci-commit-link" { (self.run.sha_short()) }
+                    span class="repo-meta-dot" { "·" }
+                    span { (self.run.branch_short()) }
+                    span class="repo-meta-dot" { "·" }
+                    span class=(format!("ci-state-label {}", self.run.state_class())) {
+                        span class=(format!("ci-status-dot {}", self.run.state_class())) {}
+                        " " (self.run.state())
+                    }
+                }
+            }
+            div class="repo-body" {
+                article class="ci-detail" {
+                    div class="ci-meta" {
+                        @if self.run.is_terminal() {
+                            "queued "
+                            time title=(self.run.queued_iso()) { (self.run.queued_relative()) }
+                            span class="repo-meta-dot" { "·" }
+                            span title=(format!("started {}\nfinished {}",
+                                self.run.started_iso(), self.run.finished_iso())) {
+                                "ran " (self.run.duration_display())
+                            }
+                        } @else if self.run.has_started() {
+                            "queued "
+                            time title=(self.run.queued_iso()) { (self.run.queued_relative()) }
+                            span class="repo-meta-dot" { "·" }
+                            "started "
+                            time title=(self.run.started_iso()) { (self.run.started_display()) }
+                        } @else {
+                            "queued "
+                            time title=(self.run.queued_iso()) { (self.run.queued_relative()) }
+                        }
+                    }
+                    @if self.jobs.is_empty() {
+                        div class="ci-empty" { "no jobs recorded" }
+                    } @else {
+                        @for job in &self.jobs {
+                            div class="ci-job" {
+                                div class="ci-job-header" {
+                                    (job.job_id)
+                                    span class="repo-meta-dot" { "·" }
+                                    (job.duration_display())
+                                    @if let Some(code) = job.exit_code_filter_nonzero() {
+                                        span class="repo-meta-dot" { "·" }
+                                        "exit " (code)
+                                    }
+                                    span class="repo-meta-dot" { "·" }
+                                    span class=(format!("ci-state-label {}", job.state_class())) {
+                                        span class=(format!("ci-status-dot {}", job.state_class())) {}
+                                        " " (job.state)
+                                    }
+                                }
+                                @for sh in &job.sh_events {
+                                    div class="ci-sh" {
+                                        div class="ci-sh-cmd" {
+                                            (sh.cmd_display())
+                                            span class="ci-sh-meta" {
+                                                (sh.duration_display())
+                                                @if sh.exit_code != 0 {
+                                                    " · exit " (sh.exit_code)
+                                                }
+                                            }
+                                        }
+                                        @if !sh.log_content.is_empty() {
+                                            pre class="ci-sh-log" { (sh.log_content) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    @if !self.quire_ci_log.is_empty() {
+                        div class="ci-job" {
+                            div class="ci-job-header" { "quire-ci" }
+                            pre class="ci-sh-log" { (self.quire_ci_log) }
+                        }
+                    }
+                }
+                aside class="repo-sidebar" {}
+            }
+        };
+        base(
+            &format!("ci · {} · {}", self.repo, self.run.sha_short()),
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 }
 
@@ -270,15 +526,39 @@ impl DetailShEvent {
 
 // ── Repo list ─────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "repo_list.html")]
 pub struct RepoListTemplate {
     pub repos: Vec<ListedRepo>,
 }
 
 impl RepoListTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let nav = html! {
+            nav class="page-nav" {
+                div class="nav-bar" {
+                    a class="nav-wordmark" href="/" aria-label="quire home" {
+                        (q_mark_svg())
+                        span class="nav-wordmark-text" { "quire" }
+                    }
+                }
+            }
+        };
+        let body = html! {
+            div class="repo-list" {
+                @if self.repos.is_empty() {
+                    p class="repo-list-empty" { "no repositories" }
+                } @else {
+                    @for repo in &self.repos {
+                        a class="repo-list-row" href=(format!("/{}", repo.name)) {
+                            span class="repo-list-name" { (repo.name) }
+                            @if let Some(desc) = &repo.description {
+                                span class="repo-list-desc" { (desc) }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        base("quire", nav, body)
     }
 }
 
@@ -289,8 +569,6 @@ pub struct ListedRepo {
 
 // ── Repo Home ──────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "repo_home.html")]
 pub struct RepoHomeTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -302,18 +580,114 @@ pub struct RepoHomeTemplate {
 }
 
 impl RepoHomeTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+                @if let Some(h) = &self.head {
+                    span class="repo-position" {
+                        span class="bookmark-glyph" { "※" }
+                        span class="bookmark-name" { (h.bookmark) }
+                        span class="repo-meta-sep" { "→" }
+                        a class="change-id" href=(format!("/{}/log", self.repo))
+                          title=(format!("commit {}", h.sha_short())) {
+                            span class="change-head" { (h.change_head()) }
+                            span class="change-tail" { (h.change_tail()) }
+                        }
+                        span class="commit-id-secondary" { (h.sha_short()) }
+                        span class="repo-meta-dot" { "·" }
+                        span class="repo-position-age" { (h.age) }
+                        @if !self.recent_runs.is_empty() {
+                            span class="repo-meta-dot" { "·" }
+                            span class="ci-inline" {
+                                span class=(format!("ci-status-dot {}", self.latest_ci_state_class())) {}
+                                span { "ci " (self.latest_ci_state()) }
+                            }
+                        }
+                    }
+                }
+            }
+            div class="repo-body" {
+                article class="repo-readme" {
+                    @if let Some(html) = &self.readme_html {
+                        div class="readme-content" { (PreEscaped(html)) }
+                    } @else {
+                        p class="readme-empty" { "no readme" }
+                    }
+                }
+                aside class="repo-sidebar" {
+                    div class="side-block" {
+                        div class="side-block-title" { "Clone" }
+                        div class="clone-url" { "https://quire.local/" (self.repo) ".git" }
+                    }
+                    @if !self.recent_runs.is_empty() {
+                        div class="side-block" {
+                            div class="side-block-title" { "CI" }
+                            div class="ci-mini-list" {
+                                @for run in &self.recent_runs {
+                                    div class="ci-mini-row" {
+                                        span class=(format!("ci-status-dot {}", run.state_class())) {}
+                                        a class="ci-mini-link"
+                                          href=(format!("/{}/ci/{}", self.repo, run.id)) {
+                                            (run.sha_short())
+                                        }
+                                        span class="ci-mini-branch" { (run.branch_short()) }
+                                        span class="ci-mini-age" {
+                                            time title=(run.queued_iso()) { (run.queued_relative()) }
+                                        }
+                                        span class="ci-mini-dur" { (run.duration_display()) }
+                                    }
+                                }
+                            }
+                            a class="side-more" href=(format!("/{}/ci", self.repo)) {
+                                "all runs →"
+                            }
+                        }
+                    }
+                    @if !self.recent_changes.is_empty() {
+                        div class="side-block side-block--last" {
+                            div class="side-block-title" { "Recent changes" }
+                            div class="change-mini-list" {
+                                @for ch in &self.recent_changes {
+                                    div class="change-mini-row" {
+                                        div class="change-mini-header" {
+                                            a class="change-id"
+                                              href=(format!("/{}/log", self.repo))
+                                              title=(format!("commit {}", ch.sha_full())) {
+                                                span class="change-head" { (ch.change_head()) }
+                                                span class="change-tail" { (ch.change_tail()) }
+                                            }
+                                            span class="change-mini-age" { (ch.age) }
+                                        }
+                                        div class="change-mini-desc" {
+                                            @if ch.description.is_empty() {
+                                                span class="no-desc" { "(no description set)" }
+                                            } @else {
+                                                (ch.description)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            a class="side-more" href=(format!("/{}/log", self.repo)) {
+                                "full log →"
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        base(&self.repo, page_nav(&self.repo, self.crumbs.as_deref()), body)
     }
 
-    pub fn latest_ci_state(&self) -> &str {
+    fn latest_ci_state(&self) -> &str {
         self.recent_runs
             .first()
             .map(|r| r.state())
             .unwrap_or("none")
     }
 
-    pub fn latest_ci_state_class(&self) -> &'static str {
+    fn latest_ci_state_class(&self) -> &'static str {
         self.recent_runs
             .first()
             .map(|r| r.state_class())
@@ -371,16 +745,60 @@ impl ChangeRow {
 
 // ── Config ─────────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "config.html")]
 pub struct ConfigTemplate {
     pub crumbs: Option<Vec<Crumb>>,
     pub config: crate::GlobalConfig,
 }
 
 impl ConfigTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                span class="repo-position" { "config" }
+            }
+            div class="repo-body" {
+                article class="config-table" {
+                    div class="config-row" {
+                        span class="config-key" { "port" }
+                        span class="config-val" { (self.config.port) }
+                    }
+                    div class="config-row" {
+                        span class="config-key" { "ci.executor" }
+                        span class="config-val" { (self.config.ci.executor) }
+                    }
+                    @if let Some(sentry) = &self.config.sentry {
+                        div class="config-row" {
+                            span class="config-key" { "sentry.dsn" }
+                            span class="config-val" { (sentry.dsn) }
+                        }
+                    } @else {
+                        div class="config-row" {
+                            span class="config-key" { "sentry" }
+                            span class="config-val config-val--empty" { "disabled" }
+                        }
+                    }
+                    @if let Some(token) = &self.config.github.mirror_token {
+                        div class="config-row" {
+                            span class="config-key" { "github.mirror-token" }
+                            span class="config-val" { (token) }
+                        }
+                    } @else {
+                        div class="config-row" {
+                            span class="config-key" { "github.mirror-token" }
+                            span class="config-val config-val--empty" { "not set" }
+                        }
+                    }
+                    @for (key, value) in self.sorted_secrets() {
+                        div class="config-row" {
+                            span class="config-key" { "secrets." (key) }
+                            span class="config-val" { (value) }
+                        }
+                    }
+                }
+                aside class="repo-sidebar" {}
+            }
+        };
+        base("config", config_page_nav(), body)
     }
 
     pub fn sorted_secrets(&self) -> Vec<(&String, &quire_core::secret::SecretString)> {
@@ -392,28 +810,118 @@ impl ConfigTemplate {
 
 // ── Tree view ─────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "tree.html")]
 pub struct TreeTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
     pub sections: Vec<SectionLink>,
-    /// Current directory path relative to repo root ("" = root).
     pub path: String,
-    /// Active bookmark name (e.g. "main").
     pub bookmark: String,
-    /// Short commit hash for HEAD.
     pub sha_short: String,
     pub entries: Vec<TreeEntry>,
     pub recent_changes: Vec<ChangeRow>,
 }
 
 impl TreeTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+                span class="repo-position" {
+                    span class="bookmark-glyph" { "※" }
+                    span class="bookmark-name" { (self.bookmark) }
+                    span class="repo-meta-sep" { "→" }
+                    span class="change-id" title=(self.sha_short) {
+                        span class="change-head" { (self.sha_head()) }
+                        span class="change-tail" { (self.sha_tail()) }
+                    }
+                    @if !self.path.is_empty() {
+                        span class="repo-meta-dot" { "·" }
+                        span class="repo-position-path" { (self.path) }
+                    }
+                }
+            }
+            div class="tree-body" {
+                div class="tree-table-col" {
+                    @for entry in &self.entries {
+                        @let row_class = format!("tree-row{}{}{}",
+                            if entry.is_dir_like() { " tree-row--dir" } else { "" },
+                            if entry.is_submodule() { " tree-row--sub" } else { "" },
+                            if entry.is_up() { " tree-row--up" } else { "" },
+                        );
+                        div class=(row_class) {
+                            span class="tree-icon" aria-hidden="true" {
+                                @if entry.is_dir() {
+                                    svg width="14" height="14" viewBox="0 0 14 14"
+                                        fill="none" stroke="currentColor"
+                                        stroke-width="1.2" stroke-linejoin="round" {
+                                        path d="M1 3.5h4l1 1.2h7v7.8h-12z" {}
+                                    }
+                                } @else if entry.is_submodule() {
+                                    svg width="14" height="14" viewBox="0 0 14 14"
+                                        fill="none" stroke="currentColor"
+                                        stroke-width="1.2" stroke-dasharray="1.6 1.4" {
+                                        path d="M1 3.5h4l1 1.2h7v7.8h-12z" {}
+                                    }
+                                } @else if entry.is_up() {
+                                    svg width="14" height="14" viewBox="0 0 14 14"
+                                        fill="none" stroke="currentColor"
+                                        stroke-width="1.4" stroke-linecap="round" {
+                                        path d="M3 7l4-4 4 4M7 3v9" {}
+                                    }
+                                } @else {
+                                    svg width="14" height="14" viewBox="0 0 14 14"
+                                        fill="none" stroke="currentColor"
+                                        stroke-width="1.2" stroke-linejoin="round" {
+                                        path d="M3 1.5h5l3 3v8.5h-8z" {}
+                                        path d="M8 1.5v3h3" {}
+                                    }
+                                }
+                            }
+                            @if entry.is_up() {
+                                a class="tree-name tree-name--up" href=(self.parent_url()) { ".." }
+                                span {}
+                                span {}
+                            } @else if entry.is_dir_like() {
+                                a class="tree-name tree-name--dir"
+                                  href=(self.dir_entry_url(&entry.name)) {
+                                    (entry.name) "/"
+                                }
+                                span class="tree-msg" { (entry.last_msg) }
+                                span class="tree-age" { (entry.age) }
+                            } @else {
+                                a class="tree-name" href=(self.dir_entry_url(&entry.name)) {
+                                    (entry.name)
+                                }
+                                span class="tree-msg" { (entry.last_msg) }
+                                span class="tree-age" { (entry.age) }
+                            }
+                        }
+                    }
+                }
+                aside class="tree-sidebar" {
+                    @for change in &self.recent_changes {
+                        a class="tree-log-item" href=(format!("/{}/log", self.repo)) {
+                            div class="tree-log-subject" { (change.description) }
+                            div class="tree-log-meta" {
+                                span class="tree-log-sha" {
+                                    (change.change_head()) (change.change_tail())
+                                }
+                                span class="tree-log-age" { (change.age) }
+                            }
+                        }
+                    }
+                    a class="tree-log-more" href=(format!("/{}/log", self.repo)) { "log →" }
+                }
+            }
+        };
+        base(
+            &format!("tree · {}", self.repo),
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 
-    pub fn parent_url(&self) -> String {
+    fn parent_url(&self) -> String {
         if self.path.is_empty() {
             return format!("/{}", self.repo);
         }
@@ -423,7 +931,7 @@ impl TreeTemplate {
         }
     }
 
-    pub fn dir_entry_url(&self, name: &str) -> String {
+    fn dir_entry_url(&self, name: &str) -> String {
         if self.path.is_empty() {
             format!("/{}/tree/{}", self.repo, name)
         } else {
@@ -431,23 +939,11 @@ impl TreeTemplate {
         }
     }
 
-    pub fn dir_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.is_dir()).count()
-    }
-
-    pub fn submodule_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.is_submodule()).count()
-    }
-
-    pub fn file_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.is_file()).count()
-    }
-
-    pub fn sha_head(&self) -> &str {
+    fn sha_head(&self) -> &str {
         &self.sha_short[..self.sha_short.len().min(4)]
     }
 
-    pub fn sha_tail(&self) -> &str {
+    fn sha_tail(&self) -> &str {
         let start = self.sha_short.len().min(4);
         &self.sha_short[start..]
     }
@@ -491,8 +987,6 @@ impl TreeEntry {
 
 // ── Commit view ───────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "commit.html")]
 pub struct CommitTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -512,8 +1006,57 @@ pub struct CommitTemplate {
 }
 
 impl CommitTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+                span class="repo-position" {
+                    span class="change-id" title=(self.sha) {
+                        span class="change-head" { (self.sha_head) }
+                        span class="change-tail" { (self.sha_tail) }
+                    }
+                }
+            }
+            div class="commit-body" {
+                article class="commit-detail" {
+                    div class="commit-meta" {
+                        div class="commit-subject" { (self.subject) }
+                        @if !self.body.is_empty() {
+                            pre class="commit-body-text" { (self.body) }
+                        }
+                        div class="commit-byline" {
+                            span class="commit-author" { (self.author) }
+                            " <" (self.email) ">"
+                            span class="repo-meta-dot" { "·" }
+                            time title=(self.date_iso) { (self.date_relative) }
+                        }
+                        @if !self.parents.is_empty() {
+                            div class="commit-parents" {
+                                "parent"
+                                @if self.parents.len() > 1 { "s" }
+                                ": "
+                                @for (i, p) in self.parents.iter().enumerate() {
+                                    @if i > 0 { ", " }
+                                    a class="change-id" href=(p.commit_url)
+                                      title=(p.sha_full()) {
+                                        span class="change-head" { (p.sha_head()) }
+                                        span class="change-tail" { (p.sha_tail()) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    @if !self.diff.is_empty() {
+                        pre class="commit-diff" { (self.diff) }
+                    }
+                }
+            }
+        };
+        base(
+            &format!("{} · {}", self.sha_short, self.repo),
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 }
 
@@ -539,8 +1082,6 @@ impl CommitParent {
 
 // ── Commit log ────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "log.html")]
 pub struct LogTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -551,24 +1092,65 @@ pub struct LogTemplate {
 }
 
 impl LogTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+                span class="repo-position" {
+                    span class="bookmark-glyph" { "※" }
+                    span class="bookmark-name" { (self.bookmark) }
+                    span class="repo-meta-sep" { "→" }
+                    span class="change-id" title=(self.sha_short) {
+                        span class="change-head" { (self.sha_head()) }
+                        span class="change-tail" { (self.sha_tail()) }
+                    }
+                }
+            }
+            div class="log-body" {
+                @if self.changes.is_empty() {
+                    p class="log-empty" { "no commits yet" }
+                } @else {
+                    @for change in &self.changes {
+                        div class="log-row" {
+                            a class="log-sha"
+                              href=(format!("/{}/log", self.repo))
+                              title=(format!("commit {}", change.sha_full())) {
+                                span class="change-head" { (change.change_head()) }
+                                span class="change-tail" { (change.change_tail()) }
+                            }
+                            a class="log-subject" href=(format!("/{}/log", self.repo)) {
+                                @if change.description.is_empty() {
+                                    span class="no-desc" { "(no description set)" }
+                                } @else {
+                                    (change.description)
+                                }
+                            }
+                            span class="log-age" {
+                                time { (change.age) }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        base(
+            &format!("log · {}", self.repo),
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 
-    pub fn sha_head(&self) -> &str {
+    fn sha_head(&self) -> &str {
         &self.sha_short[..self.sha_short.len().min(4)]
     }
 
-    pub fn sha_tail(&self) -> &str {
+    fn sha_tail(&self) -> &str {
         let start = self.sha_short.len().min(4);
         &self.sha_short[start..]
     }
 }
-
 // ── Error ──────────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "error.html")]
 pub struct ErrorTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -577,15 +1159,22 @@ pub struct ErrorTemplate {
 }
 
 impl ErrorTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        base(
+            &self.title,
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            html! {
+                main class="page-main" {
+                    p class="error-title" { (self.title) }
+                    pre class="error-detail" { (self.detail) }
+                }
+            },
+        )
     }
 }
 
 // ── File view ─────────────────────────────────────────────────────
 
-#[derive(Template)]
-#[template(path = "file.html")]
 pub struct FileViewTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
@@ -612,7 +1201,99 @@ pub struct FileViewTemplate {
 }
 
 impl FileViewTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
+    pub fn render(&self) -> Markup {
+        let body = html! {
+            nav class="repo-section-nav" {
+                (section_nav_links(&self.sections))
+                span class="repo-position" {
+                    span class="bookmark-glyph" { "※" }
+                    span class="bookmark-name" { (self.bookmark) }
+                    span class="repo-meta-sep" { "→" }
+                    span class="change-id" title=(self.sha_short) {
+                        span class="change-head" { (self.sha_head) }
+                        span class="change-tail" { (self.sha_tail) }
+                    }
+                }
+            }
+            div class="tree-body" {
+                div class="file-code-col" {
+                    div class="code-surface" {
+                        div class="code-gutter" {
+                            @for line_num in &self.line_nums {
+                                div class="code-line-num" { (line_num) }
+                            }
+                        }
+                        pre class="code-body" {
+                            code "data-lang"=(self.language) {
+                                @for line in &self.lines {
+                                    (PreEscaped(line))
+                                }
+                            }
+                        }
+                    }
+                }
+                aside class="tree-sidebar" {
+                    div class="side-block" {
+                        div class="side-block-title" { "File" }
+                        div class="file-info-list" {
+                            div class="file-info-row" {
+                                span class="file-info-key" { "lines" }
+                                span class="file-info-val" { (self.line_count) }
+                            }
+                            div class="file-info-row" {
+                                span class="file-info-key" { "size" }
+                                span class="file-info-val" { (self.file_size) }
+                            }
+                            div class="file-info-row" {
+                                span class="file-info-key" { "lang" }
+                                span class="file-info-val" { (self.language) }
+                            }
+                            div class="file-info-row" {
+                                span class="file-info-key" { "mode" }
+                                span class="file-info-val" { (self.mode) }
+                            }
+                            div class="file-info-row" {
+                                span class="file-info-key" { "encoding" }
+                                span class="file-info-val" {
+                                    (self.encoding) ", " (self.line_ending)
+                                }
+                            }
+                        }
+                    }
+                    div class="side-block" {
+                        div class="side-block-title" { "Last change" }
+                        div class="file-last-change-side" {
+                            a class="change-id"
+                              href=(format!("/{}/log", self.repo))
+                              title=(format!("commit {}", self.last_change_sha)) {
+                                span class="change-head" { (self.last_change_head) }
+                                span class="change-tail" { (self.last_change_tail) }
+                            }
+                            div class="file-last-change-msg" { (self.last_change_msg) }
+                            div class="file-last-change-meta" {
+                                span class="file-last-change-author" { (self.last_change_author) }
+                                span class="file-last-change-age" { (self.last_change_age) }
+                            }
+                        }
+                    }
+                    div class="side-block side-block--last" {
+                        div class="side-block-title" { "Actions" }
+                        div class="file-actions-list" {
+                            a class="file-action-row"
+                              href=(format!("/{}/raw/{}", self.repo, self.path)) { "raw" }
+                            a class="file-action-row"
+                              href=(format!("/{}/blame/{}", self.repo, self.path)) { "blame" }
+                            a class="file-action-row"
+                              href=(format!("/{}/log/{}", self.repo, self.path)) { "history" }
+                        }
+                    }
+                }
+            }
+        };
+        base(
+            &format!("file · {} · {}", self.repo, self.path),
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 }

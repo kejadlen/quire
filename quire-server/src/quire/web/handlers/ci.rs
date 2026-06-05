@@ -44,7 +44,7 @@ pub async fn run_list(
         crumbs: None,
         runs: template_runs,
     };
-    Ok(render(&tmpl))
+    Ok(render(tmpl.render()))
 }
 
 pub async fn run_detail(
@@ -161,7 +161,7 @@ pub async fn run_detail(
         jobs: detail_jobs,
         quire_ci_log,
     };
-    Ok(render(&tmpl))
+    Ok(render(tmpl.render()))
 }
 
 async fn read_log(path: &std::path::Path) -> String {

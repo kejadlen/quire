@@ -56,5 +56,5 @@ pub async fn repo_home(
         recent_runs,
         recent_changes,
     };
-    Ok(render(&tmpl))
+    Ok(render(tmpl.render()))
 }

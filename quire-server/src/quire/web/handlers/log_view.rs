@@ -41,5 +41,5 @@ pub async fn log_view(
         bookmark,
         sha_short,
     };
-    Ok(render(&tmpl))
+    Ok(render(tmpl.render()))
 }

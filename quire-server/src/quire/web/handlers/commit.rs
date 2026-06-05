@@ -120,5 +120,5 @@ pub async fn commit_view(
         parents,
         diff,
     };
-    Ok(render(&tmpl))
+    Ok(render(tmpl.render()))
 }
