@@ -23,14 +23,17 @@
 <div class="tree-body">
 
   {# LEFT — code surface, full width within the column #}
-  <div class="file-code-col">
+  <div class="file-code-col" x-data="{ wordWrap: false }">
+    <div class="code-toolbar">
+      <button class="code-toolbar-btn" :class="{ 'is-active': wordWrap }" @click="wordWrap = !wordWrap">wrap</button>
+    </div>
     <div class="code-surface">
       <div class="code-gutter">
         {% for line_num in line_nums %}
         <div class="code-line-num">{{ line_num }}</div>
         {% endfor %}
       </div>
-      <pre class="code-body">{% for line in lines %}{{ line|safe }}{% endfor %}</pre>
+      <pre class="code-body" :class="{ 'code-body--wrap': wordWrap }"><code data-lang="{{ language }}">{% for line in lines %}{{ line|safe }}{% endfor %}</code></pre>
     </div>
   </div>
 
