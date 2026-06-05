@@ -35,7 +35,7 @@ tracing-opentelemetry = { workspace = true }
 
 askama = "*"
 axum = "*"
-axum-extra = { version = "*", features = ["typed-header"] }
+axum-extra = { version = "*", features = ["typed-header", "typed-routing"] }
 tower-http = { workspace = true }
 clap = { workspace = true }
 clap_complete = "*"

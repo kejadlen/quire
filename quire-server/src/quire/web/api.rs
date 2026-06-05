@@ -9,13 +9,14 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use axum::extract::{FromRequestParts, Path as AxumPath, State};
+use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Result};
 use axum_extra::TypedHeader;
 use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
+use axum_extra::routing::{RouterExt, TypedPath};
 use quire_core::ci::bootstrap::Bootstrap;
 use quire_core::ci::run::RunMeta;
 
@@ -28,7 +29,7 @@ use crate::Quire;
 pub fn router(quire: Quire) -> axum::Router {
     let run_routes = axum::Router::new()
         .route("/bootstrap", axum::routing::get(get_bootstrap))
-        .route("/secrets/{name}", axum::routing::get(get_secret))
+        .typed_get(get_secret)
         .layer(axum::middleware::from_fn_with_state(
             quire.clone(),
             verify_run_token,
@@ -206,14 +207,15 @@ async fn get_bootstrap(
 /// Returns the plain-text value of a named secret from the global config.
 /// Auth is handled by [`verify_run_token`] middleware.
 /// Returns 404 if the secret is not declared in config.
-#[derive(serde::Deserialize)]
+#[derive(TypedPath, serde::Deserialize)]
+#[typed_path("/secrets/{name}")]
 struct SecretPath {
     name: String,
 }
 
 async fn get_secret(
+    SecretPath { name }: SecretPath,
     State(quire): State<Quire>,
-    AxumPath(SecretPath { name }): AxumPath<SecretPath>,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
     let value = tokio::task::spawn_blocking(move || -> std::result::Result<String, ApiError> {
         Ok(quire
