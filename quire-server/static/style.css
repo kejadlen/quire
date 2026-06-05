@@ -812,6 +812,8 @@ html.dark {
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
+  background: var(--code) !important;
+  border-radius: 0 !important;
 }
 
 .code-body > code[data-lang] {
@@ -820,17 +822,23 @@ html.dark {
 
 /* ── Arborium syntax highlighting integration ──────────────────── */
 
-/* Keep quire's paper-toned code background; strip any theme-imposed radius. */
-pre:has(code[class*="language-"]),
-pre:has(code[data-lang]) {
+/* Strip any background arborium injects on the code element or any wrapper it adds. */
+.code-body,
+.code-body * {
+  background: transparent !important;
+}
+
+/* Restore the code surface background on the pre itself. */
+.code-body {
   background: var(--code) !important;
-  border-radius: 0 !important;
 }
 
 /* Left-rail accent only for standalone code blocks, not the file view grid. */
 :not(.code-body):has(code[class*="language-"]),
 :not(.code-body):has(code[data-lang]) {
   border-left: 2px solid var(--accent) !important;
+  background: var(--code) !important;
+  border-radius: 0 !important;
 }
 
 /* Arborium injects its own <style> for theme colors; let it control text
@@ -839,7 +847,6 @@ pre code[class*="language-"],
 pre code[data-lang] {
   font-family: var(--font-mono) !important;
   font-size: 13px !important;
-  background: transparent !important;
 }
 
 /* ── Tree browser ──────────────────────────────────────────────── */

@@ -5,8 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}quire{% endblock %}</title>
     <link rel="stylesheet" href="/style.css">
-    <script>window.Arborium = { manual: true };</script>
-    <script defer src="https://cdn.jsdelivr.net/npm/@arborium/arborium@2/dist/arborium.iife.js"></script>
+    <script defer data-manual src="https://cdn.jsdelivr.net/npm/@arborium/arborium@2/dist/arborium.iife.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   </head>
   <body>
@@ -40,8 +39,7 @@
           const arborium = window.arborium;
           if (!arborium) return;
           const theme = this.darkMode ? 'github-dark' : 'github-light';
-          arborium.setConfig({ theme });
-          arborium.highlightAll();
+          arborium.highlightAll({ theme });
         }
       }
     }
