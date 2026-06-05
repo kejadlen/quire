@@ -4,7 +4,7 @@ resolver = "3"
 
 [workspace.dependencies]
 axum = "*"
-axum-extra = { version = "*", features = ["typed-header"] }
+axum-extra = { version = "*", features = ["typed-header", "typed-routing"] }
 tower-http = { version = "*", features = ["trace"] }
 clap = { version = "*", features = ["derive", "env"] }
 base64 = "*"

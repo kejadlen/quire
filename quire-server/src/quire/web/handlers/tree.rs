@@ -1,6 +1,6 @@
 //! Handler for the repository tree browser and file (blob) view.
 
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -12,19 +12,20 @@ use super::super::templates::{
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
+use crate::quire::web::paths::{TreePath, TreeRootPath};
 
 pub async fn tree_view(
+    TreeRootPath { repo }: TreeRootPath,
     State(quire): State<Quire>,
     auth: Auth,
-    AxumPath(repo): AxumPath<String>,
 ) -> Response {
     tree_or_file_at_path(quire, repo, String::new(), auth.is_authenticated()).await
 }
 
 pub async fn tree_view_path(
+    TreePath { repo, path }: TreePath,
     State(quire): State<Quire>,
     auth: Auth,
-    AxumPath((repo, path)): AxumPath<(String, String)>,
 ) -> Response {
     tree_or_file_at_path(quire, repo, path, auth.is_authenticated()).await
 }

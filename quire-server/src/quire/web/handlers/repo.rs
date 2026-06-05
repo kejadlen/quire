@@ -1,6 +1,6 @@
 //! Handler for the repository home page.
 
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
@@ -11,11 +11,12 @@ use super::super::templates::{RepoHomeTemplate, RunListRow, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
+use crate::quire::web::paths::RepoPath;
 
 pub async fn repo_home(
+    RepoPath { repo }: RepoPath,
     State(quire): State<Quire>,
     auth: Auth,
-    AxumPath(repo): AxumPath<String>,
 ) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);

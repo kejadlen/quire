@@ -1,6 +1,6 @@
 //! Handlers for CI run list and run detail pages.
 
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -12,8 +12,9 @@ use super::super::templates::{
 use super::git::RepoView;
 use super::{render, render_error};
 use crate::Quire;
+use crate::quire::web::paths::{RunDetailPath, RunListPath};
 
-pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<String>) -> Response {
+pub async fn run_list(RunListPath { repo }: RunListPath, State(quire): State<Quire>) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
     let git_repo = match quire.repo(&repo_name) {
@@ -72,8 +73,8 @@ pub async fn run_list(State(quire): State<Quire>, AxumPath(repo): AxumPath<Strin
 }
 
 pub async fn run_detail(
+    RunDetailPath { repo, run_id }: RunDetailPath,
     State(quire): State<Quire>,
-    AxumPath((repo, run_id)): AxumPath<(String, String)>,
 ) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
