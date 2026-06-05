@@ -53,43 +53,6 @@
       <div class="clone-url">https://quire.local/{{ repo }}.git</div>
     </div>
 
-    {% if !bookmarks.is_empty() %}
-    <div class="side-block">
-      <div class="side-block-title">Bookmarks</div>
-      <div class="bookmark-list">
-        {% for b in self.bookmarks_preview() %}
-        <div class="bookmark-row">
-          <span class="bookmark-kind {% if loop.first %}bookmark-kind--trunk{% endif %}">{% if loop.first %}trunk{% else %}local{% endif %}</span>
-          <a class="bookmark-link" href="/{{ repo }}/log">
-            <span class="bookmark-glyph-sm">※</span>{{ b.name }}
-          </a>
-          <span class="bookmark-age">{{ b.age }}</span>
-        </div>
-        {% endfor %}
-      </div>
-      {% if self.extra_bookmarks() > 0 %}
-      <a class="side-more" href="/{{ repo }}/bookmarks">all bookmarks →</a>
-      {% endif %}
-    </div>
-    {% endif %}
-
-    {% if !tags.is_empty() %}
-    <div class="side-block">
-      <div class="side-block-title">Tags</div>
-      <div class="bookmark-list">
-        {% for t in self.tags_preview() %}
-        <div class="bookmark-row">
-          <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
-          <span class="bookmark-age">{{ t.age }}</span>
-        </div>
-        {% endfor %}
-      </div>
-      {% if self.extra_tags() > 0 %}
-      <a class="side-more" href="/{{ repo }}/tags">+ {{ self.extra_tags() }} more →</a>
-      {% endif %}
-    </div>
-    {% endif %}
-
     {% if !recent_runs.is_empty() %}
     <div class="side-block">
       <div class="side-block-title">CI</div>

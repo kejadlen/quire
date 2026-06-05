@@ -28,38 +28,6 @@
     {% endfor %}
   </article>
 
-  <aside class="repo-sidebar">
-    {% if !bookmarks.is_empty() %}
-    <div class="side-block">
-      <div class="side-block-title">Bookmarks</div>
-      <div class="bookmark-list">
-        {% for b in bookmarks %}
-        <div class="bookmark-row">
-          <span class="bookmark-kind {% if loop.first %}bookmark-kind--trunk{% endif %}">{% if loop.first %}trunk{% else %}local{% endif %}</span>
-          <a class="bookmark-link" href="/{{ repo }}/log">
-            <span class="bookmark-glyph-sm">※</span>{{ b.name }}
-          </a>
-          <span class="bookmark-age">{{ b.age }}</span>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-
-    {% if !tags.is_empty() %}
-    <div class="side-block">
-      <div class="side-block-title">Tags</div>
-      <div class="bookmark-list">
-        {% for t in tags %}
-        <div class="bookmark-row">
-          <a class="bookmark-link" href="/{{ repo }}/log">{{ t.name }}</a>
-          <span class="bookmark-age">{{ t.age }}</span>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-  </aside>
 
 </div>
 

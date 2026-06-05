@@ -1,15 +1,9 @@
 //! Shared git-reading helpers used by multiple handlers.
 
-use super::super::templates::{BookmarkRow, ChangeRow, HeadInfo, TagRow};
+use super::super::templates::{ChangeRow, HeadInfo};
 use crate::quire::Repo;
 
-pub(super) type GitData = (
-    Option<HeadInfo>,
-    Option<String>,
-    Vec<BookmarkRow>,
-    Vec<TagRow>,
-    Vec<ChangeRow>,
-);
+pub(super) type GitData = (Option<HeadInfo>, Option<String>, Vec<ChangeRow>);
 
 pub(super) struct RepoView<'a> {
     repo: &'a Repo,
@@ -34,13 +28,7 @@ impl<'a> RepoView<'a> {
 
     /// Read all summary data from the repo for the home page.
     pub(super) fn read_all(&self, repo: &str) -> GitData {
-        (
-            self.head_info(),
-            self.readme(),
-            self.bookmarks(),
-            self.tags(),
-            self.recent_changes(repo),
-        )
+        (self.head_info(), self.readme(), self.recent_changes(repo))
     }
 
     pub(super) fn head_info(&self) -> Option<HeadInfo> {
@@ -69,49 +57,6 @@ impl<'a> RepoView<'a> {
             }
         }
         None
-    }
-
-    pub(super) fn bookmarks(&self) -> Vec<BookmarkRow> {
-        let out = self
-            .run(&[
-                "for-each-ref",
-                "--format=%(refname:short)|%(objectname:short)|%(committerdate:relative)",
-                "--sort=-committerdate",
-                "refs/heads/",
-            ])
-            .unwrap_or_default();
-
-        out.lines()
-            .filter_map(|line| {
-                let mut parts = line.splitn(3, '|');
-                Some(BookmarkRow {
-                    name: parts.next()?.to_string(),
-                    sha_short: parts.next()?.to_string(),
-                    age: parts.next().unwrap_or("").to_string(),
-                })
-            })
-            .collect()
-    }
-
-    pub(super) fn tags(&self) -> Vec<TagRow> {
-        let out = self
-            .run(&[
-                "for-each-ref",
-                "--format=%(refname:short)|%(committerdate:relative)",
-                "--sort=-creatordate",
-                "refs/tags/",
-            ])
-            .unwrap_or_default();
-
-        out.lines()
-            .filter_map(|line| {
-                let mut parts = line.splitn(2, '|');
-                Some(TagRow {
-                    name: parts.next()?.to_string(),
-                    age: parts.next().unwrap_or("").to_string(),
-                })
-            })
-            .collect()
     }
 
     pub(super) fn recent_changes(&self, repo: &str) -> Vec<ChangeRow> {

@@ -53,7 +53,7 @@ pub async fn repo_home(
     };
 
     let rd = repo_display.clone();
-    let (head, readme_html, bookmarks, tags, recent_changes) =
+    let (head, readme_html, recent_changes) =
         tokio::task::spawn_blocking(move || RepoView::new(&git_repo).read_all(&rd))
             .await
             .unwrap_or_default();
@@ -64,8 +64,6 @@ pub async fn repo_home(
         crumbs: None,
         head,
         readme_html,
-        bookmarks,
-        tags,
         recent_runs,
         recent_changes,
     };

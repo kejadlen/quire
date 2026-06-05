@@ -9,7 +9,6 @@ use super::super::templates::{
     DetailJob, DetailRun, DetailShEvent, RunDetailTemplate, RunListRow, RunListTemplate,
     nav_sections,
 };
-use super::git::RepoView;
 use super::{render, render_error};
 use crate::Quire;
 use crate::quire::web::paths::{RunDetailPath, RunListPath};
@@ -17,18 +16,14 @@ use crate::quire::web::paths::{RunDetailPath, RunListPath};
 pub async fn run_list(RunListPath { repo }: RunListPath, State(quire): State<Quire>) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    let git_repo = match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => r,
+    match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => {}
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
     let q = quire.clone();
     let rn = repo_name.clone();
     let runs_handle = tokio::task::spawn_blocking(move || db::load_runs(&q, &rn));
-    let refs_handle = tokio::task::spawn_blocking(move || {
-        let r = RepoView::new(&git_repo);
-        (r.bookmarks(), r.tags())
-    });
 
     let runs = match runs_handle.await {
         Ok(Ok(r)) => r,
@@ -46,7 +41,6 @@ pub async fn run_list(RunListPath { repo }: RunListPath, State(quire): State<Qui
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    let (bookmarks, tags) = refs_handle.await.unwrap_or_default();
 
     let template_runs: Vec<RunListRow> = runs
         .into_iter()
@@ -66,8 +60,6 @@ pub async fn run_list(RunListPath { repo }: RunListPath, State(quire): State<Qui
         repo: repo_display,
         crumbs: None,
         runs: template_runs,
-        bookmarks,
-        tags,
     };
     render(&tmpl)
 }
@@ -78,18 +70,13 @@ pub async fn run_detail(
 ) -> Response {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    let git_repo = match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => r,
+    match quire.repo(&repo_name) {
+        Ok(r) if r.exists() => {}
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     if !db::is_valid_run_id(&run_id) {
         return StatusCode::NOT_FOUND.into_response();
     }
-
-    let refs_handle = tokio::task::spawn_blocking(move || {
-        let r = RepoView::new(&git_repo);
-        (r.bookmarks(), r.tags())
-    });
 
     let q = quire.clone();
     let rn = repo_name.clone();
@@ -205,7 +192,6 @@ pub async fn run_detail(
     }
 
     let quire_ci_log = quire_ci_log_handle.await.unwrap_or_default();
-    let (bookmarks, tags) = refs_handle.await.unwrap_or_default();
 
     let tmpl = RunDetailTemplate {
         sections: nav_sections(&repo_display, "ci", true),
@@ -214,8 +200,6 @@ pub async fn run_detail(
         run: detail_run,
         jobs: detail_jobs,
         quire_ci_log,
-        bookmarks,
-        tags,
     };
     render(&tmpl)
 }

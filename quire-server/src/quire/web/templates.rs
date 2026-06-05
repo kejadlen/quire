@@ -80,8 +80,6 @@ pub struct RunListTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
     pub runs: Vec<RunListRow>,
-    pub bookmarks: Vec<BookmarkRow>,
-    pub tags: Vec<TagRow>,
     pub sections: Vec<SectionLink>,
 }
 
@@ -141,8 +139,6 @@ pub struct RunDetailTemplate {
     pub run: DetailRun,
     pub jobs: Vec<DetailJob>,
     pub quire_ci_log: String,
-    pub bookmarks: Vec<BookmarkRow>,
-    pub tags: Vec<TagRow>,
     pub sections: Vec<SectionLink>,
 }
 
@@ -300,8 +296,6 @@ pub struct RepoHomeTemplate {
     pub crumbs: Option<Vec<Crumb>>,
     pub head: Option<HeadInfo>,
     pub readme_html: Option<String>,
-    pub bookmarks: Vec<BookmarkRow>,
-    pub tags: Vec<TagRow>,
     pub recent_runs: Vec<RunListRow>,
     pub recent_changes: Vec<ChangeRow>,
     pub sections: Vec<SectionLink>,
@@ -324,22 +318,6 @@ impl RepoHomeTemplate {
             .first()
             .map(|r| r.state_class())
             .unwrap_or("")
-    }
-
-    pub fn bookmarks_preview(&self) -> &[BookmarkRow] {
-        &self.bookmarks[..self.bookmarks.len().min(5)]
-    }
-
-    pub fn extra_bookmarks(&self) -> usize {
-        self.bookmarks.len().saturating_sub(5)
-    }
-
-    pub fn tags_preview(&self) -> &[TagRow] {
-        &self.tags[..self.tags.len().min(5)]
-    }
-
-    pub fn extra_tags(&self) -> usize {
-        self.tags.len().saturating_sub(5)
     }
 }
 
@@ -365,17 +343,6 @@ impl HeadInfo {
     pub fn sha_short(&self) -> &str {
         &self.sha[..self.sha.len().min(8)]
     }
-}
-
-pub struct BookmarkRow {
-    pub name: String,
-    pub sha_short: String,
-    pub age: String,
-}
-
-pub struct TagRow {
-    pub name: String,
-    pub age: String,
 }
 
 pub struct ChangeRow {
@@ -430,8 +397,6 @@ impl ConfigTemplate {
 pub struct TreeTemplate {
     pub repo: String,
     pub crumbs: Option<Vec<Crumb>>,
-    pub bookmarks: Vec<BookmarkRow>,
-    pub tags: Vec<TagRow>,
     pub sections: Vec<SectionLink>,
     /// Current directory path relative to repo root ("" = root).
     pub path: String,
@@ -597,42 +562,6 @@ impl LogTemplate {
     pub fn sha_tail(&self) -> &str {
         let start = self.sha_short.len().min(4);
         &self.sha_short[start..]
-    }
-}
-
-// ── Bookmarks ────────────────────────────────────────────────────
-
-#[derive(Template)]
-#[template(path = "bookmarks.html")]
-pub struct BookmarksTemplate {
-    pub repo: String,
-    pub crumbs: Option<Vec<Crumb>>,
-    pub bookmarks: Vec<BookmarkRow>,
-    pub tags: Vec<TagRow>,
-    pub sections: Vec<SectionLink>,
-}
-
-impl BookmarksTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
-    }
-}
-
-// ── Tags ─────────────────────────────────────────────────────────
-
-#[derive(Template)]
-#[template(path = "tags.html")]
-pub struct TagsTemplate {
-    pub repo: String,
-    pub crumbs: Option<Vec<Crumb>>,
-    pub bookmarks: Vec<BookmarkRow>,
-    pub tags: Vec<TagRow>,
-    pub sections: Vec<SectionLink>,
-}
-
-impl TagsTemplate {
-    pub fn version(&self) -> &'static str {
-        pkg_version()
     }
 }
 

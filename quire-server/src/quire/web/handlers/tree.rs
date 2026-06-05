@@ -45,10 +45,8 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
 
         // Try ls-tree first — if it succeeds, this is a directory.
         if let Some(tree_data) = read_tree_data(&reader, &path_clone) {
-            let bookmarks = reader.bookmarks();
-            let tags = reader.tags();
             let recent_changes = reader.recent_changes_for(Some(&path_clone), &repo_d);
-            Some(Ok((tree_data, bookmarks, tags, recent_changes)))
+            Some(Ok((tree_data, recent_changes)))
         } else {
             // ls-tree failed — try reading as a file blob.
             read_file_data(&reader, &path_clone).map(Err)
@@ -58,14 +56,12 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
     .unwrap_or(None);
 
     match result {
-        Some(Ok((tree_data, bookmarks, tags, recent_changes))) => {
+        Some(Ok((tree_data, recent_changes))) => {
             let crumbs = build_tree_crumbs(&repo_display, &path);
             let tmpl = TreeTemplate {
                 sections: nav_sections(&repo_display, "tree", authed),
                 repo: repo_display,
                 crumbs: Some(crumbs),
-                bookmarks,
-                tags,
                 path,
                 bookmark: tree_data.bookmark,
                 sha_short: tree_data.sha_short,
