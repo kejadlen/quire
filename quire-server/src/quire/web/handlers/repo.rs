@@ -27,29 +27,30 @@ pub async fn repo_home(
 
     let q = quire.clone();
     let rn = repo_name.clone();
-    let recent_runs: Vec<RunListRow> = match tokio::task::spawn_blocking(move || {
-        db::load_runs(&q, &rn)
-    })
-    .await
-    {
-        Ok(Ok(runs)) => runs
-            .into_iter()
-            .take(5)
-            .map(|r| RunListRow {
-                id: r.id,
-                outcome: r.outcome,
-                sha: r.sha,
-                ref_name: r.ref_name,
-                created_at: r.created_at,
-                dispatched_at: r.dispatched_at,
-                resolved_at: r.resolved_at,
-            })
-            .collect(),
-        Ok(Err(e)) => {
-            tracing::warn!(repo = %repo, error = &e as &(dyn std::error::Error + 'static), "failed to load runs for home");
-            vec![]
+    let is_authed = auth.is_authenticated();
+    let recent_runs: Vec<RunListRow> = if is_authed {
+        match tokio::task::spawn_blocking(move || db::load_runs(&q, &rn)).await {
+            Ok(Ok(runs)) => runs
+                .into_iter()
+                .take(5)
+                .map(|r| RunListRow {
+                    id: r.id,
+                    outcome: r.outcome,
+                    sha: r.sha,
+                    ref_name: r.ref_name,
+                    created_at: r.created_at,
+                    dispatched_at: r.dispatched_at,
+                    resolved_at: r.resolved_at,
+                })
+                .collect(),
+            Ok(Err(e)) => {
+                tracing::warn!(repo = %repo, error = &e as &(dyn std::error::Error + 'static), "failed to load runs for home");
+                vec![]
+            }
+            Err(_) => vec![],
         }
-        Err(_) => vec![],
+    } else {
+        vec![]
     };
 
     let rd = repo_display.clone();
@@ -59,7 +60,7 @@ pub async fn repo_home(
             .unwrap_or_default();
 
     let tmpl = RepoHomeTemplate {
-        sections: nav_sections(&repo_display, "overview", auth.is_authenticated()),
+        sections: nav_sections(&repo_display, "overview", is_authed),
         repo: repo_display,
         crumbs: None,
         head,
