@@ -23,10 +23,6 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn index() -> String {
-    format!("quire {}\n", crate::VERSION)
-}
-
 pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Router) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], quire.config.port));
 
@@ -64,7 +60,6 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/", get(index))
         .merge(web_routes)
         .nest("/api", api_routes)
         .layer(

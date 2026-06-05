@@ -272,6 +272,25 @@ impl DetailShEvent {
     }
 }
 
+// ── Repo list ─────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "repo_list.html")]
+pub struct RepoListTemplate {
+    pub repos: Vec<ListedRepo>,
+}
+
+impl RepoListTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+}
+
+pub struct ListedRepo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
 // ── Repo Home ──────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -501,6 +520,53 @@ impl TreeEntry {
 
     pub fn is_dir_like(&self) -> bool {
         matches!(self.kind, TreeEntryKind::Dir | TreeEntryKind::Submodule)
+    }
+}
+
+// ── Commit view ───────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "commit.html")]
+pub struct CommitTemplate {
+    pub repo: String,
+    pub crumbs: Vec<Crumb>,
+    pub sections: Vec<SectionLink>,
+    pub sha: String,
+    pub sha_short: String,
+    pub sha_head: String,
+    pub sha_tail: String,
+    pub author: String,
+    pub email: String,
+    pub date_relative: String,
+    pub date_iso: String,
+    pub subject: String,
+    pub body: String,
+    pub parents: Vec<CommitParent>,
+    pub diff: String,
+}
+
+impl CommitTemplate {
+    pub fn version(&self) -> &'static str {
+        pkg_version()
+    }
+}
+
+pub struct CommitParent {
+    pub sha: String,
+}
+
+impl CommitParent {
+    pub fn sha_full(&self) -> &str {
+        &self.sha
+    }
+
+    pub fn sha_head(&self) -> &str {
+        &self.sha[..self.sha.len().min(4)]
+    }
+
+    pub fn sha_tail(&self) -> &str {
+        let start = self.sha.len().min(4);
+        &self.sha[start..self.sha.len().min(8)]
     }
 }
 

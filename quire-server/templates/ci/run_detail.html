@@ -11,7 +11,7 @@
 <nav class="repo-section-nav">
   {% include "_repo_section_nav.html" %}
   <span class="repo-position">
-    <span class="ci-commit-link">{{ run.sha_short() }}</span>
+    <a class="ci-commit-link" href="/{{ repo }}/commit/{{ run.sha }}">{{ run.sha_short() }}</a>
     <span class="repo-meta-dot">·</span>
     <span>{{ run.branch_short() }}</span>
     <span class="repo-meta-dot">·</span>

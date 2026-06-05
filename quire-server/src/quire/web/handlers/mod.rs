@@ -1,16 +1,20 @@
 //! Route handlers for the web view.
 
 mod ci;
+mod commit;
 mod git;
 mod log_view;
 mod refs;
 mod repo;
+mod repo_list;
 mod tree;
 
 pub use ci::{run_detail, run_list};
+pub use commit::commit_view;
 pub use log_view::log_view;
 pub use refs::{bookmarks_view, tags_view};
 pub use repo::repo_home;
+pub use repo_list::repo_list;
 pub use tree::{tree_view, tree_view_path};
 
 use askama::Template;

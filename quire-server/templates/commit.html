@@ -1,0 +1,71 @@
+{% extends "_base.html" %}
+
+{% block title %}commit · {{ repo }} · {{ sha_short }}{% endblock %}
+
+{% block nav %}
+{% include "_nav.html" %}
+{% endblock %}
+
+{% block fullpage %}
+
+<nav class="repo-section-nav">
+  {% include "_repo_section_nav.html" %}
+  <span class="repo-position">
+    <span class="change-id" title="{{ sha }}">
+      <span class="change-head">{{ sha_head }}</span><span class="change-tail">{{ sha_tail }}</span>
+    </span>
+    <span class="repo-meta-dot">·</span>
+    <span>{{ author }}</span>
+    <span class="repo-meta-dot">·</span>
+    <span><time title="{{ date_iso }}">{{ date_relative }}</time></span>
+  </span>
+</nav>
+
+<div class="repo-body">
+
+  <article class="commit-detail">
+    <div class="commit-message">
+      <div class="commit-subject">{{ subject }}</div>
+      {% if !body.is_empty() %}
+      <pre class="commit-body">{{ body }}</pre>
+      {% endif %}
+    </div>
+
+    <div class="commit-meta-list">
+      <div class="commit-meta-row">
+        <span class="commit-meta-key">commit</span>
+        <span class="commit-meta-val">{{ sha }}</span>
+      </div>
+      <div class="commit-meta-row">
+        <span class="commit-meta-key">author</span>
+        <span class="commit-meta-val">{{ author }} &lt;{{ email }}&gt;</span>
+      </div>
+      <div class="commit-meta-row">
+        <span class="commit-meta-key">date</span>
+        <span class="commit-meta-val"><time title="{{ date_iso }}">{{ date_relative }}</time></span>
+      </div>
+      {% if !parents.is_empty() %}
+      <div class="commit-meta-row">
+        <span class="commit-meta-key">parent{% if parents.len() > 1 %}s{% endif %}</span>
+        <span class="commit-meta-val">
+          {% for p in parents %}
+          <a class="change-id" href="/{{ repo }}/commit/{{ p.sha_full() }}" title="commit {{ p.sha_full() }}">
+            <span class="change-head">{{ p.sha_head() }}</span><span class="change-tail">{{ p.sha_tail() }}</span>
+          </a>
+          {% endfor %}
+        </span>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if !diff.is_empty() %}
+    <pre class="commit-diff">{{ diff }}</pre>
+    {% endif %}
+  </article>
+
+  <aside class="repo-sidebar">
+  </aside>
+
+</div>
+
+{% endblock %}

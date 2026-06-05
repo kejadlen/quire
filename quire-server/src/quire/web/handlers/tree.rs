@@ -115,11 +115,14 @@ struct TreeData {
 }
 
 fn build_tree_crumbs(repo: &str, path: &str) -> Vec<Crumb> {
-    let mut c = vec![Crumb::with_href("tree", format!("/{repo}/tree"))];
-    if !path.is_empty() {
-        c.push(Crumb::new(
-            path.split('/').next_back().unwrap_or(path).to_string(),
-        ));
+    let mut c = vec![];
+    if path.is_empty() {
+        return c;
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    for (i, seg) in segments.iter().enumerate() {
+        let href = format!("/{}/tree/{}", repo, segments[..=i].join("/"));
+        c.push(Crumb::with_href(*seg, href));
     }
     c
 }

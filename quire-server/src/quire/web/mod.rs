@@ -19,13 +19,14 @@ use axum_extra::routing::RouterExt;
 use crate::{
     Quire,
     quire::web::handlers::{
-        bookmarks_view, config, log_view, repo_home, run_detail, run_list, stylesheet, tags_view,
-        tree_view, tree_view_path,
+        bookmarks_view, commit_view, config, log_view, repo_home, repo_list, run_detail, run_list,
+        stylesheet, tags_view, tree_view, tree_view_path,
     },
 };
 
 pub use paths::{
-    BookmarksPath, LogPath, RepoPath, RunDetailPath, RunListPath, TagsPath, TreePath, TreeRootPath,
+    BookmarksPath, CommitPath, LogPath, RepoPath, RunDetailPath, RunListPath, TagsPath, TreePath,
+    TreeRootPath,
 };
 
 pub mod paths {
@@ -81,6 +82,13 @@ pub mod paths {
     pub struct TagsPath {
         pub repo: String,
     }
+
+    #[derive(TypedPath, Deserialize)]
+    #[typed_path("/{repo}/commit/{sha}")]
+    pub struct CommitPath {
+        pub repo: String,
+        pub sha: String,
+    }
 }
 
 /// Routes that require authentication.
@@ -103,6 +111,8 @@ pub fn public_router(quire: Quire) -> Router {
         .typed_get(log_view)
         .typed_get(bookmarks_view)
         .typed_get(tags_view)
+        .typed_get(commit_view)
         .route("/config", get(config))
+        .route("/", get(repo_list))
         .with_state(quire)
 }
