@@ -116,13 +116,9 @@ struct RunContext<'a> {
 /// create a run, and evaluate + validate it.
 pub fn trigger(quire: &crate::Quire, event: &PushEvent) {
     let repo = match quire.repo(&event.repo) {
-        Ok(r) if r.exists() => r,
-        Ok(_) => {
-            tracing::error!(repo = %event.repo, "repo not found on disk");
-            return;
-        }
+        Ok(r) => r,
         Err(e) => {
-            tracing::error!(repo = %event.repo, error = %e, "invalid repo name in event");
+            tracing::error!(repo = %event.repo, error = %e, "failed to resolve repo");
             return;
         }
     };

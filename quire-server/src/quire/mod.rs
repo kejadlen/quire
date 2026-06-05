@@ -278,11 +278,17 @@ impl Quire {
         mutex.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Validate a repository name and return its resolved path.
+    /// Look up an existing repository by name.
     ///
-    /// Delegates to `Repo::new` for name validation.
+    /// Returns an error if the name fails validation or the repo does not
+    /// exist on disk.
     pub fn repo(&self, name: &str) -> Result<Repo> {
-        Repo::new(&self.repos_dir(), name)
+        let repo = Repo::new(&self.repos_dir(), name)?;
+        if repo.exists() {
+            Ok(repo)
+        } else {
+            Err(crate::Error::RepoNotFound(name.to_string()))
+        }
     }
 
     /// Resolve a filesystem path to a `Repo`.
@@ -352,14 +358,14 @@ mod tests {
     #[test]
     fn repo_valid() {
         let q = quire();
-        assert!(q.repo("foo.git").is_ok());
-        assert!(q.repo("work/foo.git").is_ok());
+        assert!(Repo::new(&q.repos_dir(), "foo.git").is_ok());
+        assert!(Repo::new(&q.repos_dir(), "work/foo.git").is_ok());
     }
 
     #[test]
     fn repo_name_returns_name() {
         let q = quire();
-        let repo = q.repo("foo.git").unwrap();
+        let repo = Repo::new(&q.repos_dir(), "foo.git").unwrap();
         assert_eq!(repo.name(), "foo.git");
     }
 
@@ -394,7 +400,7 @@ mod tests {
     fn repo_resolves_path() {
         let q = quire();
         assert_eq!(
-            q.repo("foo.git").unwrap().path(),
+            Repo::new(&q.repos_dir(), "foo.git").unwrap().path(),
             Path::new("/var/quire/repos/foo.git")
         );
     }

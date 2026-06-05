@@ -2,9 +2,9 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 
+use super::super::error::WebError;
 use super::super::templates::{CommitParent, CommitTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
@@ -15,13 +15,10 @@ pub async fn commit_view(
     CommitPath { repo, sha }: CommitPath,
     State(quire): State<Quire>,
     auth: super::super::auth::Auth,
-) -> Response {
+) -> Result<Response, WebError> {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = super::super::db::resolve_repo_name(&repo);
-    let git_repo = match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => r,
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
+    let git_repo = quire.repo(&repo_name)?;
 
     let sha_clone = sha.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -82,12 +79,10 @@ pub async fn commit_view(
             diff,
         ))
     })
-    .await
-    .unwrap_or(None);
+    .await?;
 
-    let (sha, author, email, timestamp_ms, subject, body, parent_shas, diff) = match result {
-        Some(data) => data,
-        None => return StatusCode::NOT_FOUND.into_response(),
+    let Some((sha, author, email, timestamp_ms, subject, body, parent_shas, diff)) = result else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
     };
 
     let parents: Vec<CommitParent> = parent_shas
@@ -125,5 +120,5 @@ pub async fn commit_view(
         parents,
         diff,
     };
-    render(&tmpl)
+    Ok(render(&tmpl))
 }

@@ -1,10 +1,9 @@
 //! Handler for the repository commit log page.
 
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::response::Response;
 
+use super::super::error::WebError;
 use super::super::templates::{LogTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
@@ -15,13 +14,10 @@ pub async fn log_view(
     LogPath { repo }: LogPath,
     State(quire): State<Quire>,
     auth: super::super::auth::Auth,
-) -> Response {
+) -> Result<Response, WebError> {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = super::super::db::resolve_repo_name(&repo);
-    let git_repo = match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => r,
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
+    let git_repo = quire.repo(&repo_name)?;
 
     let repo_d = repo_display.clone();
     let (changes, bookmark, sha_short) = tokio::task::spawn_blocking(move || {
@@ -35,8 +31,7 @@ pub async fn log_view(
             .unwrap_or_else(|| "unknown".to_string());
         (changes, bookmark, sha_short)
     })
-    .await
-    .unwrap_or_default();
+    .await?;
 
     let tmpl = LogTemplate {
         sections: nav_sections(&repo_display, "log", auth.is_authenticated()),
@@ -46,5 +41,5 @@ pub async fn log_view(
         bookmark,
         sha_short,
     };
-    render(&tmpl)
+    Ok(render(&tmpl))
 }

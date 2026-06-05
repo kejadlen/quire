@@ -3,9 +3,10 @@ use std::process::Command;
 use miette::{IntoDiagnostic, Result, ensure};
 
 use quire::Quire;
+use quire::quire::Repo;
 
 pub async fn new(quire: &Quire, name: &str) -> Result<()> {
-    let repo = quire.repo(name)?;
+    let repo = Repo::new(&quire.repos_dir(), name)?;
     ensure!(!repo.exists(), "repository already exists: {name}");
 
     // Create parent directory for grouped repos (e.g. work/foo.git).
@@ -36,7 +37,6 @@ pub async fn list(quire: &Quire) -> Result<()> {
 
 pub async fn rm(quire: &Quire, name: &str) -> Result<()> {
     let repo = quire.repo(name)?;
-    ensure!(repo.exists(), "repository not found: {name}");
 
     fs_err::remove_dir_all(repo.path()).into_diagnostic()?;
 

@@ -45,7 +45,6 @@ fn dispatch_git(quire: &Quire, git_cmd: &str, args: &[String]) -> Result<()> {
     ensure!(!path.is_empty(), "empty repository path");
 
     let repo = quire.repo(path)?;
-    ensure!(repo.exists(), "repository not found: {path}");
 
     tracing::info!(%git_cmd, %path, "dispatching git command");
     // Use `git <subcommand>` instead of `git-<subcommand>` so the git

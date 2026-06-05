@@ -20,7 +20,7 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
-use super::templates::{ConfigTemplate, ErrorTemplate};
+use super::templates::ConfigTemplate;
 use crate::Quire;
 
 /// Render a template into an HTML response, returning 500 on render failure.
@@ -33,32 +33,6 @@ pub(super) fn render<T: Template>(tmpl: &T) -> Response {
                 "template render failed"
             );
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
-    }
-}
-
-/// Render the error template with the given status, falling back to plain
-/// text if the error template itself fails to render.
-pub(super) fn render_error(
-    repo: String,
-    status: StatusCode,
-    title: &str,
-    detail: String,
-) -> Response {
-    let tmpl = ErrorTemplate {
-        repo,
-        crumbs: None,
-        title: title.to_string(),
-        detail: detail.clone(),
-    };
-    match tmpl.render() {
-        Ok(body) => (status, Html(body)).into_response(),
-        Err(e) => {
-            tracing::error!(
-                error = &e as &(dyn std::error::Error + 'static),
-                "error template render failed"
-            );
-            (status, format!("{title}\n\n{detail}\n")).into_response()
         }
     }
 }

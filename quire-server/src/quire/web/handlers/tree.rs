@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 
 use super::super::auth::Auth;
 use super::super::db;
+use super::super::error::WebError;
 use super::super::templates::{
     Crumb, FileViewTemplate, TreeEntry, TreeEntryKind, TreeTemplate, nav_sections,
 };
@@ -18,7 +19,7 @@ pub async fn tree_view(
     TreeRootPath { repo }: TreeRootPath,
     State(quire): State<Quire>,
     auth: Auth,
-) -> Response {
+) -> Result<Response, WebError> {
     tree_or_file_at_path(quire, repo, String::new(), auth.is_authenticated()).await
 }
 
@@ -26,17 +27,19 @@ pub async fn tree_view_path(
     TreePath { repo, path }: TreePath,
     State(quire): State<Quire>,
     auth: Auth,
-) -> Response {
+) -> Result<Response, WebError> {
     tree_or_file_at_path(quire, repo, path, auth.is_authenticated()).await
 }
 
-async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: bool) -> Response {
+async fn tree_or_file_at_path(
+    quire: Quire,
+    repo: String,
+    path: String,
+    authed: bool,
+) -> Result<Response, WebError> {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    let git_repo = match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => r,
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
+    let git_repo = quire.repo(&repo_name)?;
 
     let path_clone = path.clone();
     let repo_d = repo_display.clone();
@@ -52,11 +55,14 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             read_file_data(&reader, &path_clone).map(Err)
         }
     })
-    .await
-    .unwrap_or(None);
+    .await?;
 
-    match result {
-        Some(Ok((tree_data, recent_changes))) => {
+    let Some(result) = result else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+
+    Ok(match result {
+        Ok((tree_data, recent_changes)) => {
             let crumbs = build_tree_crumbs(&repo_display, &path);
             let tmpl = TreeTemplate {
                 sections: nav_sections(&repo_display, "tree", authed),
@@ -70,7 +76,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             };
             render(&tmpl)
         }
-        Some(Err(file_data)) => {
+        Err(file_data) => {
             let crumbs = build_file_crumbs(&repo_display, &path);
             let line_nums: Vec<usize> = (1..=file_data.line_count).collect();
             let tmpl = FileViewTemplate {
@@ -99,8 +105,7 @@ async fn tree_or_file_at_path(quire: Quire, repo: String, path: String, authed: 
             };
             render(&tmpl)
         }
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    })
 }
 
 // ── Tree (directory) view ──────────────────────────────────────

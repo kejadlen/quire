@@ -17,9 +17,6 @@ pub struct MirrorErrors {
 
 #[derive(Debug, Error, Diagnostic)]
 enum MirrorError {
-    #[error("repo not found on disk: {0}")]
-    RepoNotFound(String),
-
     #[error("git push to {url} failed: {stderr}")]
     PushFailed { url: String, stderr: String },
 
@@ -51,10 +48,6 @@ fn collect_errors(quire: &Quire, event: &PushEvent) -> Result<Vec<MirrorError>, 
     let repo = quire
         .repo(&event.repo)
         .map_err(|e| one(MirrorError::App(e)))?;
-
-    if !repo.exists() {
-        return Err(one(MirrorError::RepoNotFound(event.repo.clone())));
-    }
 
     let config = &quire.config;
     let Some(mirror_token) = config

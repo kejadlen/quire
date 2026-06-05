@@ -1,46 +1,29 @@
 //! Handlers for CI run list and run detail pages.
 
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 
 use super::super::db;
+use super::super::error::WebError;
 use super::super::templates::{
     DetailJob, DetailRun, DetailShEvent, RunDetailTemplate, RunListRow, RunListTemplate,
     nav_sections,
 };
-use super::{render, render_error};
+use super::render;
 use crate::Quire;
 use crate::quire::web::paths::{RunDetailPath, RunListPath};
 
-pub async fn run_list(RunListPath { repo }: RunListPath, State(quire): State<Quire>) -> Response {
+pub async fn run_list(
+    RunListPath { repo }: RunListPath,
+    State(quire): State<Quire>,
+) -> Result<Response, WebError> {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => {}
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
+    quire.repo(&repo_name)?;
 
     let q = quire.clone();
     let rn = repo_name.clone();
-    let runs_handle = tokio::task::spawn_blocking(move || db::load_runs(&q, &rn));
-
-    let runs = match runs_handle.await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::error!(repo = %repo, error = &e as &(dyn std::error::Error + 'static), "failed to load runs");
-            return render_error(
-                repo_display,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to load runs",
-                e.to_string(),
-            );
-        }
-        Err(_) => {
-            tracing::error!("spawn_blocking task panicked");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
+    let runs = tokio::task::spawn_blocking(move || db::load_runs(&q, &rn)).await??;
 
     let template_runs: Vec<RunListRow> = runs
         .into_iter()
@@ -61,44 +44,21 @@ pub async fn run_list(RunListPath { repo }: RunListPath, State(quire): State<Qui
         crumbs: None,
         runs: template_runs,
     };
-    render(&tmpl)
+    Ok(render(&tmpl))
 }
 
 pub async fn run_detail(
     RunDetailPath { repo, run_id }: RunDetailPath,
     State(quire): State<Quire>,
-) -> Response {
+) -> Result<Response, WebError> {
     let repo_display = repo.trim_end_matches(".git").to_string();
     let repo_name = db::resolve_repo_name(&repo);
-    match quire.repo(&repo_name) {
-        Ok(r) if r.exists() => {}
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
-    if !db::is_valid_run_id(&run_id) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
+    quire.repo(&repo_name)?;
 
     let q = quire.clone();
     let rn = repo_name.clone();
     let ri = run_id.clone();
-    let detail = match tokio::task::spawn_blocking(move || db::load_run_detail(&q, &rn, &ri)).await
-    {
-        Ok(Ok(d)) => d,
-        Ok(Err(ref e)) if is_no_rows(e) => return StatusCode::NOT_FOUND.into_response(),
-        Ok(Err(e)) => {
-            tracing::error!(repo = %repo, run_id = %run_id, error = &e as &(dyn std::error::Error + 'static), "failed to load run detail");
-            return render_error(
-                repo_display,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to load run",
-                e.to_string(),
-            );
-        }
-        Err(_) => {
-            tracing::error!("spawn_blocking task panicked");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
+    let detail = tokio::task::spawn_blocking(move || db::load_run_detail(&q, &rn, &ri)).await??;
 
     let detail_run = DetailRun {
         outcome: detail.run.outcome,
@@ -201,14 +161,7 @@ pub async fn run_detail(
         jobs: detail_jobs,
         quire_ci_log,
     };
-    render(&tmpl)
-}
-
-fn is_no_rows(err: &crate::error::Error) -> bool {
-    matches!(
-        err,
-        crate::error::Error::Sql(rusqlite::Error::QueryReturnedNoRows)
-    )
+    Ok(render(&tmpl))
 }
 
 async fn read_log(path: &std::path::Path) -> String {
