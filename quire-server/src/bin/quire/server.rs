@@ -51,7 +51,7 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
     let db_path = quire.db_path();
     tracing::info!(path = %db_path.display(), "opening database");
     let mut db = quire::db::Db::open(&db_path).into_diagnostic()?;
-    db.migrate().into_diagnostic()?;
+    db.migrate()?;
     drop(db);
 
     // Reconcile any orphaned runs from a previous server instance.
