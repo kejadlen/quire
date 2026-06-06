@@ -74,7 +74,7 @@ async fn tree_or_file_at_path(
                 entries: tree_data.entries,
                 recent_changes,
             };
-            render(&tmpl)
+            render(tmpl.render())
         }
         Err(file_data) => {
             let crumbs = build_file_crumbs(&repo_display, &path);
@@ -103,7 +103,7 @@ async fn tree_or_file_at_path(
                 line_nums,
                 lines: file_data.lines,
             };
-            render(&tmpl)
+            render(tmpl.render())
         }
     })
 }
