@@ -33,8 +33,14 @@
 
     <div class="commit-meta-list">
       <div class="commit-meta-row">
+        <span class="commit-meta-key">change</span>
+        <span class="commit-meta-val">
+          <span class="change-id-full"><span class="change-id-head">{{ self.change_id_head() }}</span><span class="change-id-tail">{{ self.change_id_tail() }}</span></span>
+        </span>
+      </div>
+      <div class="commit-meta-row">
         <span class="commit-meta-key">commit</span>
-        <span class="commit-meta-val">{{ sha }}</span>
+        <span class="commit-meta-val commit-meta-val--secondary">{{ sha }}</span>
       </div>
       <div class="commit-meta-row">
         <span class="commit-meta-key">author</span>
