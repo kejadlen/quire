@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-
 use super::error::{Error, Result};
 use jiff::Timestamp;
 use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};

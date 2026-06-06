@@ -112,7 +112,15 @@ impl super::Db {
         self.0.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, created_at, run_token)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![p.id, p.repo, p.ref_name, p.sha, p.pushed_at_ms, p.created_at, p.run_token],
+            params![
+                p.id,
+                p.repo,
+                p.ref_name,
+                p.sha,
+                p.pushed_at_ms,
+                p.created_at,
+                p.run_token
+            ],
         )?;
         Ok(())
     }

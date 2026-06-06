@@ -498,7 +498,9 @@ exit 0
 
         // The run should have reached succeeded.
         let conn = crate::db::Db::open(&quire.db_path()).expect("db");
-        let outcome = conn.get_run_outcome_by_sha(&sha).expect("should have a run");
+        let outcome = conn
+            .get_run_outcome_by_sha(&sha)
+            .expect("should have a run");
         assert_eq!(
             outcome.as_deref(),
             Some("succeeded"),
@@ -545,7 +547,9 @@ exit 0
         );
 
         let conn = crate::db::Db::open(&quire.db_path()).expect("db");
-        let outcome = conn.get_run_outcome_by_sha(&sha).expect("should have a run");
+        let outcome = conn
+            .get_run_outcome_by_sha(&sha)
+            .expect("should have a run");
         assert!(
             outcome
                 .as_deref()
