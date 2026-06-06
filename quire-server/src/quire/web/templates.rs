@@ -509,11 +509,20 @@ pub struct CommitTemplate {
     pub body: String,
     pub parents: Vec<CommitParent>,
     pub diff: String,
+    pub change_id: String,
 }
 
 impl CommitTemplate {
     pub fn version(&self) -> &'static str {
         pkg_version()
+    }
+
+    pub fn change_id_head(&self) -> &str {
+        &self.change_id[..self.change_id.len().min(12)]
+    }
+
+    pub fn change_id_tail(&self) -> &str {
+        &self.change_id[self.change_id.len().min(12)..]
     }
 }
 

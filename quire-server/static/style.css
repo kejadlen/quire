@@ -1250,6 +1250,23 @@ pre code[data-lang] {
   color: var(--ink);
 }
 
+.commit-meta-val--secondary {
+  color: var(--muted);
+}
+
+.change-id-full {
+  font-family: var(--font-mono);
+}
+
+.change-id-head {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.change-id-tail {
+  color: var(--muted);
+}
+
 .commit-meta-val .change-id {
   margin-right: var(--space-2xs);
 }

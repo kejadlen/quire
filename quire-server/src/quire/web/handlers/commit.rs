@@ -68,6 +68,8 @@ pub async fn commit_view(
             .run(&["log", "-1", "--patch", "--format=", &full_sha])
             .unwrap_or_default();
 
+        let change_id = reader.change_id(&full_sha).unwrap_or_default();
+
         Some((
             sha,
             author,
@@ -77,11 +79,14 @@ pub async fn commit_view(
             body,
             parent_shars,
             diff,
+            change_id,
         ))
     })
     .await?;
 
-    let Some((sha, author, email, timestamp_ms, subject, body, parent_shas, diff)) = result else {
+    let Some((sha, author, email, timestamp_ms, subject, body, parent_shas, diff, change_id)) =
+        result
+    else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
 
@@ -119,6 +124,7 @@ pub async fn commit_view(
         body,
         parents,
         diff,
+        change_id,
     };
     Ok(render(&tmpl))
 }

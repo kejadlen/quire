@@ -87,6 +87,20 @@ impl<'a> RepoView<'a> {
             .collect()
     }
 
+    /// Read the jj change-id header from a commit object, if present.
+    pub(super) fn change_id(&self, sha: &str) -> Option<String> {
+        let raw = self.run(&["cat-file", "-p", sha])?;
+        for line in raw.lines() {
+            if line.is_empty() {
+                break; // end of headers
+            }
+            if let Some(id) = line.strip_prefix("change-id ") {
+                return Some(id.trim().to_string());
+            }
+        }
+        None
+    }
+
     fn render_markdown(markdown: &str) -> String {
         use pulldown_cmark::{Options, Parser, html};
         let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
