@@ -211,7 +211,6 @@ fn base(title: &str, nav: Markup, body: Markup) -> Markup {
     }
 }
 
-
 // ── Run list ───────────────────────────────────────────────────────
 
 pub struct RunListTemplate {
@@ -677,7 +676,11 @@ impl RepoHomeTemplate {
                 }
             }
         };
-        base(&self.repo, page_nav(&self.repo, self.crumbs.as_deref()), body)
+        base(
+            &self.repo,
+            page_nav(&self.repo, self.crumbs.as_deref()),
+            body,
+        )
     }
 
     fn latest_ci_state(&self) -> &str {
