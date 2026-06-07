@@ -16,7 +16,7 @@ impl IntoResponse for WebError {
     fn into_response(self) -> Response {
         match self {
             Self::Internal(crate::Error::RepoNotFound(_)) => StatusCode::NOT_FOUND.into_response(),
-            Self::Internal(crate::Error::Sql(e)) if e.is_not_found() => {
+            Self::Internal(crate::Error::Db(e)) if e.is_not_found() => {
                 StatusCode::NOT_FOUND.into_response()
             }
             Self::Internal(_) | Self::TaskPanic(_) => {

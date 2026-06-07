@@ -46,7 +46,7 @@ pub enum Error {
     Utf8(#[from] std::string::FromUtf8Error),
 
     #[error(transparent)]
-    Sql(#[from] crate::db::DbError),
+    Db(#[from] crate::db::DbError),
 
     #[error(transparent)]
     Secret(#[from] secret::Error),

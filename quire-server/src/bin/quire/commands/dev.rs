@@ -89,8 +89,8 @@ impl Seeder {
             miette::bail!("git clone --bare failed with {status}");
         }
 
-        let mut db = quire::db::Db::open(&quire.db_path()).context("failed to open database")?;
-        db.migrate().context("failed to run migrations")?;
+        let mut db = quire::db::Db::open(&quire.db_path())?;
+        db.migrate()?;
 
         Ok(Self {
             quire,
