@@ -15,10 +15,10 @@ pub enum WebError {
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
         match self {
-            Self::Internal(
-                crate::Error::RepoNotFound(_)
-                | crate::Error::Sql(rusqlite::Error::QueryReturnedNoRows),
-            ) => StatusCode::NOT_FOUND.into_response(),
+            Self::Internal(crate::Error::RepoNotFound(_)) => StatusCode::NOT_FOUND.into_response(),
+            Self::Internal(crate::Error::Db(e)) if e.is_not_found() => {
+                StatusCode::NOT_FOUND.into_response()
+            }
             Self::Internal(_) | Self::TaskPanic(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }

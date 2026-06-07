@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 use std::os::unix::net::UnixListener as StdUnixListener;
 use std::time::Duration;
 
+use tokio::io::AsyncBufReadExt;
+
 use axum::Router;
 use axum::extract::MatchedPath;
 use axum::http::Request;
@@ -48,8 +50,8 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
     // Open and migrate the database.
     let db_path = quire.db_path();
     tracing::info!(path = %db_path.display(), "opening database");
-    let mut db = quire::db::open(&db_path).into_diagnostic()?;
-    quire::db::migrate(&mut db)?;
+    let mut db = quire::db::Db::open(&db_path)?;
+    db.migrate()?;
     drop(db);
 
     // Reconcile any orphaned runs from a previous server instance.
@@ -114,8 +116,6 @@ async fn event_listener(listener: tokio::net::UnixListener, quire: Quire) {
 }
 
 async fn handle_event_connection(mut stream: tokio::net::UnixStream, quire: Quire) {
-    use tokio::io::AsyncBufReadExt;
-
     let (reader, _writer) = stream.split();
     let mut reader = tokio::io::BufReader::new(reader);
     let mut line = String::new();

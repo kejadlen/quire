@@ -296,8 +296,8 @@ mod tests {
 
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // Initialize the database.
-        let mut db = crate::db::open(&quire.db_path()).expect("init db");
-        crate::db::migrate(&mut db).expect("migrate db");
+        let mut db = crate::db::Db::open(&quire.db_path()).expect("init db");
+        db.migrate().expect("migrate db");
         drop(db);
         (dir, quire, "test.git".to_string())
     }
@@ -321,8 +321,8 @@ mod tests {
         );
 
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
-        let mut db = crate::db::open(&quire.db_path()).expect("init db");
-        crate::db::migrate(&mut db).expect("migrate db");
+        let mut db = crate::db::Db::open(&quire.db_path()).expect("init db");
+        db.migrate().expect("migrate db");
         drop(db);
         (dir, quire, "test.git".to_string())
     }
@@ -497,13 +497,9 @@ exit 0
         trigger_result.expect("trigger_ref should succeed with fake quire-ci");
 
         // The run should have reached succeeded.
-        let conn = crate::db::open(&quire.db_path()).expect("db");
-        let outcome: Option<String> = conn
-            .query_row(
-                "SELECT outcome FROM runs WHERE sha = ?1",
-                rusqlite::params![&sha],
-                |row| row.get(0),
-            )
+        let conn = crate::db::Db::open(&quire.db_path()).expect("db");
+        let outcome = conn
+            .get_run_outcome_by_sha(&sha)
             .expect("should have a run");
         assert_eq!(
             outcome.as_deref(),
@@ -512,13 +508,7 @@ exit 0
         );
 
         // No unresolved rows left behind.
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM runs WHERE outcome IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count");
+        let count = conn.count_unresolved_runs().expect("count");
         assert_eq!(count, 0, "run should be succeeded, not orphaned");
     }
 
@@ -556,13 +546,9 @@ exit 0
             "expected ProcessFailed error, got: {err}"
         );
 
-        let conn = crate::db::open(&quire.db_path()).expect("db");
-        let outcome: Option<String> = conn
-            .query_row(
-                "SELECT outcome FROM runs WHERE sha = ?1",
-                rusqlite::params![&sha],
-                |row| row.get(0),
-            )
+        let conn = crate::db::Db::open(&quire.db_path()).expect("db");
+        let outcome = conn
+            .get_run_outcome_by_sha(&sha)
             .expect("should have a run");
         assert!(
             outcome

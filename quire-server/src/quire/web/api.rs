@@ -7,8 +7,6 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
-
 use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -51,29 +49,20 @@ enum ApiError {
     #[error("internal error")]
     Internal(#[from] tokio::task::JoinError),
     #[error(transparent)]
-    Db(rusqlite::Error),
+    Db(crate::db::DbError),
     #[error(transparent)]
     App(#[from] crate::Error),
     #[error(transparent)]
     Secret(#[from] quire_core::secret::Error),
 }
 
-impl From<rusqlite::Error> for ApiError {
-    fn from(e: rusqlite::Error) -> Self {
-        match e {
-            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
-            _ => ApiError::Db(e),
+impl From<crate::db::DbError> for ApiError {
+    fn from(e: crate::db::DbError) -> Self {
+        if e.is_not_found() {
+            ApiError::NotFound
+        } else {
+            ApiError::Db(e)
         }
-    }
-}
-
-impl From<serde_rusqlite::Error> for ApiError {
-    fn from(e: serde_rusqlite::Error) -> Self {
-        ApiError::Db(rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        ))
     }
 }
 
@@ -115,14 +104,9 @@ async fn verify_run_token(
 
     let run_id = tokio::task::spawn_blocking(move || -> Result<String, ApiError> {
         let db = quire.db_pool();
-        let result: rusqlite::Result<String> = db.query_row(
-            "SELECT id FROM runs WHERE run_token = ?1",
-            rusqlite::params![token],
-            |row| row.get(0),
-        );
-        match result {
+        match db.get_run_id_for_token(&token) {
             Ok(id) => Ok(id),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Err(ApiError::Unauthorized),
+            Err(e) if e.is_not_found() => Err(ApiError::Unauthorized),
             Err(e) => Err(ApiError::Db(e)),
         }
     })
@@ -148,27 +132,11 @@ async fn get_bootstrap(
 ) -> Result<axum::Json<Bootstrap>, ApiError> {
     let bootstrap =
         tokio::task::spawn_blocking(move || -> std::result::Result<Bootstrap, ApiError> {
-            let db = crate::db::open(&quire.db_path())?;
+            let db = crate::db::Db::open(&quire.db_path())?;
 
-            #[derive(Deserialize)]
-            struct RunRow {
-                sha: String,
-                ref_name: String,
-                pushed_at_ms: i64,
-                git_dir: Option<String>,
-                traceparent: Option<String>,
-                dispatched_at: Option<i64>,
-                repo: String,
-            }
-
-            let row: RunRow = db
-                .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, dispatched_at, repo
-                     FROM runs WHERE id = ?1",
-                )?
-                .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
-                .next()
-                .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
+            let row = db
+                .get_run_bootstrap_data(&run_id)?
+                .ok_or(ApiError::NotFound)?;
 
             if row.dispatched_at.is_some() {
                 return Err(ApiError::Gone);
@@ -183,11 +151,8 @@ async fn get_bootstrap(
                     .expect("db stores valid timestamps"),
             };
 
-            let dispatched_at_ms = jiff::Timestamp::now().as_millisecond();
-            db.execute(
-                "UPDATE runs SET dispatched_at = ?1 WHERE id = ?2",
-                rusqlite::params![dispatched_at_ms, run_id],
-            )?;
+            let now_ms = jiff::Timestamp::now().as_millisecond();
+            db.set_run_dispatched(&run_id, now_ms)?;
 
             Ok(Bootstrap {
                 meta,
@@ -249,8 +214,8 @@ mod tests {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("tempdir");
             let quire = Quire::load(dir.path().to_path_buf()).expect("load");
-            let mut db = crate::db::open(&quire.db_path()).expect("db open");
-            crate::db::migrate(&mut db).expect("migrate");
+            let mut db = crate::db::Db::open(&quire.db_path()).expect("db open");
+            db.migrate().expect("migrate");
             drop(db);
             Self { _dir: dir, quire }
         }
@@ -259,8 +224,8 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             fs_err::write(dir.path().join("config.fnl"), content).expect("write config");
             let quire = crate::Quire::load(dir.path().to_path_buf()).expect("load config");
-            let mut db = crate::db::open(&quire.db_path()).expect("db open");
-            crate::db::migrate(&mut db).expect("migrate");
+            let mut db = crate::db::Db::open(&quire.db_path()).expect("db open");
+            db.migrate().expect("migrate");
             drop(db);
             Self { _dir: dir, quire }
         }
@@ -304,12 +269,9 @@ mod tests {
             .expect("create run");
         let run_id = run.id().to_string();
 
-        let db = crate::db::open(&env.quire.db_path()).expect("db open");
-        db.execute(
-            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir, traceparent, &run_id],
-        )
-        .expect("update bootstrap data");
+        let db = crate::db::Db::open(&env.quire.db_path()).expect("db open");
+        db.set_run_bootstrap_data(&run_id, git_dir, traceparent)
+            .expect("update bootstrap data");
         run_id
     }
 

@@ -54,8 +54,8 @@ pub async fn run(maybe_sha: Option<&str>) -> Result<()> {
     // command and `tail -f` becomes useful.
     let tmp = tempfile::tempdir().into_diagnostic()?;
     let db_path = tmp.path().join("quire.db");
-    let mut db = quire::db::open(&db_path).into_diagnostic()?;
-    quire::db::migrate(&mut db)?;
+    let mut db = quire::db::Db::open(&db_path)?;
+    db.migrate()?;
     drop(db);
     let runs = Runs::new(db_path, "local".to_string(), tmp.path().to_path_buf());
 
