@@ -29,14 +29,23 @@ static MIGRATIONS: std::sync::LazyLock<Migrations<'static>> = std::sync::LazyLoc
     ])
 });
 
-/// Error from running migrations.
+/// Error from any database operation.
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
-pub enum MigrationError {
+pub enum DbError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error("migration error: {0}")]
     Migration(#[from] rusqlite_migration::Error),
 }
+
+impl DbError {
+    /// Returns `true` if this is a "row not found" error from SQLite.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, DbError::Sqlite(rusqlite::Error::QueryReturnedNoRows))
+    }
+}
+
+pub type Result<T> = std::result::Result<T, DbError>;
 
 /// A newtype wrapper around a SQLite connection.
 ///
@@ -49,7 +58,7 @@ impl Db {
     /// Creates the file if it doesn't exist.
     ///
     /// Does not run migrations. Call [`Db::migrate`] once at server startup.
-    pub fn open(path: &Path) -> Result<Db, rusqlite::Error> {
+    pub fn open(path: &Path) -> Result<Db> {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -62,14 +71,14 @@ impl Db {
     /// Run any pending migrations on this connection.
     ///
     /// Call once at server startup, after [`Db::open`].
-    pub fn migrate(&mut self) -> Result<(), MigrationError> {
+    pub fn migrate(&mut self) -> Result<()> {
         MIGRATIONS.to_latest(&mut self.0)?;
         Ok(())
     }
 
     /// Open an in-memory database with migrations applied (for tests).
     #[cfg(test)]
-    pub fn open_in_memory() -> Result<Db, MigrationError> {
+    pub fn open_in_memory() -> Result<Db> {
         let mut conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         MIGRATIONS.to_latest(&mut conn)?;

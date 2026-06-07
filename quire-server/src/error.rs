@@ -27,7 +27,7 @@ pub enum Error {
     Secret(#[from] secret::Error),
 
     #[error(transparent)]
-    Sql(#[from] rusqlite::Error),
+    Sql(#[from] crate::db::DbError),
 
     #[error(transparent)]
     Yaml(#[from] serde_yaml_ng::Error),

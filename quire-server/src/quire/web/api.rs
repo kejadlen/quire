@@ -49,18 +49,19 @@ enum ApiError {
     #[error("internal error")]
     Internal(#[from] tokio::task::JoinError),
     #[error(transparent)]
-    Db(rusqlite::Error),
+    Db(crate::db::DbError),
     #[error(transparent)]
     App(#[from] crate::Error),
     #[error(transparent)]
     Secret(#[from] quire_core::secret::Error),
 }
 
-impl From<rusqlite::Error> for ApiError {
-    fn from(e: rusqlite::Error) -> Self {
-        match e {
-            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
-            _ => ApiError::Db(e),
+impl From<crate::db::DbError> for ApiError {
+    fn from(e: crate::db::DbError) -> Self {
+        if e.is_not_found() {
+            ApiError::NotFound
+        } else {
+            ApiError::Db(e)
         }
     }
 }
@@ -105,7 +106,7 @@ async fn verify_run_token(
         let db = quire.db_pool();
         match db.get_run_id_for_token(&token) {
             Ok(id) => Ok(id),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Err(ApiError::Unauthorized),
+            Err(e) if e.is_not_found() => Err(ApiError::Unauthorized),
             Err(e) => Err(ApiError::Db(e)),
         }
     })

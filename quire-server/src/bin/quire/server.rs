@@ -50,7 +50,7 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
     // Open and migrate the database.
     let db_path = quire.db_path();
     tracing::info!(path = %db_path.display(), "opening database");
-    let mut db = quire::db::Db::open(&db_path).into_diagnostic()?;
+    let mut db = quire::db::Db::open(&db_path)?;
     db.migrate()?;
     drop(db);
 

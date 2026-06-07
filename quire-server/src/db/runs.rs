@@ -108,7 +108,7 @@ pub struct SeededRun<'a> {
 impl super::Db {
     // ── Inserts ──────────────────────────────────────────────────────────────
 
-    pub fn insert_run(&self, p: &NewRun<'_>) -> rusqlite::Result<()> {
+    pub fn insert_run(&self, p: &NewRun<'_>) -> super::Result<()> {
         self.0.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms, created_at, run_token)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -125,7 +125,7 @@ impl super::Db {
         Ok(())
     }
 
-    pub fn insert_job(&self, p: &NewJob<'_>) -> rusqlite::Result<()> {
+    pub fn insert_job(&self, p: &NewJob<'_>) -> super::Result<()> {
         self.0.execute(
             "INSERT INTO jobs (run_id, job_id, state, exit_code, started_at_ms, finished_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -141,7 +141,7 @@ impl super::Db {
         Ok(())
     }
 
-    pub fn insert_sh_event(&self, p: &NewShEvent<'_>) -> rusqlite::Result<()> {
+    pub fn insert_sh_event(&self, p: &NewShEvent<'_>) -> super::Result<()> {
         self.0.execute(
             "INSERT INTO sh (run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -160,61 +160,73 @@ impl super::Db {
     // ── Selects ──────────────────────────────────────────────────────────────
 
     /// Return `(sha, ref_name, pushed_at_ms)` for a run.
-    pub fn get_run_meta(&self, id: &str) -> rusqlite::Result<(String, String, i64)> {
-        self.0.query_row(
-            "SELECT sha, ref_name, pushed_at_ms FROM runs WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
+    pub fn get_run_meta(&self, id: &str) -> super::Result<(String, String, i64)> {
+        self.0
+            .query_row(
+                "SELECT sha, ref_name, pushed_at_ms FROM runs WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
     }
 
     /// Return `(dispatched_at, resolved_at)` for a run — used to derive lifecycle state.
-    pub fn get_run_lifecycle(&self, id: &str) -> rusqlite::Result<(Option<i64>, Option<i64>)> {
-        self.0.query_row(
-            "SELECT dispatched_at, resolved_at FROM runs WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+    pub fn get_run_lifecycle(&self, id: &str) -> super::Result<(Option<i64>, Option<i64>)> {
+        self.0
+            .query_row(
+                "SELECT dispatched_at, resolved_at FROM runs WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
     }
 
     /// Return `dispatched_at` for a run.
-    pub fn get_run_dispatched_at(&self, id: &str) -> rusqlite::Result<Option<i64>> {
-        self.0.query_row(
-            "SELECT dispatched_at FROM runs WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
+    pub fn get_run_dispatched_at(&self, id: &str) -> super::Result<Option<i64>> {
+        self.0
+            .query_row(
+                "SELECT dispatched_at FROM runs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     /// Return `resolved_at` for a run.
-    pub fn get_run_resolved_at(&self, id: &str) -> rusqlite::Result<Option<i64>> {
-        self.0.query_row(
-            "SELECT resolved_at FROM runs WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
+    pub fn get_run_resolved_at(&self, id: &str) -> super::Result<Option<i64>> {
+        self.0
+            .query_row(
+                "SELECT resolved_at FROM runs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     /// Return the outcome string for a run, or `None` if not yet resolved.
-    pub fn get_run_outcome(&self, id: &str) -> rusqlite::Result<Option<String>> {
-        self.0.query_row(
-            "SELECT outcome FROM runs WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
+    pub fn get_run_outcome(&self, id: &str) -> super::Result<Option<String>> {
+        self.0
+            .query_row(
+                "SELECT outcome FROM runs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     /// Look up a run by its bearer token. Returns `Err(QueryReturnedNoRows)` if no match.
-    pub fn get_run_id_for_token(&self, token: &str) -> rusqlite::Result<String> {
-        self.0.query_row(
-            "SELECT id FROM runs WHERE run_token = ?1",
-            params![token],
-            |row| row.get(0),
-        )
+    pub fn get_run_id_for_token(&self, token: &str) -> super::Result<String> {
+        self.0
+            .query_row(
+                "SELECT id FROM runs WHERE run_token = ?1",
+                params![token],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     /// Return the bootstrap data for a run, or `None` if no row exists.
-    pub fn get_run_bootstrap_data(&self, id: &str) -> rusqlite::Result<Option<BootstrapData>> {
+    pub fn get_run_bootstrap_data(&self, id: &str) -> super::Result<Option<BootstrapData>> {
         let mut stmt = self.0.prepare(
             "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, dispatched_at, repo
              FROM runs WHERE id = ?1",
@@ -239,7 +251,7 @@ impl super::Db {
         &self,
         repo: &str,
         ref_name: &str,
-    ) -> rusqlite::Result<Vec<String>> {
+    ) -> super::Result<Vec<String>> {
         self.0
             .prepare(
                 "SELECT id FROM runs
@@ -247,11 +259,12 @@ impl super::Db {
                AND dispatched_at IS NOT NULL AND resolved_at IS NULL",
             )?
             .query_map(params![repo, ref_name], |row| row.get(0))?
-            .collect()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// The 50 most-recent runs for `repo`, ordered newest first.
-    pub fn list_runs(&self, repo: &str) -> rusqlite::Result<Vec<RunRow>> {
+    pub fn list_runs(&self, repo: &str) -> super::Result<Vec<RunRow>> {
         self.0
             .prepare(
                 "SELECT id, outcome, sha, ref_name, created_at, dispatched_at, resolved_at
@@ -270,12 +283,13 @@ impl super::Db {
                     resolved_at: row.get(6)?,
                 })
             })?
-            .collect()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// Full detail for a single run: run row + jobs + sh events.
     /// Returns `Err(QueryReturnedNoRows)` if no run matches `(run_id, repo)`.
-    pub fn get_run_detail(&self, repo: &str, run_id: &str) -> rusqlite::Result<RunDetail> {
+    pub fn get_run_detail(&self, repo: &str, run_id: &str) -> super::Result<RunDetail> {
         let run = self.0.query_row(
             "SELECT id, outcome, sha, ref_name, created_at, dispatched_at, resolved_at
              FROM runs WHERE id = ?1 AND repo = ?2",
@@ -309,7 +323,8 @@ impl super::Db {
                     finished_at_ms: row.get(4)?,
                 })
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(super::DbError::from)?;
 
         let sh_events = self
             .0
@@ -327,7 +342,8 @@ impl super::Db {
                     cmd: row.get(4)?,
                 })
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(super::DbError::from)?;
 
         Ok(RunDetail {
             run,
@@ -339,7 +355,7 @@ impl super::Db {
     // ── Updates ──────────────────────────────────────────────────────────────
 
     /// Transition a run to dispatched (active). Stamps `dispatched_at` if not already set.
-    pub fn set_run_dispatched(&self, id: &str, now_ms: i64) -> rusqlite::Result<()> {
+    pub fn set_run_dispatched(&self, id: &str, now_ms: i64) -> super::Result<()> {
         self.0.execute(
             "UPDATE runs SET dispatched_at = COALESCE(dispatched_at, ?1) WHERE id = ?2",
             params![now_ms, id],
@@ -348,7 +364,7 @@ impl super::Db {
     }
 
     /// Cancel an active run (dispatched but not resolved): sets `resolved_at`, and `outcome = 'superseded'`.
-    pub fn cancel_active_run(&self, id: &str, now_ms: i64) -> rusqlite::Result<()> {
+    pub fn cancel_active_run(&self, id: &str, now_ms: i64) -> super::Result<()> {
         self.0.execute(
             "UPDATE runs SET \
                 dispatched_at = COALESCE(dispatched_at, ?1), \
@@ -367,19 +383,21 @@ impl super::Db {
         repo: &str,
         ref_name: &str,
         now_ms: i64,
-    ) -> rusqlite::Result<usize> {
-        self.0.execute(
-            "UPDATE runs SET \
+    ) -> super::Result<usize> {
+        self.0
+            .execute(
+                "UPDATE runs SET \
                 resolved_at = COALESCE(resolved_at, ?1), \
                 outcome = COALESCE(outcome, 'superseded') \
              WHERE repo = ?2 AND ref_name = ?3
                AND dispatched_at IS NULL AND resolved_at IS NULL",
-            params![now_ms, repo, ref_name],
-        )
+                params![now_ms, repo, ref_name],
+            )
+            .map_err(Into::into)
     }
 
     /// Resolve a run with an outcome. Stamps `dispatched_at` and `resolved_at` if not set.
-    pub fn resolve_run(&self, id: &str, now_ms: i64, outcome: &str) -> rusqlite::Result<()> {
+    pub fn resolve_run(&self, id: &str, now_ms: i64, outcome: &str) -> super::Result<()> {
         self.0.execute(
             "UPDATE runs SET \
                 dispatched_at = COALESCE(dispatched_at, ?1), \
@@ -397,7 +415,7 @@ impl super::Db {
         id: &str,
         git_dir: &str,
         traceparent: Option<&str>,
-    ) -> rusqlite::Result<()> {
+    ) -> super::Result<()> {
         self.0.execute(
             "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
             params![git_dir, traceparent, id],
@@ -406,25 +424,28 @@ impl super::Db {
     }
 
     /// Move every unresolved run to `failed-orphaned`. Returns the number of rows updated.
-    pub fn fail_orphaned_runs(&self, now_ms: i64) -> rusqlite::Result<usize> {
-        self.0.execute(
-            "UPDATE runs SET \
+    pub fn fail_orphaned_runs(&self, now_ms: i64) -> super::Result<usize> {
+        self.0
+            .execute(
+                "UPDATE runs SET \
                 dispatched_at = COALESCE(dispatched_at, ?1), \
                 resolved_at = COALESCE(resolved_at, ?2), \
                 outcome = COALESCE(outcome, 'failed-orphaned') \
              WHERE resolved_at IS NULL",
-            params![now_ms, now_ms],
-        )
+                params![now_ms, now_ms],
+            )
+            .map_err(Into::into)
     }
 
     /// Total number of run rows (used for logging after seeding).
-    pub fn count_runs(&self) -> rusqlite::Result<i64> {
+    pub fn count_runs(&self) -> super::Result<i64> {
         self.0
             .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+            .map_err(Into::into)
     }
 
     /// Insert a run with all fields pre-set (for dev seeding and test fixtures).
-    pub fn insert_seeded_run(&self, r: &SeededRun<'_>) -> rusqlite::Result<()> {
+    pub fn insert_seeded_run(&self, r: &SeededRun<'_>) -> super::Result<()> {
         self.0.execute(
             "INSERT INTO runs (id, repo, ref_name, sha, pushed_at_ms,
                                created_at, dispatched_at, resolved_at, outcome)
@@ -447,29 +468,35 @@ impl super::Db {
     // ── Test helpers ──────────────────────────────────────────────────────────
 
     #[cfg(test)]
-    pub fn get_run_token(&self, id: &str) -> rusqlite::Result<Option<String>> {
-        self.0.query_row(
-            "SELECT run_token FROM runs WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
+    pub fn get_run_token(&self, id: &str) -> super::Result<Option<String>> {
+        self.0
+            .query_row(
+                "SELECT run_token FROM runs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     #[cfg(test)]
-    pub fn get_run_outcome_by_sha(&self, sha: &str) -> rusqlite::Result<Option<String>> {
-        self.0.query_row(
-            "SELECT outcome FROM runs WHERE sha = ?1",
-            params![sha],
-            |row| row.get(0),
-        )
+    pub fn get_run_outcome_by_sha(&self, sha: &str) -> super::Result<Option<String>> {
+        self.0
+            .query_row(
+                "SELECT outcome FROM runs WHERE sha = ?1",
+                params![sha],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     #[cfg(test)]
-    pub fn count_unresolved_runs(&self) -> rusqlite::Result<i64> {
-        self.0.query_row(
-            "SELECT COUNT(*) FROM runs WHERE resolved_at IS NULL",
-            [],
-            |row| row.get(0),
-        )
+    pub fn count_unresolved_runs(&self) -> super::Result<i64> {
+        self.0
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE resolved_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 }
