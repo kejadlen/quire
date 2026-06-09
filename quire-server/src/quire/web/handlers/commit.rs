@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::super::error::WebError;
-use super::super::templates::{CommitParent, CommitTemplate, nav_sections};
+use super::super::templates::{CommitId, CommitParent, CommitTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -21,6 +21,7 @@ pub async fn commit_view(
     let git_repo = quire.repo(&repo_name)?;
 
     let sha_clone = sha.clone();
+    let repo_d = repo_display.clone();
     let result = tokio::task::spawn_blocking(move || {
         let reader = RepoView::new(&git_repo);
 
@@ -58,17 +59,20 @@ pub async fn commit_view(
 
         let timestamp_ms: i64 = timestamp_str.parse().ok().map(|secs: i64| secs * 1000)?;
 
-        let parent_shars: Vec<String> = parents_str
-            .split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|p| p.to_string())
-            .collect();
-
         let diff = reader
             .run(&["log", "-1", "--patch", "--format=", &full_sha])
             .unwrap_or_default();
 
         let change_id = reader.change_id(&full_sha).unwrap_or_default();
+
+        let parents: Vec<CommitParent> = parents_str
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .map(|p| CommitParent {
+                commit_url: format!("/{repo_d}/commits/{p}"),
+                id: CommitId::new(p.to_string(), reader.change_id(p)),
+            })
+            .collect();
 
         Some((
             sha,
@@ -77,26 +81,17 @@ pub async fn commit_view(
             timestamp_ms,
             subject,
             body,
-            parent_shars,
+            parents,
             diff,
             change_id,
         ))
     })
     .await?;
 
-    let Some((sha, author, email, timestamp_ms, subject, body, parent_shas, diff, change_id)) =
-        result
+    let Some((sha, author, email, timestamp_ms, subject, body, parents, diff, change_id)) = result
     else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
-
-    let parents: Vec<CommitParent> = parent_shas
-        .into_iter()
-        .map(|p| CommitParent {
-            commit_url: format!("/{repo_display}/commits/{p}"),
-            sha: p,
-        })
-        .collect();
 
     let sha_short = if sha.len() >= 8 {
         sha[..8].to_string()
@@ -104,18 +99,19 @@ pub async fn commit_view(
         sha.clone()
     };
 
+    let nav_id = if change_id.is_empty() {
+        sha.as_str()
+    } else {
+        change_id.as_str()
+    };
     let tmpl = CommitTemplate {
         sections: nav_sections(&repo_display, "log", auth.is_authenticated()),
         repo: repo_display,
         crumbs: None,
         sha: sha.clone(),
         sha_short,
-        sha_head: sha[..sha.len().min(4)].to_string(),
-        sha_tail: if sha.len() > 4 {
-            sha[4..sha.len().min(8)].to_string()
-        } else {
-            String::new()
-        },
+        sha_head: nav_id[..nav_id.len().min(4)].to_string(),
+        sha_tail: nav_id[nav_id.len().min(4)..nav_id.len().min(8)].to_string(),
         author,
         email,
         date_relative: super::super::format::format_timestamp_relative(timestamp_ms),

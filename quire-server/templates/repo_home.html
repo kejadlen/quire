@@ -16,10 +16,10 @@
     <span class="bookmark-glyph">※</span>
     <span class="bookmark-name">{{ h.bookmark }}</span>
     <span class="repo-meta-sep">→</span>
-    <a class="change-id" href="/{{ repo }}/commits/{{ h.sha }}" title="commit {{ h.sha_short() }}">
-      <span class="change-head">{{ h.change_head() }}</span><span class="change-tail">{{ h.change_tail() }}</span>
+    <a class="change-id" href="/{{ repo }}/commits/{{ h.id.sha }}" title="commit {{ h.id.sha_short() }}">
+      <span class="change-head">{{ h.id.head() }}</span><span class="change-tail">{{ h.id.tail() }}</span>
     </a>
-    <span class="commit-id-secondary">{{ h.sha_short() }}</span>
+    <span class="commit-id-secondary">{{ h.id.sha_short() }}</span>
     <span class="repo-meta-dot">·</span>
     <span class="repo-position-age">{{ h.age }}</span>
     {% if !recent_runs.is_empty() %}
@@ -78,8 +78,8 @@
         {% for ch in recent_changes %}
         <div class="change-mini-row">
           <div class="change-mini-header">
-            <a class="change-id" href="{{ ch.commit_url }}" title="commit {{ ch.sha_full() }}">
-              <span class="change-head">{{ ch.change_head() }}</span><span class="change-tail">{{ ch.change_tail() }}</span>
+            <a class="change-id" href="{{ ch.commit_url }}" title="commit {{ ch.id.sha_full() }}">
+              <span class="change-head">{{ ch.id.head() }}</span><span class="change-tail">{{ ch.id.tail() }}</span>
             </a>
             <span class="change-mini-age">{{ ch.age }}</span>
           </div>

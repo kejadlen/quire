@@ -1,6 +1,6 @@
 //! Shared git-reading helpers used by multiple handlers.
 
-use super::super::templates::{ChangeRow, HeadInfo};
+use super::super::templates::{ChangeRow, CommitId, HeadInfo};
 use crate::quire::Repo;
 
 pub(super) type GitData = (Option<HeadInfo>, Option<String>, Vec<ChangeRow>);
@@ -41,8 +41,9 @@ impl<'a> RepoView<'a> {
         let sha = lines.next()?.to_string();
         let description = lines.next().unwrap_or("").to_string();
         let age = lines.next().unwrap_or("").to_string();
+        let change_id = self.change_id(&sha);
         Some(HeadInfo {
-            sha,
+            id: CommitId::new(sha, change_id),
             description,
             age,
             bookmark,
@@ -77,9 +78,10 @@ impl<'a> RepoView<'a> {
             .filter_map(|line| {
                 let mut parts = line.splitn(3, '|');
                 let sha = parts.next()?.to_string();
+                let change_id = self.change_id(&sha);
                 Some(ChangeRow {
                     commit_url: format!("/{repo}/commits/{sha}"),
-                    sha,
+                    id: CommitId::new(sha, change_id),
                     description: parts.next().unwrap_or("").to_string(),
                     age: parts.next().unwrap_or("").to_string(),
                 })

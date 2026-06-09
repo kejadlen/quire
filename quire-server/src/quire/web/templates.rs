@@ -9,6 +9,49 @@ fn pkg_version() -> &'static str {
     env!("QUIRE_VERSION")
 }
 
+// ── Commit ID ─────────────────────────────────────────────────────────
+
+/// A git commit SHA paired with an optional jj change ID.
+///
+/// Display methods prefer the change ID when present, falling back to the
+/// git SHA. Used wherever a commit badge or reference is shown in templates.
+pub struct CommitId {
+    pub sha: String,
+    pub change_id: Option<String>,
+}
+
+impl CommitId {
+    pub fn new(sha: String, change_id: Option<String>) -> Self {
+        Self { sha, change_id }
+    }
+
+    fn display(&self) -> &str {
+        self.change_id.as_deref().unwrap_or(self.sha.as_str())
+    }
+
+    /// First 4 chars of the display ID (bold prefix in commit badges).
+    pub fn head(&self) -> &str {
+        let s = self.display();
+        &s[..s.len().min(4)]
+    }
+
+    /// Chars 4–8 of the display ID (dimmed suffix in commit badges).
+    pub fn tail(&self) -> &str {
+        let s = self.display();
+        let start = s.len().min(4);
+        &s[start..s.len().min(8)]
+    }
+
+    /// First 8 chars of the git SHA, used for tooltips and secondary display.
+    pub fn sha_short(&self) -> &str {
+        &self.sha[..self.sha.len().min(8)]
+    }
+
+    pub fn sha_full(&self) -> &str {
+        &self.sha
+    }
+}
+
 /// A section nav link in the repo tab bar.
 pub struct SectionLink {
     pub label: &'static str,
@@ -322,51 +365,17 @@ impl RepoHomeTemplate {
 }
 
 pub struct HeadInfo {
-    pub sha: String,
+    pub id: CommitId,
     pub description: String,
     pub age: String,
     pub bookmark: String,
 }
 
-impl HeadInfo {
-    pub fn change_head(&self) -> &str {
-        let end = self.sha.len().min(4);
-        &self.sha[..end]
-    }
-
-    pub fn change_tail(&self) -> &str {
-        let start = self.sha.len().min(4);
-        let end = self.sha.len().min(8);
-        &self.sha[start..end]
-    }
-
-    pub fn sha_short(&self) -> &str {
-        &self.sha[..self.sha.len().min(8)]
-    }
-}
-
 pub struct ChangeRow {
-    pub sha: String,
+    pub id: CommitId,
     pub description: String,
     pub age: String,
     pub commit_url: String,
-}
-
-impl ChangeRow {
-    pub fn change_head(&self) -> &str {
-        let end = self.sha.len().min(4);
-        &self.sha[..end]
-    }
-
-    pub fn change_tail(&self) -> &str {
-        let start = self.sha.len().min(4);
-        let end = self.sha.len().min(8);
-        &self.sha[start..end]
-    }
-
-    pub fn sha_full(&self) -> &str {
-        &self.sha
-    }
 }
 
 // ── Config ─────────────────────────────────────────────────────────
@@ -402,8 +411,7 @@ pub struct TreeTemplate {
     pub path: String,
     /// Active bookmark name (e.g. "main").
     pub bookmark: String,
-    /// Short commit hash for HEAD.
-    pub sha_short: String,
+    pub head: CommitId,
     pub entries: Vec<TreeEntry>,
     pub recent_changes: Vec<ChangeRow>,
 }
@@ -441,15 +449,6 @@ impl TreeTemplate {
 
     pub fn file_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_file()).count()
-    }
-
-    pub fn sha_head(&self) -> &str {
-        &self.sha_short[..self.sha_short.len().min(4)]
-    }
-
-    pub fn sha_tail(&self) -> &str {
-        let start = self.sha_short.len().min(4);
-        &self.sha_short[start..]
     }
 }
 
@@ -527,23 +526,8 @@ impl CommitTemplate {
 }
 
 pub struct CommitParent {
-    pub sha: String,
+    pub id: CommitId,
     pub commit_url: String,
-}
-
-impl CommitParent {
-    pub fn sha_full(&self) -> &str {
-        &self.sha
-    }
-
-    pub fn sha_head(&self) -> &str {
-        &self.sha[..self.sha.len().min(4)]
-    }
-
-    pub fn sha_tail(&self) -> &str {
-        let start = self.sha.len().min(4);
-        &self.sha[start..self.sha.len().min(8)]
-    }
 }
 
 // ── Commit log ────────────────────────────────────────────────────
@@ -556,21 +540,12 @@ pub struct LogTemplate {
     pub sections: Vec<SectionLink>,
     pub changes: Vec<ChangeRow>,
     pub bookmark: String,
-    pub sha_short: String,
+    pub head: CommitId,
 }
 
 impl LogTemplate {
     pub fn version(&self) -> &'static str {
         pkg_version()
-    }
-
-    pub fn sha_head(&self) -> &str {
-        &self.sha_short[..self.sha_short.len().min(4)]
-    }
-
-    pub fn sha_tail(&self) -> &str {
-        let start = self.sha_short.len().min(4);
-        &self.sha_short[start..]
     }
 }
 

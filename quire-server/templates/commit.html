@@ -55,8 +55,8 @@
         <span class="commit-meta-key">parent{% if parents.len() > 1 %}s{% endif %}</span>
         <span class="commit-meta-val">
           {% for p in parents %}
-          <a class="change-id" href="{{ p.commit_url }}" title="commit {{ p.sha_full() }}">
-            <span class="change-head">{{ p.sha_head() }}</span><span class="change-tail">{{ p.sha_tail() }}</span>
+          <a class="change-id" href="{{ p.commit_url }}" title="commit {{ p.id.sha_full() }}">
+            <span class="change-head">{{ p.id.head() }}</span><span class="change-tail">{{ p.id.tail() }}</span>
           </a>
           {% endfor %}
         </span>

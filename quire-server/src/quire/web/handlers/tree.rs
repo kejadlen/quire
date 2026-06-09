@@ -8,7 +8,7 @@ use super::super::auth::Auth;
 use super::super::db;
 use super::super::error::WebError;
 use super::super::templates::{
-    Crumb, FileViewTemplate, TreeEntry, TreeEntryKind, TreeTemplate, nav_sections,
+    CommitId, Crumb, FileViewTemplate, TreeEntry, TreeEntryKind, TreeTemplate, nav_sections,
 };
 use super::git::RepoView;
 use super::render;
@@ -70,7 +70,7 @@ async fn tree_or_file_at_path(
                 crumbs: Some(crumbs),
                 path,
                 bookmark: tree_data.bookmark,
-                sha_short: tree_data.sha_short,
+                head: tree_data.head,
                 entries: tree_data.entries,
                 recent_changes,
             };
@@ -85,12 +85,12 @@ async fn tree_or_file_at_path(
                 crumbs: Some(crumbs),
                 path,
                 bookmark: file_data.bookmark,
-                sha_short: file_data.sha_short.clone(),
-                sha_head: file_data.sha_short[..file_data.sha_short.len().min(4)].to_string(),
-                sha_tail: file_data.sha_short[file_data.sha_short.len().min(4)..].to_string(),
-                last_change_sha: file_data.last_change_sha,
-                last_change_head: file_data.last_change_head,
-                last_change_tail: file_data.last_change_tail,
+                sha_short: file_data.head.sha_short().to_string(),
+                sha_head: file_data.head.head().to_string(),
+                sha_tail: file_data.head.tail().to_string(),
+                last_change_sha: file_data.last_change.sha.clone(),
+                last_change_head: file_data.last_change.head().to_string(),
+                last_change_tail: file_data.last_change.tail().to_string(),
                 last_change_msg: file_data.last_change_msg,
                 last_change_author: file_data.last_change_author,
                 last_change_age: file_data.last_change_age,
@@ -112,7 +112,7 @@ async fn tree_or_file_at_path(
 
 struct TreeData {
     bookmark: String,
-    sha_short: String,
+    head: CommitId,
     entries: Vec<TreeEntry>,
 }
 
@@ -134,9 +134,8 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
         .run(&["symbolic-ref", "--short", "HEAD"])
         .unwrap_or_else(|| "main".to_string());
 
-    let sha_short = reader
-        .run(&["rev-parse", "--short", "HEAD"])
-        .unwrap_or_else(|| "unknown".to_string());
+    let head_sha = reader.run(&["rev-parse", "HEAD"]).unwrap_or_default();
+    let head = CommitId::new(head_sha.clone(), reader.change_id(&head_sha));
 
     let ls_target = if path.is_empty() {
         "HEAD".to_string()
@@ -204,7 +203,7 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
 
     Some(TreeData {
         bookmark,
-        sha_short,
+        head,
         entries,
     })
 }
@@ -213,10 +212,8 @@ fn read_tree_data(reader: &RepoView<'_>, path: &str) -> Option<TreeData> {
 
 struct FileData {
     bookmark: String,
-    sha_short: String,
-    last_change_sha: String,
-    last_change_head: String,
-    last_change_tail: String,
+    head: CommitId,
+    last_change: CommitId,
     last_change_msg: String,
     last_change_author: String,
     last_change_age: String,
@@ -247,9 +244,8 @@ fn read_file_data(reader: &RepoView<'_>, path: &str) -> Option<FileData> {
         .run(&["symbolic-ref", "--short", "HEAD"])
         .unwrap_or_else(|| "main".to_string());
 
-    let sha_short = reader
-        .run(&["rev-parse", "--short", "HEAD"])
-        .unwrap_or_else(|| "unknown".to_string());
+    let head_sha = reader.run(&["rev-parse", "HEAD"]).unwrap_or_default();
+    let head = CommitId::new(head_sha.clone(), reader.change_id(&head_sha));
 
     let blob = reader.run(&["show", &format!("HEAD:{path}")])?;
 
@@ -259,10 +255,8 @@ fn read_file_data(reader: &RepoView<'_>, path: &str) -> Option<FileData> {
 
     let log = reader.run(&["log", "-1", "--format=%H|%s|%an|%cr", "HEAD", "--", path])?;
     let mut log_parts = log.splitn(4, '|');
-    let last_change_sha = log_parts.next()?.to_string();
-    let last_change_head = last_change_sha[..last_change_sha.len().min(4)].to_string();
-    let last_change_tail =
-        last_change_sha[last_change_sha.len().min(4)..last_change_sha.len().min(8)].to_string();
+    let last_sha = log_parts.next()?.to_string();
+    let last_change = CommitId::new(last_sha.clone(), reader.change_id(&last_sha));
     let last_change_msg = log_parts.next().unwrap_or("").to_string();
     let last_change_author = log_parts.next().unwrap_or("").to_string();
     let last_change_age = log_parts.next().unwrap_or("").to_string();
@@ -283,10 +277,8 @@ fn read_file_data(reader: &RepoView<'_>, path: &str) -> Option<FileData> {
 
     Some(FileData {
         bookmark,
-        sha_short,
-        last_change_sha,
-        last_change_head,
-        last_change_tail,
+        head,
+        last_change,
         last_change_msg,
         last_change_author,
         last_change_age,

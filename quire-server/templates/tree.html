@@ -15,8 +15,8 @@
     <span class="bookmark-glyph">※</span>
     <span class="bookmark-name">{{ bookmark }}</span>
     <span class="repo-meta-sep">→</span>
-    <span class="change-id" title="{{ sha_short }}">
-      <span class="change-head">{{ self.sha_head() }}</span><span class="change-tail">{{ self.sha_tail() }}</span>
+    <span class="change-id" title="{{ head.sha_short() }}">
+      <span class="change-head">{{ head.head() }}</span><span class="change-tail">{{ head.tail() }}</span>
     </span>
 
   </span>
@@ -72,7 +72,7 @@
     <a class="tree-log-item" href="{{ change.commit_url }}">
       <div class="tree-log-subject">{{ change.description }}</div>
       <div class="tree-log-meta">
-        <span class="tree-log-sha">{{ change.change_head() }}{{ change.change_tail() }}</span>
+        <span class="tree-log-sha">{{ change.id.head() }}{{ change.id.tail() }}</span>
         <span class="tree-log-age">{{ change.age }}</span>
       </div>
     </a>

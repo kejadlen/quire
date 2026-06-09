@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::response::Response;
 
 use super::super::error::WebError;
-use super::super::templates::{LogTemplate, nav_sections};
+use super::super::templates::{CommitId, LogTemplate, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -20,16 +20,15 @@ pub async fn log_view(
     let git_repo = quire.repo(&repo_name)?;
 
     let repo_d = repo_display.clone();
-    let (changes, bookmark, sha_short) = tokio::task::spawn_blocking(move || {
+    let (changes, bookmark, head) = tokio::task::spawn_blocking(move || {
         let reader = RepoView::new(&git_repo);
         let changes = reader.recent_changes(&repo_d);
         let bookmark = reader
             .run(&["symbolic-ref", "--short", "HEAD"])
             .unwrap_or_else(|| "main".to_string());
-        let sha_short = reader
-            .run(&["rev-parse", "--short", "HEAD"])
-            .unwrap_or_else(|| "unknown".to_string());
-        (changes, bookmark, sha_short)
+        let head_sha = reader.run(&["rev-parse", "HEAD"]).unwrap_or_default();
+        let head_change_id = reader.change_id(&head_sha);
+        (changes, bookmark, CommitId::new(head_sha, head_change_id))
     })
     .await?;
 
@@ -39,7 +38,7 @@ pub async fn log_view(
         crumbs: None,
         changes,
         bookmark,
-        sha_short,
+        head,
     };
     Ok(render(&tmpl))
 }
