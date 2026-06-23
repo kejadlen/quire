@@ -14,10 +14,12 @@ pick up changes.
 |---------------------------|----------------|----------|----------------------------------------------------------|
 | `:port`                   | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
 | `:sentry :dsn`            | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
-| `:secrets`                | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)`. |
-| `:github :mirror-token`   | `SecretString` | no       | Token used to authenticate pushes to per-repo GitHub mirrors. Required for mirroring to work; omit to disable. |
+| `:secrets`                | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)` and referenced by per-repo mirror targets. |
 
-Note: key names use hyphens, not underscores (e.g. `:mirror-token`, not `:mirror_token`).
+Note: multi-word key names use hyphens, not underscores (kebab-case).
+
+Mirror push tokens live in `:secrets`. Each per-repo mirror target names
+the secret holding its token (see [Per-repo config](#per-repo-config)).
 
 Minimal (no Sentry, no secrets):
 
@@ -25,11 +27,12 @@ Minimal (no Sentry, no secrets):
 {}
 ```
 
-With Sentry, secrets, and the token sourced from a Docker secret:
+With Sentry and mirror tokens sourced from Docker secrets:
 
 ```fennel
 {:sentry {:dsn "https://key@o0.ingest.sentry.io/0"}
- :secrets {:github_token {:file "/run/secrets/github_token"}}}
+ :secrets {:github-mirror {:file "/run/secrets/github_token"}
+           :gitea-mirror {:file "/run/secrets/gitea_token"}}}
 ```
 
 A missing file causes all settings to use their defaults. A malformed
@@ -49,14 +52,20 @@ tree:
 
 ### `.quire/config.fnl` schema
 
-| Key                  | Type   | Required | Purpose                                                        |
-|----------------------|--------|----------|----------------------------------------------------------------|
-| `:github :mirror`    | string | no       | HTTPS URL to mirror every pushed ref to (e.g. `"https://github.com/user/repo.git"`). Requires `:github :mirror-token` in the global config. |
+| Key             | Type  | Required | Purpose                                                        |
+|-----------------|-------|----------|----------------------------------------------------------------|
+| `:mirrors`      | table | no       | Remotes to force-push every updated ref to, keyed by HTTPS URL. Each value names the global `:secrets` entry holding that remote's push token. Empty or absent disables mirroring. |
 
-Example:
+Each remote authenticates with HTTP Basic `token:x-oauth-basic`, which
+GitHub and Gitea both accept for a personal access token. A remote whose
+secret names no global secret fails that push and is reported; other
+remotes still run.
+
+Example mirroring to both GitHub and Gitea:
 
 ```fennel
-{:github {:mirror "https://github.com/user/repo.git"}}
+{:mirrors {"https://github.com/user/repo.git" :github-mirror
+           "https://gitea.example/user/repo.git" :gitea-mirror}}
 ```
 
 The file is read via `git show <new-sha>:.quire/config.fnl`, so changes

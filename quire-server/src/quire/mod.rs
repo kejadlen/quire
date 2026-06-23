@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -31,9 +31,6 @@ pub struct GlobalConfig {
     /// CI configuration.
     #[serde(default)]
     pub ci: CiConfig,
-    /// GitHub integration settings.
-    #[serde(default)]
-    pub github: GlobalGithubConfig,
 }
 
 impl Default for GlobalConfig {
@@ -43,18 +40,8 @@ impl Default for GlobalConfig {
             secrets: HashMap::new(),
             port: default_port(),
             ci: CiConfig::default(),
-            github: GlobalGithubConfig::default(),
         }
     }
-}
-
-/// Global GitHub integration configuration.
-#[derive(serde::Deserialize, Debug, Default, Clone)]
-#[serde(rename_all = "kebab-case")]
-pub struct GlobalGithubConfig {
-    /// Bearer token used to authenticate push access to the mirror remote.
-    #[serde(default)]
-    pub mirror_token: Option<SecretString>,
 }
 
 fn default_port() -> u16 {
@@ -202,16 +189,10 @@ impl Repo {
 #[derive(serde::Deserialize, Debug, Default, Clone)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct RepoConfig {
-    pub github: RepoGithubConfig,
-}
-
-/// Per-repo GitHub configuration.
-#[derive(serde::Deserialize, Debug, Default, Clone)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct RepoGithubConfig {
-    /// Remote URL to mirror every pushed ref to.
-    /// E.g. `"https://github.com/user/repo.git"`.
-    pub mirror: Option<String>,
+    /// Remotes to mirror every pushed ref to, keyed by remote URL. Each
+    /// value names the global `:secrets` entry holding that remote's push
+    /// token. Empty disables mirroring.
+    pub mirrors: BTreeMap<String, String>,
 }
 
 /// Application runtime context.
@@ -562,6 +543,35 @@ mod tests {
         assert_eq!(
             q.config.secrets["slack_webhook"].reveal().unwrap(),
             "https://hooks.slack.com/abc"
+        );
+    }
+
+    #[test]
+    fn repo_config_defaults_to_no_mirrors() {
+        let config: RepoConfig = Fennel::load_config_str("{}", ".quire/config.fnl").expect("parse");
+        assert!(config.mirrors.is_empty());
+    }
+
+    #[test]
+    fn repo_config_parses_mirror_targets() {
+        let source = r#"{:mirrors {"https://github.com/u/r.git" :github-mirror
+                                   "https://gitea.example/u/r.git" :gitea-mirror}}"#;
+        let config: RepoConfig =
+            Fennel::load_config_str(source, ".quire/config.fnl").expect("parse");
+        assert_eq!(config.mirrors.len(), 2);
+        assert_eq!(
+            config
+                .mirrors
+                .get("https://github.com/u/r.git")
+                .map(String::as_str),
+            Some("github-mirror")
+        );
+        assert_eq!(
+            config
+                .mirrors
+                .get("https://gitea.example/u/r.git")
+                .map(String::as_str),
+            Some("gitea-mirror")
         );
     }
 

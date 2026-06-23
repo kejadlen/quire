@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
         .with_type::<quire::Error>()
         .with_type::<quire::ci::Error>()
         .with_type::<quire_core::fennel::FennelError>()
-        .with_type::<quire::mirror::MirrorErrors>();
+        .with_type::<quire::mirror::MirrorError>();
     let _guard = telemetry::init_telemetry(
         miette_layer,
         FmtMode::AutoJson,

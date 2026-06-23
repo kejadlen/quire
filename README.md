@@ -11,7 +11,7 @@ A Rust binary that runs in a Docker container, fronted by the host's sshd and a 
 - **Git hosting over SSH**, via the host's sshd dispatching into the container. Explicit repo creation (`ssh git@host quire repo new <name>`).
 - **A read-only web view** for browsing README, tree, history, blame, diffs, and refs.
 - **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Unsandboxed by default since every pipeline is code I've written; a bubblewrap-based opt-in is available for the day quire ever runs code I haven't.
-- **Automatic GitHub mirroring** on every push. Set `:github :mirror` in `.quire/config.fnl` and `:github :mirror-token` in the global config; quire force-pushes each updated ref to the mirror URL independently of CI.
+- **Automatic mirroring** to GitHub, Gitea, or any HTTPS remote on every push. Map each remote URL to a push token in `.quire/config.fnl` under `:mirrors` (the value names an entry in the global `:secrets`); quire force-pushes every updated ref to all of them independently of CI.
 - **Email notifications** for CI failures and recoveries. SMTP via `msmtp`; plain text; per-repo config for what to send and to whom.
 
 No issues, no PRs, no user management, no webhooks. Use the GitHub mirror for the social stuff; quire is your forge.

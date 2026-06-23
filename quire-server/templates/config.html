@@ -49,17 +49,6 @@
       <span class="config-val config-val--empty">disabled</span>
     </div>
     {% endif %}
-    {% if let Some(token) = config.github.mirror_token %}
-    <div class="config-row">
-      <span class="config-key">github.mirror-token</span>
-      <span class="config-val">{{ token }}</span>
-    </div>
-    {% else %}
-    <div class="config-row">
-      <span class="config-key">github.mirror-token</span>
-      <span class="config-val config-val--empty">not set</span>
-    </div>
-    {% endif %}
     {% for (key, value) in sorted_secrets() %}
     <div class="config-row">
       <span class="config-key">secrets.{{ key }}</span>
