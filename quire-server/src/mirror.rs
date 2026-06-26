@@ -65,7 +65,7 @@ pub fn trigger(quire: &Quire, event: &PushEvent) {
                 continue;
             }
         };
-        if let Err(failures) = mirror.push() {
+        if let Err(failures) = mirror.push_all() {
             for failure in failures {
                 tracing::error!(
                     repo = %event.repo,
@@ -104,10 +104,10 @@ impl<'a> Mirror<'a> {
 
     /// Push the ref to every configured remote, collecting one failure per
     /// remote that rejected it. `Ok` only if every push succeeded.
-    fn push(&self) -> Result<(), Vec<PushFailure>> {
+    fn push_all(&self) -> Result<(), Vec<PushFailure>> {
         let mut failures = Vec::new();
         for (url, secret) in &self.mirrors {
-            if let Err(cause) = self.force_push(url, secret) {
+            if let Err(cause) = self.push_remote(url, secret) {
                 failures.push(PushFailure {
                     url: url.clone(),
                     cause,
@@ -121,17 +121,18 @@ impl<'a> Mirror<'a> {
         }
     }
 
-    /// Force-push the ref to one remote, reporting why the push failed.
-    fn force_push(&self, url: &str, secret: &str) -> Result<(), PushError> {
+    /// Push the ref to one remote, reporting why the push failed.
+    fn push_remote(&self, url: &str, secret: &str) -> Result<(), PushError> {
         let token = self
             .secrets
             .get(secret)
             .ok_or_else(|| quire_core::secret::Error::UnknownSecret(secret.to_owned()))?
             .reveal()?;
 
-        // The `+` prefix lets the remote accept rewrites: if the source branch
-        // was rewritten locally before the mirror ran, the mirror still applies.
-        let refspec = format!("+{r}:{r}", r = self.ref_name);
+        // Plain (non-force) push: a non-fast-forward update — e.g. after the
+        // source branch was rewritten — is rejected rather than overwriting the
+        // mirror's ref. The mirror then stays put until reconciled by hand.
+        let refspec = format!("{r}:{r}", r = self.ref_name);
 
         // Pass the auth token via git config env vars so it never appears in argv.
         let out = self

@@ -54,7 +54,7 @@ tree:
 
 | Key             | Type  | Required | Purpose                                                        |
 |-----------------|-------|----------|----------------------------------------------------------------|
-| `:mirrors`      | table | no       | Remotes to force-push every updated ref to, keyed by HTTPS URL. Each value names the global `:secrets` entry holding that remote's push token. Empty or absent disables mirroring. |
+| `:mirrors`      | table | no       | Remotes to push every updated ref to, keyed by HTTPS URL. Each value names the global `:secrets` entry holding that remote's push token. Non-fast-forward updates are rejected, not forced. Empty or absent disables mirroring. |
 
 Each remote authenticates with HTTP Basic `token:x-oauth-basic`, which
 GitHub and Gitea both accept for a personal access token. A remote whose
