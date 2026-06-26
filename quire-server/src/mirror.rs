@@ -4,33 +4,14 @@
 
 use std::collections::HashMap;
 
-use quire_core::event::PushEvent;
+use quire_core::event::{PushEvent, PushRef};
 use quire_core::secret::SecretString;
 use thiserror::Error;
 
 use crate::quire::{Quire, Repo};
 
-/// A failure mirroring one ref, carrying where it happened.
-#[derive(Debug, Error)]
-pub enum TargetError {
-    /// Couldn't read `.quire/config.fnl` at the pushed ref.
-    #[error("reading .quire/config.fnl at {ref_name}: {source}")]
-    Config {
-        ref_name: String,
-        #[source]
-        source: crate::Error,
-    },
-
-    /// A push of one ref to one remote failed.
-    #[error("mirroring {} to {}: {cause}", .push.ref_name, .push.url)]
-    Push {
-        push: Push,
-        #[source]
-        cause: PushError,
-    },
-}
-
-/// Why a single mirror push failed, before ref/url context is attached.
+/// Why a single mirror push failed. Ref and remote are added as log fields
+/// at the call site, not carried here.
 #[derive(Debug, Error)]
 pub enum PushError {
     #[error("git rejected the push: {0}")]
@@ -41,6 +22,19 @@ pub enum PushError {
 
     #[error("running git push: {0}")]
     Spawn(#[from] std::io::Error),
+}
+
+/// Why mirroring one ref failed: either its config couldn't be read (so no
+/// remotes were attempted), or one or more of its remotes rejected the push.
+enum MirrorError {
+    Config(crate::Error),
+    Pushes(Vec<PushFailure>),
+}
+
+/// One remote a ref failed to push to.
+struct PushFailure {
+    url: String,
+    cause: PushError,
 }
 
 /// Mirror updated refs to every remote configured for the repo.
@@ -65,153 +59,117 @@ pub fn trigger(quire: &Quire, event: &PushEvent) {
             return;
         }
     };
-    let mirror = Mirror {
-        repo: &repo,
-        secrets: &quire.config.secrets,
-    };
-
-    for push in mirror.plan(event) {
-        if let Err(cause) = mirror.run(&push) {
-            mirror.log_failure(&TargetError::Push { push, cause });
-        }
-    }
-}
-
-/// One mirror push to perform: a ref pushed to a remote, authenticated with
-/// the named secret.
-#[derive(Debug)]
-pub struct Push {
-    ref_name: String,
-    url: String,
-    secret: String,
-}
-
-/// Mirroring bound to one repo and the global secrets it authenticates with.
-struct Mirror<'a> {
-    repo: &'a Repo,
-    secrets: &'a HashMap<String, SecretString>,
-}
-
-impl Mirror<'_> {
-    /// Expand each updated ref into one `Push` per configured mirror. A ref
-    /// whose config cannot be read is logged and contributes no pushes.
-    fn plan(&self, event: &PushEvent) -> Vec<Push> {
-        let mut pushes = Vec::new();
-        for push_ref in event.updated_refs() {
-            match self.repo.repo_config(&push_ref.new_sha) {
-                Ok(config) => pushes.extend(config.mirrors.into_iter().map(|(url, secret)| Push {
-                    ref_name: push_ref.ref_name.clone(),
-                    url,
-                    secret,
-                })),
-                Err(source) => self.log_failure(&TargetError::Config {
-                    ref_name: push_ref.ref_name.clone(),
-                    source,
-                }),
+    let secrets = &quire.config.secrets;
+    for push_ref in event.updated_refs() {
+        if let Err(error) = mirror_ref(&repo, secrets, push_ref) {
+            match error {
+                MirrorError::Config(source) => tracing::error!(
+                    repo = %event.repo,
+                    ref_name = %push_ref.ref_name,
+                    error = &source as &(dyn std::error::Error + 'static),
+                    "mirror: reading config failed",
+                ),
+                MirrorError::Pushes(failures) => {
+                    for failure in failures {
+                        tracing::error!(
+                            repo = %event.repo,
+                            ref_name = %push_ref.ref_name,
+                            mirror_url = %failure.url,
+                            error = &failure.cause as &(dyn std::error::Error + 'static),
+                            "mirror: push failed",
+                        );
+                    }
+                }
             }
         }
-        pushes
     }
+}
 
-    /// Emit one mirror target failure as a `tracing` error so sentry-tracing
-    /// captures it as an individual exception, source chain and all.
-    fn log_failure(&self, error: &TargetError) {
-        tracing::error!(
-            repo = %self.repo.name(),
-            error = error as &(dyn std::error::Error + 'static),
-            "mirror: target failed",
-        );
-    }
-
-    /// Force-push the ref to the remote, reporting why the push failed.
-    fn run(&self, push: &Push) -> Result<(), PushError> {
-        let token = self.resolve_token(&push.secret)?;
-
-        // Force-push the ref to the mirror. The `+` prefix allows rewrites.
-        let refspec = format!("+{r}:{r}", r = push.ref_name);
-
-        // Pass the auth token via git config env vars so it never appears in argv.
-        let out = self
-            .repo
-            .git(&["push", "--porcelain", &push.url, &refspec])
-            .env("GIT_CONFIG_COUNT", "1")
-            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-            .env("GIT_CONFIG_VALUE_0", Self::auth_header(token))
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-            return Err(PushError::Rejected(stderr));
+/// Mirror one updated ref to every remote configured at its new SHA. Attempts
+/// every remote, returning the config-read failure (nothing attempted) or the
+/// failures from each remote that rejected the push. `Ok` if all succeeded; a
+/// ref with no mirrors is a no-op.
+fn mirror_ref(
+    repo: &Repo,
+    secrets: &HashMap<String, SecretString>,
+    push_ref: &PushRef,
+) -> Result<(), MirrorError> {
+    let config = repo
+        .repo_config(&push_ref.new_sha)
+        .map_err(MirrorError::Config)?;
+    let mut failures = Vec::new();
+    for (url, secret) in config.mirrors {
+        if let Err(cause) = mirror_push(repo, secrets, &push_ref.ref_name, &url, &secret) {
+            failures.push(PushFailure { url, cause });
         }
-
-        tracing::info!(ref_name = %push.ref_name, mirror_url = %push.url, "mirror: push succeeded");
+    }
+    if failures.is_empty() {
         Ok(())
+    } else {
+        Err(MirrorError::Pushes(failures))
+    }
+}
+
+/// Push one ref to one mirror remote, reporting why the push failed.
+fn mirror_push(
+    repo: &Repo,
+    secrets: &HashMap<String, SecretString>,
+    ref_name: &str,
+    url: &str,
+    secret: &str,
+) -> Result<(), PushError> {
+    let token = secrets
+        .get(secret)
+        .ok_or_else(|| quire_core::secret::Error::UnknownSecret(secret.to_owned()))?
+        .reveal()?;
+
+    // The `+` prefix lets the remote accept rewrites: if the source branch
+    // was rewritten locally before the mirror ran, the mirror still applies.
+    let refspec = format!("+{r}:{r}", r = ref_name);
+
+    // Pass the auth token via git config env vars so it never appears in argv.
+    let out = repo
+        .git(&["push", "--porcelain", url, &refspec])
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+        .env("GIT_CONFIG_VALUE_0", auth_header(token))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        return Err(PushError::Rejected(stderr));
     }
 
-    /// Resolve a named token from the global secrets map.
-    fn resolve_token(&self, name: &str) -> Result<&str, quire_core::secret::Error> {
-        self.secrets
-            .get(name)
-            .ok_or_else(|| quire_core::secret::Error::UnknownSecret(name.to_string()))?
-            .reveal()
-    }
+    tracing::info!(ref_name = %ref_name, mirror_url = %url, "mirror: push succeeded");
+    Ok(())
+}
 
-    /// Build the HTTP Basic `Authorization` header line for a push token.
-    ///
-    /// Uses the `token:x-oauth-basic` form, which GitHub and Gitea both accept
-    /// for git-over-HTTPS push with a personal access token.
-    fn auth_header(token: &str) -> String {
-        format!(
-            "Authorization: Basic {}",
-            base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                format!("{token}:x-oauth-basic"),
-            )
+/// Build the HTTP Basic `Authorization` header line for a push token.
+///
+/// Uses the `token:x-oauth-basic` form, which GitHub and Gitea both accept
+/// for git-over-HTTPS push with a personal access token.
+fn auth_header(token: &str) -> String {
+    format!(
+        "Authorization: Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            format!("{token}:x-oauth-basic"),
         )
-    }
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `resolve_token` ignores the repo, so any valid `Repo` will do.
-    fn dummy_repo() -> Repo {
-        Repo::new(std::path::Path::new("/srv/repos"), "r.git").unwrap()
-    }
-
     #[test]
     fn auth_header_encodes_token_as_oauth_basic() {
         // base64("tok:x-oauth-basic") == "dG9rOngtb2F1dGgtYmFzaWM=".
         assert_eq!(
-            Mirror::auth_header("tok"),
+            auth_header("tok"),
             "Authorization: Basic dG9rOngtb2F1dGgtYmFzaWM="
         );
-    }
-
-    #[test]
-    fn resolve_token_returns_revealed_secret() {
-        let repo = dummy_repo();
-        let mut secrets = HashMap::new();
-        secrets.insert("gitea-mirror".to_string(), SecretString::from("s3cret"));
-        let mirror = Mirror {
-            repo: &repo,
-            secrets: &secrets,
-        };
-        assert_eq!(mirror.resolve_token("gitea-mirror").unwrap(), "s3cret");
-    }
-
-    #[test]
-    fn resolve_token_errors_on_missing_secret() {
-        let repo = dummy_repo();
-        let secrets = HashMap::new();
-        let mirror = Mirror {
-            repo: &repo,
-            secrets: &secrets,
-        };
-        let err = mirror.resolve_token("absent").unwrap_err();
-        assert!(matches!(err, quire_core::secret::Error::UnknownSecret(name) if name == "absent"));
     }
 }
