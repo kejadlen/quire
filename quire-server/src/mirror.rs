@@ -70,25 +70,11 @@ pub fn trigger(quire: &Quire, event: &PushEvent) {
         secrets: &quire.config.secrets,
     };
 
-    let (pushes, errors) = mirror.plan(event);
-    for error in errors {
-        log_target_failure(&event.repo, &error);
-    }
-    for push in pushes {
+    for push in mirror.plan(event) {
         if let Err(cause) = mirror.run(&push) {
-            log_target_failure(&event.repo, &TargetError::Push { push, cause });
+            mirror.log_failure(&TargetError::Push { push, cause });
         }
     }
-}
-
-/// Emit one mirror target failure as a `tracing` error so sentry-tracing
-/// captures it as an individual exception, source chain and all.
-fn log_target_failure(repo: impl std::fmt::Display, error: &TargetError) {
-    tracing::error!(
-        %repo,
-        error = error as &(dyn std::error::Error + 'static),
-        "mirror: target failed",
-    );
 }
 
 /// One mirror push to perform: a ref pushed to a remote, authenticated with
@@ -108,11 +94,9 @@ struct Mirror<'a> {
 
 impl Mirror<'_> {
     /// Expand each updated ref into one `Push` per configured mirror. A ref
-    /// whose config cannot be read yields a `Config` error and contributes
-    /// no pushes.
-    fn plan(&self, event: &PushEvent) -> (Vec<Push>, Vec<TargetError>) {
+    /// whose config cannot be read is logged and contributes no pushes.
+    fn plan(&self, event: &PushEvent) -> Vec<Push> {
         let mut pushes = Vec::new();
-        let mut errors = Vec::new();
         for push_ref in event.updated_refs() {
             match self.repo.repo_config(&push_ref.new_sha) {
                 Ok(config) => pushes.extend(config.mirrors.into_iter().map(|(url, secret)| Push {
@@ -120,13 +104,23 @@ impl Mirror<'_> {
                     url,
                     secret,
                 })),
-                Err(source) => errors.push(TargetError::Config {
+                Err(source) => self.log_failure(&TargetError::Config {
                     ref_name: push_ref.ref_name.clone(),
                     source,
                 }),
             }
         }
-        (pushes, errors)
+        pushes
+    }
+
+    /// Emit one mirror target failure as a `tracing` error so sentry-tracing
+    /// captures it as an individual exception, source chain and all.
+    fn log_failure(&self, error: &TargetError) {
+        tracing::error!(
+            repo = %self.repo.name(),
+            error = error as &(dyn std::error::Error + 'static),
+            "mirror: target failed",
+        );
     }
 
     /// Force-push the ref to the remote, reporting why the push failed.
