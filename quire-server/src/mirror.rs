@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use miette::Diagnostic;
 use quire_core::event::PushEvent;
 use quire_core::secret::SecretString;
 use thiserror::Error;
@@ -13,7 +12,7 @@ use crate::quire::{Quire, Repo};
 
 /// A mirror failure: either we couldn't get started, or one or more targets
 /// failed after we did.
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error)]
 pub enum MirrorError {
     /// Couldn't resolve the repo from the push event — nothing was attempted.
     #[error(transparent)]
@@ -21,14 +20,11 @@ pub enum MirrorError {
 
     /// One or more mirror targets failed; the rest may have succeeded.
     #[error("mirror: {} target(s) failed", errors.len())]
-    Targets {
-        #[related]
-        errors: Vec<TargetError>,
-    },
+    Targets { errors: Vec<TargetError> },
 }
 
 /// A failure mirroring one ref, carrying where it happened.
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error)]
 pub enum TargetError {
     /// Couldn't read `.quire/config.fnl` at the pushed ref.
     #[error("reading .quire/config.fnl at {ref_name}: {source}")]
@@ -48,7 +44,7 @@ pub enum TargetError {
 }
 
 /// Why a single mirror push failed, before ref/url context is attached.
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error)]
 pub enum PushError {
     #[error("git rejected the push: {0}")]
     Rejected(String),
