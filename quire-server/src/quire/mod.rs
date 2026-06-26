@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -192,7 +192,7 @@ pub struct RepoConfig {
     /// Remotes to mirror every pushed ref to, keyed by remote URL. Each
     /// value names the global `:secrets` entry holding that remote's push
     /// token. Empty disables mirroring.
-    pub mirrors: BTreeMap<String, String>,
+    pub mirrors: HashMap<String, String>,
 }
 
 /// Application runtime context.
