@@ -55,6 +55,7 @@ pub async fn repo_home(
         readme_html,
         recent_runs,
         recent_changes,
+        clone_host: quire.config.host.clone(),
     };
     Ok(render(&tmpl))
 }

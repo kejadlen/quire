@@ -28,6 +28,10 @@ pub struct GlobalConfig {
     /// quire-ci's bootstrap URL.
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Hostname used in the clone URL shown in the repo sidebar.
+    /// E.g. `"quire.local"` renders as `https://quire.local/{repo}.git`.
+    #[serde(default = "default_host")]
+    pub host: String,
     /// CI configuration.
     #[serde(default)]
     pub ci: CiConfig,
@@ -39,6 +43,7 @@ impl Default for GlobalConfig {
             sentry: None,
             secrets: HashMap::new(),
             port: default_port(),
+            host: default_host(),
             ci: CiConfig::default(),
         }
     }
@@ -46,6 +51,10 @@ impl Default for GlobalConfig {
 
 fn default_port() -> u16 {
     3000
+}
+
+fn default_host() -> String {
+    "quire".to_string()
 }
 
 #[derive(serde::Deserialize, Debug, Default, Clone)]

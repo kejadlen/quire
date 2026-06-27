@@ -342,6 +342,7 @@ pub struct RepoHomeTemplate {
     pub recent_runs: Vec<RunListRow>,
     pub recent_changes: Vec<ChangeRow>,
     pub sections: Vec<SectionLink>,
+    pub clone_host: String,
 }
 
 impl RepoHomeTemplate {
@@ -361,6 +362,10 @@ impl RepoHomeTemplate {
             .first()
             .map(|r| r.state_class())
             .unwrap_or("")
+    }
+
+    pub fn clone_url(&self) -> String {
+        format!("https://{}/{}.git", self.clone_host, self.repo)
     }
 }
 

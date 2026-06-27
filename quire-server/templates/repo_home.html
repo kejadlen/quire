@@ -50,7 +50,7 @@
 
     <div class="side-block">
       <div class="side-block-title">Clone</div>
-      <div class="clone-url">https://quire.local/{{ repo }}.git</div>
+      <div class="clone-url">{{ clone_url() }}</div>
     </div>
 
     {% if !recent_runs.is_empty() %}
