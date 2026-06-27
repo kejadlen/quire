@@ -6,8 +6,7 @@ use axum::response::Response;
 use super::super::db;
 use super::super::error::WebError;
 use super::super::templates::{
-    DetailJob, DetailRun, DetailShEvent, RunDetailTemplate, RunListRow, RunListTemplate,
-    nav_sections,
+    self, DetailJob, DetailRun, DetailShEvent, RunListRow, nav_sections,
 };
 use super::render;
 use crate::Quire;
@@ -38,13 +37,13 @@ pub async fn run_list(
         })
         .collect();
 
-    let tmpl = RunListTemplate {
-        sections: nav_sections(&repo_display, "ci", true),
-        repo: repo_display,
-        crumbs: None,
-        runs: template_runs,
-    };
-    Ok(render(&tmpl))
+    let sections = nav_sections(&repo_display, "ci", true);
+    Ok(render(templates::run_list(
+        &repo_display,
+        None,
+        &template_runs,
+        &sections,
+    )))
 }
 
 pub async fn run_detail(
@@ -153,15 +152,15 @@ pub async fn run_detail(
 
     let quire_ci_log = quire_ci_log_handle.await.unwrap_or_default();
 
-    let tmpl = RunDetailTemplate {
-        sections: nav_sections(&repo_display, "ci", true),
-        repo: repo_display,
-        crumbs: None,
-        run: detail_run,
-        jobs: detail_jobs,
-        quire_ci_log,
-    };
-    Ok(render(&tmpl))
+    let sections = nav_sections(&repo_display, "ci", true);
+    Ok(render(templates::run_detail(
+        &repo_display,
+        None,
+        &detail_run,
+        &detail_jobs,
+        &quire_ci_log,
+        &sections,
+    )))
 }
 
 async fn read_log(path: &std::path::Path) -> String {

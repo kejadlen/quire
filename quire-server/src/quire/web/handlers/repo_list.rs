@@ -3,7 +3,7 @@
 use axum::extract::State;
 use axum::response::Response;
 
-use super::super::templates::{ListedRepo, RepoListTemplate};
+use super::super::templates::{self, ListedRepo};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -31,6 +31,5 @@ pub async fn repo_list(State(quire): State<Quire>) -> Response {
         }
     };
 
-    let tmpl = RepoListTemplate { repos };
-    render(&tmpl)
+    render(templates::repo_list(&repos))
 }

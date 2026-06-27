@@ -6,7 +6,7 @@ use axum::response::Response;
 use super::super::auth::Auth;
 use super::super::db;
 use super::super::error::WebError;
-use super::super::templates::{RepoHomeTemplate, RunListRow, nav_sections};
+use super::super::templates::{RunListRow, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -47,14 +47,14 @@ pub async fn repo_home(
     let (head, readme_html, recent_changes) =
         tokio::task::spawn_blocking(move || RepoView::new(&git_repo).read_all(&rd)).await?;
 
-    let tmpl = RepoHomeTemplate {
-        sections: nav_sections(&repo_display, "overview", is_authed),
-        repo: repo_display,
-        crumbs: None,
-        head,
-        readme_html,
-        recent_runs,
-        recent_changes,
-    };
-    Ok(render(&tmpl))
+    let sections = nav_sections(&repo_display, "overview", is_authed);
+    Ok(render(super::super::templates::repo_home(
+        &repo_display,
+        None,
+        head.as_ref(),
+        readme_html.as_deref(),
+        &recent_runs,
+        &recent_changes,
+        &sections,
+    )))
 }

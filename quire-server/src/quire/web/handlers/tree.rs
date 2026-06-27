@@ -7,9 +7,7 @@ use axum::response::{IntoResponse, Response};
 use super::super::auth::Auth;
 use super::super::db;
 use super::super::error::WebError;
-use super::super::templates::{
-    CommitId, Crumb, FileViewTemplate, TreeEntry, TreeEntryKind, TreeTemplate, nav_sections,
-};
+use super::super::templates::{CommitId, Crumb, FileView, TreeEntry, TreeEntryKind, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -64,25 +62,24 @@ async fn tree_or_file_at_path(
     Ok(match result {
         Ok((tree_data, recent_changes)) => {
             let crumbs = build_tree_crumbs(&repo_display, &path);
-            let tmpl = TreeTemplate {
-                sections: nav_sections(&repo_display, "tree", authed),
-                repo: repo_display,
-                crumbs: Some(crumbs),
-                path,
-                bookmark: tree_data.bookmark,
-                head: tree_data.head,
-                entries: tree_data.entries,
-                recent_changes,
-            };
-            render(&tmpl)
+            let sections = nav_sections(&repo_display, "tree", authed);
+            render(super::super::templates::tree(
+                &repo_display,
+                Some(&crumbs),
+                &sections,
+                &path,
+                &tree_data.bookmark,
+                &tree_data.head,
+                &tree_data.entries,
+                &recent_changes,
+            ))
         }
         Err(file_data) => {
             let crumbs = build_file_crumbs(&repo_display, &path);
+            let sections = nav_sections(&repo_display, "tree", authed);
             let line_nums: Vec<usize> = (1..=file_data.line_count).collect();
-            let tmpl = FileViewTemplate {
-                sections: nav_sections(&repo_display, "tree", authed),
+            let data = FileView {
                 repo: repo_display.clone(),
-                crumbs: Some(crumbs),
                 path,
                 bookmark: file_data.bookmark,
                 sha_short: file_data.head.sha_short().to_string(),
@@ -103,7 +100,11 @@ async fn tree_or_file_at_path(
                 line_nums,
                 lines: file_data.lines,
             };
-            render(&tmpl)
+            render(super::super::templates::file_view(
+                &data,
+                &sections,
+                Some(&crumbs),
+            ))
         }
     })
 }
