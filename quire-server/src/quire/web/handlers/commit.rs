@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::super::error::WebError;
-use super::super::templates::{CommitId, CommitParent, CommitTemplate, nav_sections};
+use super::super::templates::{CommitId, CommitParent, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -104,23 +104,27 @@ pub async fn commit_view(
     } else {
         change_id.as_str()
     };
-    let tmpl = CommitTemplate {
-        sections: nav_sections(&repo_display, "log", auth.is_authenticated()),
-        repo: repo_display,
-        crumbs: None,
-        sha: sha.clone(),
-        sha_short,
-        sha_head: nav_id[..nav_id.len().min(4)].to_string(),
-        sha_tail: nav_id[nav_id.len().min(4)..nav_id.len().min(8)].to_string(),
-        author,
-        email,
-        date_relative: super::super::format::format_timestamp_relative(timestamp_ms),
-        date_iso: super::super::format::format_timestamp_iso(timestamp_ms),
-        subject,
-        body,
-        parents,
-        diff,
-        change_id,
-    };
-    Ok(render(&tmpl))
+    let sha_head = &nav_id[..nav_id.len().min(4)];
+    let sha_tail = &nav_id[nav_id.len().min(4)..nav_id.len().min(8)];
+    let sections = nav_sections(&repo_display, "log", auth.is_authenticated());
+    let date_relative = super::super::format::format_timestamp_relative(timestamp_ms);
+    let date_iso = super::super::format::format_timestamp_iso(timestamp_ms);
+    Ok(render(super::super::templates::commit(
+        &repo_display,
+        None,
+        &sections,
+        &sha,
+        &sha_short,
+        sha_head,
+        sha_tail,
+        &author,
+        &email,
+        &date_relative,
+        &date_iso,
+        &subject,
+        &body,
+        &parents,
+        &diff,
+        &change_id,
+    )))
 }

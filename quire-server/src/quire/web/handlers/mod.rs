@@ -15,26 +15,17 @@ pub use repo::repo_home;
 pub use repo_list::repo_list;
 pub use tree::{tree_view, tree_view_path};
 
-use askama::Template;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
+use maud::Markup;
 
-use super::templates::ConfigTemplate;
+use super::templates;
 use crate::Quire;
 
-/// Render a template into an HTML response, returning 500 on render failure.
-pub(super) fn render<T: Template>(tmpl: &T) -> Response {
-    match tmpl.render() {
-        Ok(body) => Html(body).into_response(),
-        Err(e) => {
-            tracing::error!(
-                error = &e as &(dyn std::error::Error + 'static),
-                "template render failed"
-            );
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
-    }
+/// Render a Maud Markup value into an HTTP response.
+pub(super) fn render(markup: Markup) -> Response {
+    markup.into_response()
 }
 
 /// Serve the compiled-in stylesheet.
@@ -46,12 +37,17 @@ pub async fn stylesheet() -> Response {
         .into_response()
 }
 
+/// Serve the compiled-in quire Alpine.js component.
+pub async fn quire_app_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../../../../static/quire-app.js"),
+    )
+        .into_response()
+}
+
 pub async fn config(State(quire): State<Quire>) -> Response {
-    let tmpl = ConfigTemplate {
-        crumbs: None,
-        config: quire.config.clone(),
-    };
-    render(&tmpl)
+    render(templates::config(None, &quire.config))
 }
 
 #[cfg(test)]
