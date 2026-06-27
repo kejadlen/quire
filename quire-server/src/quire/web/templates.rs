@@ -737,6 +737,7 @@ pub fn config(crumbs: Option<&[Crumb]>, cfg: &crate::GlobalConfig) -> Markup {
 
 // ── Tree view ─────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub fn tree(
     repo: &str,
     crumbs: Option<&[Crumb]>,
