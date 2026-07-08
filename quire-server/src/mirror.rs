@@ -25,9 +25,21 @@ pub enum PushError {
 }
 
 /// One remote a ref failed to push to.
-struct PushFailure {
-    url: String,
-    cause: PushError,
+#[derive(Debug)]
+pub struct PushFailure {
+    pub url: String,
+    pub cause: PushError,
+}
+
+/// Outcome of a manual mirror push for one ref: which remotes took it and
+/// which rejected it. Unlike [`trigger`], failures are returned to the
+/// caller rather than logged, so an operator running the command sees them.
+#[derive(Debug)]
+pub struct PushOutcome {
+    /// Mirror URLs that accepted the ref.
+    pub pushed: Vec<String>,
+    /// Mirror URLs that rejected the ref, each with its cause.
+    pub failed: Vec<PushFailure>,
 }
 
 /// Mirror updated refs to every remote configured for the repo.
@@ -77,6 +89,72 @@ pub fn trigger(quire: &Quire, event: &PushEvent) {
             }
         }
     }
+}
+
+/// Mirror a single named ref to every remote configured for the repo.
+///
+/// Resolves `ref_name` (a full ref, e.g. `refs/heads/main`) to its current
+/// commit, reads the `:mirrors` table from `.quire/config.fnl` at that SHA,
+/// and pushes the ref non-force to each target — the same machinery as the
+/// push-event path in [`trigger`], driven by hand instead of a push.
+///
+/// The ref must exist; a missing ref is an error rather than a no-op, since
+/// an operator naming a ref expects it to be there. A repo with no mirrors
+/// configured yields an empty [`PushOutcome`].
+pub fn push_ref(
+    quire: &Quire,
+    repo_name: &str,
+    ref_name: &str,
+) -> Result<PushOutcome, crate::Error> {
+    let repo = quire.repo(repo_name)?;
+
+    let sha = resolve_ref(&repo, ref_name)?.ok_or_else(|| crate::Error::RefNotFound {
+        repo: repo_name.to_owned(),
+        ref_name: ref_name.to_owned(),
+    })?;
+
+    let push_ref = PushRef {
+        ref_name: ref_name.to_owned(),
+        old_sha: String::new(),
+        new_sha: sha,
+    };
+
+    let mirror = Mirror::new(quire, &repo, &push_ref)?;
+
+    match mirror.push_all() {
+        Ok(()) => Ok(PushOutcome {
+            pushed: mirror.mirrors.keys().cloned().collect(),
+            failed: Vec::new(),
+        }),
+        Err(failed) => {
+            let pushed = mirror
+                .mirrors
+                .keys()
+                .filter(|url| !failed.iter().any(|f| &f.url == *url))
+                .cloned()
+                .collect();
+            Ok(PushOutcome { pushed, failed })
+        }
+    }
+}
+
+/// Resolve a ref to its current commit SHA, or `None` if it doesn't exist.
+///
+/// `Err` is reserved for a failure to run git at all; a ref that simply
+/// isn't present is `Ok(None)`.
+fn resolve_ref(repo: &Repo, ref_name: &str) -> Result<Option<String>, std::io::Error> {
+    let out = repo
+        .git(&["rev-parse", "--verify", "--quiet", ref_name])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()?;
+
+    if !out.status.success() {
+        return Ok(None);
+    }
+
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    Ok((!sha.is_empty()).then_some(sha))
 }
 
 /// One updated ref's mirroring plan: the remotes to push it to, plus the repo
@@ -171,6 +249,8 @@ impl<'a> Mirror<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -180,5 +260,72 @@ mod tests {
             Mirror::auth_header("tok"),
             "Authorization: Basic dG9rOngtb2F1dGgtYmFzaWM="
         );
+    }
+
+    /// Run a git subcommand in `cwd` with hermetic env, panicking on failure.
+    fn git_in(cwd: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git command");
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+
+    /// Build a Quire whose `foo.git` bare repo has one commit on `main`,
+    /// optionally carrying a `.quire/config.fnl`. Returns the tempdir (kept
+    /// alive for the test's duration), the Quire, and the repo name.
+    fn quire_with_repo(config: Option<&str>) -> (tempfile::TempDir, Quire, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let quire = Quire::load(dir.path().to_path_buf()).expect("load");
+        let name = "foo.git";
+        let bare = quire.repos_dir().join(name);
+        fs_err::create_dir_all(bare.parent().expect("parent")).expect("mkdir repos");
+        git_in(
+            dir.path(),
+            &["init", "--bare", "-b", "main", &bare.to_string_lossy()],
+        );
+
+        let work = tempfile::tempdir().expect("workdir");
+        git_in(work.path(), &["init", "-q", "-b", "main"]);
+        if let Some(cfg) = config {
+            let quire_dir = work.path().join(".quire");
+            fs_err::create_dir_all(&quire_dir).expect("mkdir .quire");
+            fs_err::write(quire_dir.join("config.fnl"), cfg).expect("write config");
+        } else {
+            fs_err::write(work.path().join("README"), "hi").expect("write readme");
+        }
+        git_in(work.path(), &["add", "."]);
+        git_in(work.path(), &["commit", "-q", "-m", "init"]);
+        git_in(
+            work.path(),
+            &["push", "-q", &bare.to_string_lossy(), "main"],
+        );
+
+        (dir, quire, name.to_string())
+    }
+
+    #[test]
+    fn push_ref_errors_when_ref_missing() {
+        let (_dir, quire, repo) = quire_with_repo(None);
+        let err = push_ref(&quire, &repo, "refs/heads/nope").expect_err("should error");
+        assert!(
+            matches!(err, crate::Error::RefNotFound { .. }),
+            "expected RefNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn push_ref_is_empty_outcome_without_mirrors() {
+        let (_dir, quire, repo) = quire_with_repo(None);
+        let outcome = push_ref(&quire, &repo, "refs/heads/main").expect("should succeed");
+        assert!(outcome.pushed.is_empty());
+        assert!(outcome.failed.is_empty());
     }
 }

@@ -68,6 +68,12 @@ enum Commands {
         #[command(subcommand)]
         command: CiCommands,
     },
+
+    /// Mirror operations.
+    Mirror {
+        #[command(subcommand)]
+        command: MirrorCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -102,6 +108,17 @@ enum CiCommands {
         /// Commit SHA to run. Defaults to the working-copy revision.
         #[arg(short, long)]
         sha: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MirrorCommands {
+    /// Push a single ref to the repo's configured mirrors.
+    Push {
+        /// Repository name (e.g. foo.git or work/foo.git).
+        repo: String,
+        /// Full ref name to mirror (e.g. refs/heads/main).
+        r#ref: String,
     },
 }
 
@@ -174,6 +191,11 @@ async fn main() -> Result<()> {
         Commands::Ci { command } => match command {
             CiCommands::Validate { sha } => commands::ci::validate(sha.as_deref()).await?,
             CiCommands::Run { sha } => commands::ci::run(sha.as_deref()).await?,
+        },
+        Commands::Mirror { command } => match command {
+            MirrorCommands::Push { repo, r#ref } => {
+                commands::mirror::push(&quire, &repo, &r#ref).await?
+            }
         },
     }
 

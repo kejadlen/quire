@@ -15,6 +15,9 @@ pub enum Error {
     #[error("repository not found: {0}")]
     RepoNotFound(String),
 
+    #[error("ref not found in {repo}: {ref_name}")]
+    RefNotFound { repo: String, ref_name: String },
+
     #[error(transparent)]
     #[diagnostic(transparent)]
     Fennel(#[from] Box<FennelError>),
