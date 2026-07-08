@@ -127,7 +127,7 @@ impl std::fmt::Display for RepoName {
 pub struct Repo {
     /// The quire root directory (e.g. `/var/quire`).
     quire_root: PathBuf,
-    name: String,
+    name: RepoName,
 }
 
 impl Repo {
@@ -138,7 +138,7 @@ impl Repo {
     pub fn new(repos_base: &Path, name: &RepoName) -> Self {
         Self {
             quire_root: repos_base.parent().unwrap_or(repos_base).to_path_buf(),
-            name: name.as_str().to_string(),
+            name: name.clone(),
         }
     }
 
@@ -155,12 +155,12 @@ impl Repo {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.quire_root.join("repos").join(&self.name)
+        self.quire_root.join("repos").join(self.name.as_str())
     }
 
     /// The repo name relative to the repos directory (e.g. `foo.git`).
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     pub fn exists(&self) -> bool {
@@ -203,7 +203,7 @@ impl Repo {
 
     /// The base directory for CI runs (`runs/<repo>/`).
     pub fn runs_base(&self) -> PathBuf {
-        self.quire_root.join("runs").join(&self.name)
+        self.quire_root.join("runs").join(self.name.as_str())
     }
 
     /// Access CI runs for this repo.
