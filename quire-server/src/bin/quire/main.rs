@@ -6,6 +6,7 @@ use clap_complete::Shell;
 use miette::IntoDiagnostic;
 use miette::Result;
 use quire::Quire;
+use quire::quire::RepoName;
 use quire_core::telemetry::{self, FmtMode, MietteLayer};
 
 const VERSION: &str = env!("QUIRE_VERSION");
@@ -81,7 +82,7 @@ enum RepoCommands {
     /// Create a new bare repository.
     New {
         /// Repository name (e.g. foo.git or work/foo.git).
-        name: String,
+        name: RepoName,
     },
 
     /// List all repositories.
@@ -90,7 +91,7 @@ enum RepoCommands {
     /// Delete a repository.
     Rm {
         /// Repository name (e.g. foo.git or work/foo.git).
-        name: String,
+        name: RepoName,
     },
 }
 
@@ -116,7 +117,7 @@ enum MirrorCommands {
     /// Push a single ref to the repo's configured mirrors.
     Push {
         /// Repository name (e.g. foo.git or work/foo.git).
-        repo: String,
+        repo: RepoName,
         /// Full ref name to mirror (e.g. refs/heads/main).
         r#ref: String,
     },

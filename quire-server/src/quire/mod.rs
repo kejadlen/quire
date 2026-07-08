@@ -65,6 +65,62 @@ pub struct CiConfig {
     pub executor: Executor,
 }
 
+/// A validated repository name.
+///
+/// Implements `FromStr` so clap rejects malformed names at parse time,
+/// before `Quire` is loaded. Resolve to a `Repo` with `Quire::repo`.
+#[derive(Clone, Debug)]
+pub struct RepoName(String);
+
+impl RepoName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for RepoName {
+    type Err = RepoNameError;
+
+    /// Validate a repository name.
+    ///
+    /// Allows at most one level of grouping (e.g. `foo.git` or `work/foo.git`).
+    /// Rejects path traversal, missing `.git` suffix, empty segments, and
+    /// reserved path components.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(RepoNameError::Empty);
+        }
+        if s.contains("..") {
+            return Err(RepoNameError::Invalid(s.to_string()));
+        }
+        if !s.ends_with(".git") {
+            return Err(RepoNameError::MissingGitSuffix(s.to_string()));
+        }
+        if s.contains("//") {
+            return Err(RepoNameError::Invalid(s.to_string()));
+        }
+
+        let segments = s.split('/').collect::<Vec<_>>();
+        if segments.len() > 2 {
+            return Err(RepoNameError::TooManySegments(s.to_string()));
+        }
+
+        for seg in &segments {
+            if seg.is_empty() || *seg == "." || *seg == ".." || *seg == ".git" {
+                return Err(RepoNameError::Invalid(s.to_string()));
+            }
+        }
+
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl std::fmt::Display for RepoName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A resolved repository path.
 ///
 /// Created by `Quire::repo` after validating the name.
@@ -75,17 +131,15 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Validate a repository name and create a `Repo` at the given path.
+    /// Create a `Repo` at the given path from an already-validated name.
     ///
-    /// Allows at most one level of grouping (e.g. `foo.git` or `work/foo.git`).
-    /// Rejects path traversal, missing `.git` suffix, empty segments, and
-    /// reserved path components.
-    pub fn new(repos_base: &Path, name: &str) -> Result<Self> {
-        Self::validate_name(name)?;
-        Ok(Self {
+    /// Infallible: a `RepoName` cannot exist unless it passed validation,
+    /// so there is no unvalidated path to a `Repo`.
+    pub fn new(repos_base: &Path, name: &RepoName) -> Self {
+        Self {
             quire_root: repos_base.parent().unwrap_or(repos_base).to_path_buf(),
-            name: name.to_string(),
-        })
+            name: name.as_str().to_string(),
+        }
     }
 
     /// Create a `Repo` from an already-resolved filesystem path.
@@ -96,40 +150,8 @@ impl Repo {
         let Ok(relative) = path.strip_prefix(repos_base) else {
             return Err(RepoNameError::PathOutsideBase(path.display().to_string()).into());
         };
-        let name = relative.to_string_lossy();
-        Self::validate_name(&name)?;
-        Ok(Self {
-            quire_root: repos_base.parent().unwrap_or(repos_base).to_path_buf(),
-            name: name.to_string(),
-        })
-    }
-
-    fn validate_name(name: &str) -> std::result::Result<(), RepoNameError> {
-        if name.is_empty() {
-            return Err(RepoNameError::Empty);
-        }
-        if name.contains("..") {
-            return Err(RepoNameError::Invalid(name.to_string()));
-        }
-        if !name.ends_with(".git") {
-            return Err(RepoNameError::MissingGitSuffix(name.to_string()));
-        }
-        if name.contains("//") {
-            return Err(RepoNameError::Invalid(name.to_string()));
-        }
-
-        let segments = name.split('/').collect::<Vec<_>>();
-        if segments.len() > 2 {
-            return Err(RepoNameError::TooManySegments(name.to_string()));
-        }
-
-        for seg in &segments {
-            if seg.is_empty() || *seg == "." || *seg == ".." || *seg == ".git" {
-                return Err(RepoNameError::Invalid(name.to_string()));
-            }
-        }
-
-        Ok(())
+        let name: RepoName = relative.to_string_lossy().parse()?;
+        Ok(Self::new(repos_base, &name))
     }
 
     pub fn path(&self) -> PathBuf {
@@ -273,7 +295,8 @@ impl Quire {
     /// Returns an error if the name fails validation or the repo does not
     /// exist on disk.
     pub fn repo(&self, name: &str) -> Result<Repo> {
-        let repo = Repo::new(&self.repos_dir(), name)?;
+        let name: RepoName = name.parse()?;
+        let repo = Repo::new(&self.repos_dir(), &name);
         if repo.exists() {
             Ok(repo)
         } else {
@@ -302,15 +325,10 @@ impl Quire {
             .filter(|entry| entry.file_type().is_dir())
             .filter_map(|entry| {
                 let name = entry.path().strip_prefix(&repos_dir).ok()?;
-                let name = name.to_string_lossy();
-                if name.ends_with(".git") {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
+                name.to_string_lossy().parse::<RepoName>().ok()
             })
             .map(|name| Repo::new(&repos_dir, &name))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
         repos.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(repos.into_iter())
@@ -346,16 +364,16 @@ mod tests {
     }
 
     #[test]
-    fn repo_valid() {
-        let q = quire();
-        assert!(Repo::new(&q.repos_dir(), "foo.git").is_ok());
-        assert!(Repo::new(&q.repos_dir(), "work/foo.git").is_ok());
+    fn repo_name_valid() {
+        assert!("foo.git".parse::<RepoName>().is_ok());
+        assert!("work/foo.git".parse::<RepoName>().is_ok());
     }
 
     #[test]
     fn repo_name_returns_name() {
         let q = quire();
-        let repo = Repo::new(&q.repos_dir(), "foo.git").unwrap();
+        let name: RepoName = "foo.git".parse().unwrap();
+        let repo = Repo::new(&q.repos_dir(), &name);
         assert_eq!(repo.name(), "foo.git");
     }
 
@@ -389,8 +407,9 @@ mod tests {
     #[test]
     fn repo_resolves_path() {
         let q = quire();
+        let name: RepoName = "foo.git".parse().unwrap();
         assert_eq!(
-            Repo::new(&q.repos_dir(), "foo.git").unwrap().path(),
+            Repo::new(&q.repos_dir(), &name).path(),
             Path::new("/var/quire/repos/foo.git")
         );
     }

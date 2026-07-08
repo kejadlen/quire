@@ -3,10 +3,10 @@ use std::process::Command;
 use miette::{IntoDiagnostic, Result, ensure};
 
 use quire::Quire;
-use quire::quire::Repo;
+use quire::quire::{Repo, RepoName};
 
-pub async fn new(quire: &Quire, name: &str) -> Result<()> {
-    let repo = Repo::new(&quire.repos_dir(), name)?;
+pub async fn new(quire: &Quire, name: &RepoName) -> Result<()> {
+    let repo = Repo::new(&quire.repos_dir(), name);
     ensure!(!repo.exists(), "repository already exists: {name}");
 
     // Create parent directory for grouped repos (e.g. work/foo.git).
@@ -15,7 +15,7 @@ pub async fn new(quire: &Quire, name: &str) -> Result<()> {
     }
 
     let status = Command::new("git")
-        .args(["init", "--bare", "--initial-branch=main", name])
+        .args(["init", "--bare", "--initial-branch=main", name.as_str()])
         .current_dir(quire.repos_dir())
         .status()
         .into_diagnostic()?;
@@ -35,8 +35,8 @@ pub async fn list(quire: &Quire) -> Result<()> {
     Ok(())
 }
 
-pub async fn rm(quire: &Quire, name: &str) -> Result<()> {
-    let repo = quire.repo(name)?;
+pub async fn rm(quire: &Quire, name: &RepoName) -> Result<()> {
+    let repo = quire.repo(name.as_str())?;
 
     fs_err::remove_dir_all(repo.path()).into_diagnostic()?;
 
