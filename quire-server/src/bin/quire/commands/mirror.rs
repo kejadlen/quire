@@ -8,7 +8,7 @@ use quire::quire::RepoName;
 ///
 /// Exits non-zero if any mirror rejects the ref, even when others accept it.
 pub async fn push(quire: &Quire, repo: &RepoName, ref_name: &str) -> Result<()> {
-    let outcome = mirror::push_ref(quire, repo.as_str(), ref_name)?;
+    let outcome = mirror::push_ref(quire, repo, ref_name)?;
 
     if outcome.pushed.is_empty() && outcome.failed.is_empty() {
         println!("no mirrors configured for {repo}");

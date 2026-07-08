@@ -78,6 +78,14 @@ impl RepoName {
     }
 }
 
+impl std::ops::Deref for RepoName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl std::str::FromStr for RepoName {
     type Err = RepoNameError;
 

@@ -36,7 +36,7 @@ pub async fn list(quire: &Quire) -> Result<()> {
 }
 
 pub async fn rm(quire: &Quire, name: &RepoName) -> Result<()> {
-    let repo = quire.repo(name.as_str())?;
+    let repo = quire.repo(name)?;
 
     fs_err::remove_dir_all(repo.path()).into_diagnostic()?;
 
