@@ -30,7 +30,7 @@ pub async fn run(quire: &Quire, command: Vec<String>) -> Result<()> {
     } else if cmd == "quire" {
         dispatch_quire(&words[1..])
     } else {
-        bail!("unsupported command: {cmd}")
+        bail!("unsupported command: {cmd}");
     }
 }
 
@@ -58,7 +58,7 @@ fn dispatch_git(quire: &Quire, git_cmd: &str, args: &[String]) -> Result<()> {
         .current_dir(repo.path())
         .exec();
 
-    bail!("exec failed: {err}")
+    bail!("exec failed: {err}");
 }
 
 fn dispatch_quire(args: &[String]) -> Result<()> {
@@ -68,5 +68,5 @@ fn dispatch_quire(args: &[String]) -> Result<()> {
 
     tracing::info!(subcmd = "repo", "dispatching quire command");
     let err = Command::new("quire").arg("repo").args(&args[1..]).exec();
-    bail!("exec failed: {err}")
+    bail!("exec failed: {err}");
 }
