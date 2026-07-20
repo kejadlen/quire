@@ -72,17 +72,17 @@ pub struct CiConfig {
 #[derive(Clone, Debug)]
 pub struct RepoName(String);
 
-impl RepoName {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 impl std::ops::Deref for RepoName {
     type Target = str;
 
     fn deref(&self) -> &str {
         &self.0
+    }
+}
+
+impl AsRef<Path> for RepoName {
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.0)
     }
 }
 
@@ -163,12 +163,12 @@ impl Repo {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.quire_root.join("repos").join(self.name.as_str())
+        self.quire_root.join("repos").join(&self.name)
     }
 
     /// The repo name relative to the repos directory (e.g. `foo.git`).
     pub fn name(&self) -> &str {
-        self.name.as_str()
+        &self.name
     }
 
     pub fn exists(&self) -> bool {
@@ -211,7 +211,7 @@ impl Repo {
 
     /// The base directory for CI runs (`runs/<repo>/`).
     pub fn runs_base(&self) -> PathBuf {
-        self.quire_root.join("runs").join(self.name.as_str())
+        self.quire_root.join("runs").join(&self.name)
     }
 
     /// Access CI runs for this repo.
