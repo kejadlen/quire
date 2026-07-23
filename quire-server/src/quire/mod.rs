@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+
+use camino::{Utf8Path, Utf8PathBuf};
 
 pub mod web;
 
@@ -80,9 +81,9 @@ impl std::ops::Deref for RepoName {
     }
 }
 
-impl AsRef<Path> for RepoName {
-    fn as_ref(&self) -> &Path {
-        Path::new(&self.0)
+impl AsRef<Utf8Path> for RepoName {
+    fn as_ref(&self) -> &Utf8Path {
+        Utf8Path::new(&self.0)
     }
 }
 
@@ -134,7 +135,7 @@ impl std::fmt::Display for RepoName {
 /// Created by `Quire::repo` after validating the name.
 pub struct Repo {
     /// The quire root directory (e.g. `/var/quire`).
-    quire_root: PathBuf,
+    quire_root: Utf8PathBuf,
     name: RepoName,
 }
 
@@ -143,7 +144,7 @@ impl Repo {
     ///
     /// Infallible: a `RepoName` cannot exist unless it passed validation,
     /// so there is no unvalidated path to a `Repo`.
-    pub fn new(repos_base: &Path, name: &RepoName) -> Self {
+    pub fn new(repos_base: &Utf8Path, name: &RepoName) -> Self {
         Self {
             quire_root: repos_base.parent().unwrap_or(repos_base).to_path_buf(),
             name: name.clone(),
@@ -154,15 +155,15 @@ impl Repo {
     ///
     /// Verifies the path falls under `base` and passes name validation.
     /// Used by hooks that receive `GIT_DIR` from git.
-    pub fn from_path(repos_base: &Path, path: &Path) -> Result<Self> {
+    pub fn from_path(repos_base: &Utf8Path, path: &Utf8Path) -> Result<Self> {
         let Ok(relative) = path.strip_prefix(repos_base) else {
-            return Err(RepoNameError::PathOutsideBase(path.display().to_string()).into());
+            return Err(RepoNameError::PathOutsideBase(path.to_string()).into());
         };
-        let name: RepoName = relative.to_string_lossy().parse()?;
+        let name: RepoName = relative.as_str().parse()?;
         Ok(Self::new(repos_base, &name))
     }
 
-    pub fn path(&self) -> PathBuf {
+    pub fn path(&self) -> Utf8PathBuf {
         self.quire_root.join("repos").join(&self.name)
     }
 
@@ -210,12 +211,12 @@ impl Repo {
     }
 
     /// The base directory for CI runs (`runs/<repo>/`).
-    pub fn runs_base(&self) -> PathBuf {
+    pub fn runs_base(&self) -> Utf8PathBuf {
         self.quire_root.join("runs").join(&self.name)
     }
 
     /// Access CI runs for this repo.
-    pub fn runs(&self, db_path: &Path) -> Runs {
+    pub fn runs(&self, db_path: &Utf8Path) -> Runs {
         Runs::new(
             db_path.to_path_buf(),
             self.name().to_string(),
@@ -240,7 +241,7 @@ pub struct RepoConfig {
 /// Commands receive a `&Quire` instead of threading config around.
 #[derive(Clone)]
 pub struct Quire {
-    base_dir: PathBuf,
+    base_dir: Utf8PathBuf,
     pub config: GlobalConfig,
     db_pool: Arc<OnceLock<Mutex<rusqlite::Connection>>>,
 }
@@ -249,12 +250,12 @@ impl Quire {
     /// Load config from `base_dir/config.fnl` and create a `Quire` rooted there.
     ///
     /// Returns built-in defaults if the file is absent; propagates parse errors.
-    pub fn load(base_dir: PathBuf) -> Result<Self> {
+    pub fn load(base_dir: Utf8PathBuf) -> Result<Self> {
         let config_path = base_dir.join("config.fnl");
         let config = match Fennel::load_config::<GlobalConfig>(&config_path) {
             Ok(config) => config,
             Err(FennelError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::warn!(path = %config_path.display(), "config file not found, using defaults");
+                tracing::warn!(path = %config_path, "config file not found, using defaults");
                 GlobalConfig::default()
             }
             Err(e) => return Err(e.into()),
@@ -266,23 +267,23 @@ impl Quire {
         })
     }
 
-    pub fn base_dir(&self) -> &Path {
+    pub fn base_dir(&self) -> &Utf8Path {
         &self.base_dir
     }
 
-    pub fn repos_dir(&self) -> PathBuf {
+    pub fn repos_dir(&self) -> Utf8PathBuf {
         self.base_dir.join("repos")
     }
 
-    pub fn config_path(&self) -> PathBuf {
+    pub fn config_path(&self) -> Utf8PathBuf {
         self.base_dir.join("config.fnl")
     }
 
-    pub fn db_path(&self) -> PathBuf {
+    pub fn db_path(&self) -> Utf8PathBuf {
         self.base_dir.join("quire.db")
     }
 
-    pub fn socket_path(&self) -> PathBuf {
+    pub fn socket_path(&self) -> Utf8PathBuf {
         self.base_dir.join("server.sock")
     }
 
@@ -315,7 +316,7 @@ impl Quire {
     /// Resolve a filesystem path to a `Repo`.
     ///
     /// Delegates to `Repo::from_path` for path and name validation.
-    pub fn repo_from_path(&self, path: &Path) -> Result<Repo> {
+    pub fn repo_from_path(&self, path: &Utf8Path) -> Result<Repo> {
         Repo::from_path(&self.repos_dir(), path)
     }
 
@@ -333,7 +334,7 @@ impl Quire {
             .filter(|entry| entry.file_type().is_dir())
             .filter_map(|entry| {
                 let name = entry.path().strip_prefix(&repos_dir).ok()?;
-                name.to_string_lossy().parse::<RepoName>().ok()
+                name.to_str()?.parse::<RepoName>().ok()
             })
             .map(|name| Repo::new(&repos_dir, &name))
             .collect::<Vec<_>>();
@@ -347,7 +348,7 @@ impl Quire {
 impl Default for Quire {
     fn default() -> Self {
         Self {
-            base_dir: PathBuf::from("/var/quire"),
+            base_dir: Utf8PathBuf::from("/var/quire"),
             config: GlobalConfig::default(),
             db_pool: Arc::new(OnceLock::new()),
         }
@@ -365,10 +366,10 @@ mod tests {
     #[test]
     fn default_paths() {
         let q = Quire::default();
-        assert_eq!(q.base_dir(), Path::new("/var/quire"));
-        assert_eq!(q.repos_dir(), PathBuf::from("/var/quire/repos"));
-        assert_eq!(q.config_path(), PathBuf::from("/var/quire/config.fnl"));
-        assert_eq!(q.socket_path(), PathBuf::from("/var/quire/server.sock"));
+        assert_eq!(q.base_dir(), Utf8Path::new("/var/quire"));
+        assert_eq!(q.repos_dir(), Utf8PathBuf::from("/var/quire/repos"));
+        assert_eq!(q.config_path(), Utf8PathBuf::from("/var/quire/config.fnl"));
+        assert_eq!(q.socket_path(), Utf8PathBuf::from("/var/quire/server.sock"));
     }
 
     #[test]
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn repos_lists_bare_repos() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let repos_dir = q.repos_dir();
 
@@ -406,7 +407,7 @@ mod tests {
 
     #[test]
     fn repos_empty_when_no_dirs() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let repos: Vec<_> = q.repos().expect("repos").collect();
         assert!(repos.is_empty());
@@ -418,7 +419,7 @@ mod tests {
         let name: RepoName = "foo.git".parse().unwrap();
         assert_eq!(
             Repo::new(&q.repos_dir(), &name).path(),
-            Path::new("/var/quire/repos/foo.git")
+            Utf8Path::new("/var/quire/repos/foo.git")
         );
     }
 
@@ -462,7 +463,7 @@ mod tests {
 
     #[test]
     fn repo_from_path_valid() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let path = dir.path().join("repos").join("foo.git");
         let repo = q.repo_from_path(&path).expect("should resolve");
@@ -471,15 +472,15 @@ mod tests {
 
     #[test]
     fn repo_from_path_outside_repos() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let q = Quire::load(dir.path().to_path_buf()).expect("load");
-        let path = PathBuf::from("/tmp/evil.git");
+        let path = Utf8PathBuf::from("/tmp/evil.git");
         assert!(q.repo_from_path(&path).is_err());
     }
 
     #[test]
     fn repo_from_path_rejects_bad_name() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let q = Quire::load(dir.path().to_path_buf()).expect("load");
         let path = dir.path().join("repos").join("foo"); // missing .git
         assert!(q.repo_from_path(&path).is_err());
@@ -487,7 +488,7 @@ mod tests {
 
     #[test]
     fn global_config_ci_defaults() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
         let q = Quire::load(dir.path().to_path_buf()).expect("should load");
@@ -497,7 +498,7 @@ mod tests {
 
     #[test]
     fn global_config_parses_custom_port() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         fs_err::write(dir.path().join("config.fnl"), r#"{:port 4000}"#).expect("write");
 
         let q = Quire::load(dir.path().to_path_buf()).expect("should load");
@@ -506,7 +507,7 @@ mod tests {
 
     #[test]
     fn global_config_loads_from_fennel_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
         let q = Quire::load(dir.path().to_path_buf()).expect("should load");
@@ -515,7 +516,7 @@ mod tests {
 
     #[test]
     fn global_config_missing_file_uses_defaults() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
 
         let q = Quire::load(dir.path().to_path_buf()).expect("missing file should use defaults");
         assert_eq!(q.config.port, 3000);
@@ -525,7 +526,7 @@ mod tests {
 
     #[test]
     fn global_config_loads_with_sentry() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         fs_err::write(
             dir.path().join("config.fnl"),
             r#"{:sentry {:dsn "https://key@sentry.io/123"}}"#,
@@ -539,7 +540,7 @@ mod tests {
 
     #[test]
     fn global_config_sentry_is_optional() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
         let q = Quire::load(dir.path().to_path_buf()).expect("should load");
@@ -548,7 +549,7 @@ mod tests {
 
     #[test]
     fn global_config_secrets_default_empty() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         fs_err::write(dir.path().join("config.fnl"), "{}").expect("write");
 
         let q = Quire::load(dir.path().to_path_buf()).expect("should load");
@@ -557,7 +558,7 @@ mod tests {
 
     #[test]
     fn global_config_loads_secrets_map() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let secret_file = dir.path().join("gh_token");
         fs_err::write(&secret_file, "ghp_from_file\n").expect("write secret");
         fs_err::write(
@@ -565,7 +566,7 @@ mod tests {
             format!(
                 r#"{{:secrets {{:github_token {{:file "{}"}}
                    :slack_webhook "https://hooks.slack.com/abc"}}}}"#,
-                secret_file.display()
+                secret_file
             ),
         )
         .expect("write");
@@ -612,7 +613,7 @@ mod tests {
     }
 
     /// Helper: run a git subcommand in `cwd` with hermetic env, panicking on failure.
-    fn git_in(cwd: &Path, args: &[&str]) {
+    fn git_in(cwd: &Utf8Path, args: &[&str]) {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)

@@ -21,7 +21,7 @@ fn shows_version() {
 /// Test that a push event round-trips through a Unix socket.
 #[test]
 fn push_event_round_trips_through_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = camino_tempfile::tempdir().expect("tempdir");
     let socket_path = dir.path().join("server.sock");
 
     let listener = UnixListener::bind(&socket_path).expect("bind");
@@ -70,7 +70,7 @@ fn push_event_round_trips_through_socket() {
 /// Test that multiple ref updates round-trip correctly.
 #[test]
 fn push_event_multiple_refs_round_trip() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = camino_tempfile::tempdir().expect("tempdir");
     let socket_path = dir.path().join("server.sock");
     let listener = UnixListener::bind(&socket_path).expect("bind");
 

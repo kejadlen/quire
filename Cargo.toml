@@ -4,11 +4,13 @@ resolver = "3"
 
 [workspace.dependencies]
 axum = "*"
+camino = { version = "*", features = ["serde1"] }
+camino-tempfile = "*"
 axum-extra = { version = "*", features = ["typed-header", "typed-routing"] }
 tower-http = { version = "*", features = ["trace"] }
 clap = { version = "*", features = ["derive", "env"] }
 base64 = "*"
-facet = "*"
+facet = { version = "*", features = ["camino"] }
 fs-err = "*"
 jiff = { version = "*", features = ["serde"] }
 miette = "*"

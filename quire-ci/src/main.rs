@@ -2,9 +2,9 @@ mod sink;
 
 use std::cell::RefCell;
 use std::io;
-use std::path::PathBuf;
 use std::rc::Rc;
 
+use camino::{Utf8Path, Utf8PathBuf};
 use facet::Facet;
 use figue::{self as args, Driver, FigueBuiltins};
 use miette::{IntoDiagnostic, Result, bail};
@@ -47,7 +47,7 @@ const VERSION: &str = env!("QUIRE_VERSION");
 struct Cli {
     /// Workspace root containing .quire/ci.fnl. Defaults to cwd.
     #[facet(args::named, args::short = 'w', default = ".")]
-    workspace: PathBuf,
+    workspace: Utf8PathBuf,
 
     /// Transport credentials and telemetry settings for
     /// orchestrator-dispatched runs, sourced from `QUIRE__*` env vars:
@@ -106,7 +106,7 @@ enum Commands {
         /// tempdir whose path is printed on stdout at the end of the
         /// run.
         #[facet(args::named, default)]
-        out_dir: Option<PathBuf>,
+        out_dir: Option<Utf8PathBuf>,
 
         /// Run in local mode. Derives commit SHA and ref from `--git-dir`
         /// instead of fetching bootstrap data from the server. Pass
@@ -118,20 +118,20 @@ enum Commands {
         /// `--local` is set; server-dispatched runs receive this via the
         /// bootstrap API instead.
         #[facet(args::named, default)]
-        git_dir: Option<PathBuf>,
+        git_dir: Option<Utf8PathBuf>,
     },
 }
 
 /// RAII wrapper around a tempdir holding captured sh logs. On drop,
 /// prints each log file's contents to stdout, then lets the underlying
-/// [`tempfile::TempDir`] clean up the directory. Drop fires whether
+/// [`camino_tempfile::Utf8TempDir`] clean up the directory. Drop fires whether
 /// the run succeeded or failed.
 struct DumpLogsOnDrop {
-    dir: tempfile::TempDir,
+    dir: camino_tempfile::Utf8TempDir,
 }
 
 impl DumpLogsOnDrop {
-    fn path(&self) -> &std::path::Path {
+    fn path(&self) -> &Utf8Path {
         self.dir.path()
     }
 
@@ -141,21 +141,13 @@ impl DumpLogsOnDrop {
     /// stdout/stderr.
     fn dump(&self) -> std::io::Result<()> {
         let jobs_dir = self.path().join("jobs");
-        let mut jobs: Vec<_> = fs_err::read_dir(&jobs_dir)?
-            .filter_map(Result::ok)
-            .collect();
-        jobs.sort_by_key(|e| e.file_name());
+        let mut jobs: Vec<_> = jobs_dir.read_dir_utf8()?.filter_map(Result::ok).collect();
+        jobs.sort_by(|a, b| a.file_name().cmp(b.file_name()));
         for job in jobs {
-            let mut shes: Vec<_> = fs_err::read_dir(job.path())?
-                .filter_map(Result::ok)
-                .collect();
-            shes.sort_by_key(|e| e.file_name());
+            let mut shes: Vec<_> = job.path().read_dir_utf8()?.filter_map(Result::ok).collect();
+            shes.sort_by(|a, b| a.file_name().cmp(b.file_name()));
             for sh in shes {
-                println!(
-                    "==> {}/{}",
-                    job.file_name().to_string_lossy(),
-                    sh.file_name().to_string_lossy(),
-                );
+                println!("==> {}/{}", job.file_name(), sh.file_name());
                 let contents = fs_err::read_to_string(sh.path())?;
                 for line in contents.lines() {
                     // CRI: "<ts> <stream> <tag> <text>"
@@ -182,7 +174,7 @@ impl Drop for DumpLogsOnDrop {
 enum EventsTarget {
     Null,
     Stdout,
-    File(PathBuf),
+    File(Utf8PathBuf),
 }
 
 impl std::str::FromStr for EventsTarget {
@@ -192,7 +184,7 @@ impl std::str::FromStr for EventsTarget {
         Ok(match s {
             "null" => EventsTarget::Null,
             "stdout" => EventsTarget::Stdout,
-            path => EventsTarget::File(PathBuf::from(path)),
+            path => EventsTarget::File(Utf8PathBuf::from(path)),
         })
     }
 }
@@ -240,7 +232,7 @@ impl RunClient {
     ///
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
-    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, TelemetryContext)> {
+    fn fetch_bootstrap(&self) -> Result<(Utf8PathBuf, RunMeta, TelemetryContext)> {
         let bootstrap: Bootstrap =
             (|| -> reqwest::Result<_> { self.get("bootstrap")?.error_for_status()?.json() })()
                 .into_diagnostic()?;
@@ -308,7 +300,7 @@ fn main() -> Result<()> {
                     (path, None)
                 }
                 None => {
-                    let dir = tempfile::tempdir().into_diagnostic()?;
+                    let dir = camino_tempfile::tempdir().into_diagnostic()?;
                     let path = dir.path().to_path_buf();
                     (path, Some(DumpLogsOnDrop { dir }))
                 }
@@ -432,7 +424,7 @@ fn tag_run_scope(meta: &RunMeta, ctx: &TelemetryContext) {
     });
 }
 
-fn git_rev_parse(git_dir: &std::path::Path, rev: &str) -> Result<String> {
+fn git_rev_parse(git_dir: &Utf8Path, rev: &str) -> Result<String> {
     let out = std::process::Command::new("git")
         .arg("--git-dir")
         .arg(git_dir)
@@ -450,7 +442,7 @@ fn git_rev_parse(git_dir: &std::path::Path, rev: &str) -> Result<String> {
         .to_string())
 }
 
-fn git_symbolic_ref(git_dir: &std::path::Path) -> Result<String> {
+fn git_symbolic_ref(git_dir: &Utf8Path) -> Result<String> {
     let out = std::process::Command::new("git")
         .arg("--git-dir")
         .arg(git_dir)
@@ -467,7 +459,7 @@ fn git_symbolic_ref(git_dir: &std::path::Path) -> Result<String> {
         .to_string())
 }
 
-fn validate(workspace: PathBuf) -> Result<()> {
+fn validate(workspace: Utf8PathBuf) -> Result<()> {
     let pipeline = compile_at(&workspace)?;
 
     if pipeline.job_count() == 0 {
@@ -490,10 +482,10 @@ fn validate(workspace: PathBuf) -> Result<()> {
 }
 
 fn run_pipeline(
-    workspace: PathBuf,
+    workspace: Utf8PathBuf,
     mut sink: Box<dyn EventSink>,
-    log_dir: PathBuf,
-    git_dir: PathBuf,
+    log_dir: Utf8PathBuf,
+    git_dir: Utf8PathBuf,
     meta: RunMeta,
     registry: SecretRegistry,
 ) -> Result<()> {
@@ -658,10 +650,10 @@ fn run_pipeline(
 }
 
 /// Read and compile the ci.fnl at `<workspace>/.quire/ci.fnl`.
-fn compile_at(workspace: &std::path::Path) -> Result<Pipeline> {
+fn compile_at(workspace: &Utf8Path) -> Result<Pipeline> {
     let path = workspace.join(".quire").join("ci.fnl");
     let source = fs_err::read_to_string(&path).into_diagnostic()?;
-    Ok(pipeline::compile(&source, &path.display().to_string())?)
+    Ok(pipeline::compile(&source, path.as_str())?)
 }
 
 #[cfg(test)]
@@ -675,6 +667,6 @@ mod tests {
         let Ok(EventsTarget::File(path)) = "/tmp/run.jsonl".parse::<EventsTarget>() else {
             panic!("expected File target");
         };
-        assert_eq!(path, PathBuf::from("/tmp/run.jsonl"));
+        assert_eq!(path, Utf8PathBuf::from("/tmp/run.jsonl"));
     }
 }

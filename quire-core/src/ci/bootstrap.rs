@@ -5,8 +5,7 @@
 //! token. Local runs pass `--local --git-dir <path>` and derive the
 //! commit SHA and ref directly from the git dir.
 
-use std::path::PathBuf;
-
+use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::ci::run::RunMeta;
@@ -21,7 +20,7 @@ use crate::ci::run::RunMeta;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Bootstrap {
     pub meta: RunMeta,
-    pub git_dir: PathBuf,
+    pub git_dir: Utf8PathBuf,
     /// The repo this run is scoped to (matches the `runs.repo`
     /// column). quire-ci tags Sentry events with it.
     pub repo: String,

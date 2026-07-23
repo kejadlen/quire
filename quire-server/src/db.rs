@@ -3,8 +3,7 @@
 //! [`open`] creates a connection with WAL mode and foreign keys enabled.
 //! [`migrate`] runs pending migrations — call once at server startup.
 
-use std::path::Path;
-
+use camino::Utf8Path;
 use rusqlite::Connection;
 use rusqlite_migration::{M, Migrations};
 
@@ -38,7 +37,7 @@ pub enum MigrationError {
 /// Creates the file if it doesn't exist.
 ///
 /// Does not run migrations. Call [`migrate`] once at server startup.
-pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
+pub fn open(path: &Utf8Path) -> Result<Connection, rusqlite::Error> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;

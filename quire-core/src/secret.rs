@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
+
+use camino::Utf8PathBuf;
 
 /// Errors produced by secret resolution.
 #[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
@@ -34,7 +35,7 @@ pub struct SecretString(SecretSource);
 enum SecretSource {
     Plain(String),
     File {
-        path: PathBuf,
+        path: Utf8PathBuf,
         resolved: OnceLock<std::result::Result<String, Arc<dyn std::error::Error + Send + Sync>>>,
     },
 }
@@ -97,11 +98,11 @@ impl From<&str> for SecretString {
     }
 }
 
-impl From<PathBuf> for SecretString {
+impl From<Utf8PathBuf> for SecretString {
     /// Build from a file path. Contents are read lazily on first [`reveal`].
     ///
     /// [`reveal`]: SecretString::reveal
-    fn from(path: PathBuf) -> Self {
+    fn from(path: Utf8PathBuf) -> Self {
         Self(SecretSource::File {
             path,
             resolved: OnceLock::new(),
@@ -118,7 +119,7 @@ impl<'de> serde::Deserialize<'de> for SecretString {
         #[serde(untagged)]
         enum Raw {
             Plain(String),
-            File { file: PathBuf },
+            File { file: Utf8PathBuf },
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -363,7 +364,7 @@ mod tests {
 
     #[test]
     fn reveal_caches_file_value() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("token");
         fs_err::write(&path, "initial\n").expect("write");
 
@@ -377,7 +378,7 @@ mod tests {
 
     #[test]
     fn reveal_strips_trailing_newline() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("secret");
         fs_err::write(&path, "line1\nline2\n").expect("write");
 
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn reveal_strips_only_one_trailing_newline() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("secret");
         // Docker secrets convention: strip exactly one trailing newline.
         // Any additional trailing newlines are part of the secret.
@@ -399,7 +400,7 @@ mod tests {
 
     #[test]
     fn reveal_errors_on_missing_file() {
-        let secret = SecretString::from(PathBuf::from("/no/such/file/ever"));
+        let secret = SecretString::from(Utf8PathBuf::from("/no/such/file/ever"));
         let err = secret.reveal().unwrap_err();
         assert!(
             matches!(err, Error::Resolve(_)),
@@ -409,7 +410,7 @@ mod tests {
 
     #[test]
     fn clone_resets_cache_and_rereads_from_disk() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("pw");
         fs_err::write(&path, "initial\n").expect("write");
 
@@ -457,12 +458,12 @@ mod tests {
             token: SecretString,
         }
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("token");
         fs_err::write(&path, "from_file\n").expect("write");
 
         let json = serde_json::json!({
-            "token": {"file": path.display().to_string()}
+            "token": {"file": path.as_str()}
         });
         let w: Wrapper = serde_json::from_value(json).expect("deserialize");
         assert_eq!(w.token.reveal().unwrap(), "from_file");
@@ -514,13 +515,13 @@ mod tests {
             token: SecretString,
         }
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("pw");
         fs_err::write(&path, "secret_from_file\n").expect("write");
 
         let fennel = Fennel::new().expect("fennel");
         // Fennel table syntax: {:token {:file "/path"}}
-        let source = format!("{{:token {{:file \"{}\"}}}}", path.display(),);
+        let source = format!("{{:token {{:file \"{path}\"}}}}");
         let config: Config = fennel
             .load_string(&source, "test.fnl", |_| {})
             .expect("deserialize file ref from fennel");

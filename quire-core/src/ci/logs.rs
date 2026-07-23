@@ -9,7 +9,7 @@
 //!
 //! Stream is `stdout` or `stderr`. Tag is `F` (full line).
 
-use std::path::Path;
+use camino::Utf8Path;
 
 use super::runtime::ShOutput;
 
@@ -17,7 +17,7 @@ use super::runtime::ShOutput;
 ///
 /// Each line of stdout/stderr becomes one CRI-format line with the
 /// given base timestamp, stream tag, and `F` (full) tag.
-pub fn write_cri_log(path: &Path, output: &ShOutput, ts: &str) -> std::io::Result<()> {
+pub fn write_cri_log(path: &Utf8Path, output: &ShOutput, ts: &str) -> std::io::Result<()> {
     use std::io::Write;
 
     let mut f = fs_err::File::create(path)?;
@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn cri_log_splits_stdout_into_lines() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sh-1.log");
         let output = ShOutput {
             exit: 0,
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn cri_log_handles_stderr() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sh-1.log");
         let output = ShOutput {
             exit: 1,
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn cri_log_handles_empty_output() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("sh-1.log");
         let output = ShOutput {
             exit: 0,

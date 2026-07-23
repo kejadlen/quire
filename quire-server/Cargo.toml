@@ -19,6 +19,8 @@ path = "src/bin/quire/main.rs"
 quire-core = { path = "../quire-core" }
 
 base64 = { workspace = true }
+camino = { workspace = true }
+camino-tempfile = { workspace = true }
 fs-err = { workspace = true, features = ["tokio"] }
 jiff = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
@@ -27,7 +29,6 @@ petgraph = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 thiserror = { workspace = true }
 opentelemetry = { workspace = true }
 tracing = { workspace = true }

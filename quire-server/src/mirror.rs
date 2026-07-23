@@ -249,7 +249,7 @@ impl<'a> Mirror<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use camino::Utf8Path;
 
     use super::*;
 
@@ -263,7 +263,7 @@ mod tests {
     }
 
     /// Run a git subcommand in `cwd` with hermetic env, panicking on failure.
-    fn git_in(cwd: &Path, args: &[&str]) {
+    fn git_in(cwd: &Utf8Path, args: &[&str]) {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -281,18 +281,15 @@ mod tests {
     /// Build a Quire whose `foo.git` bare repo has one commit on `main`,
     /// optionally carrying a `.quire/config.fnl`. Returns the tempdir (kept
     /// alive for the test's duration), the Quire, and the repo name.
-    fn quire_with_repo(config: Option<&str>) -> (tempfile::TempDir, Quire, String) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn quire_with_repo(config: Option<&str>) -> (camino_tempfile::Utf8TempDir, Quire, String) {
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         let name = "foo.git";
         let bare = quire.repos_dir().join(name);
         fs_err::create_dir_all(bare.parent().expect("parent")).expect("mkdir repos");
-        git_in(
-            dir.path(),
-            &["init", "--bare", "-b", "main", &bare.to_string_lossy()],
-        );
+        git_in(dir.path(), &["init", "--bare", "-b", "main", bare.as_str()]);
 
-        let work = tempfile::tempdir().expect("workdir");
+        let work = camino_tempfile::tempdir().expect("workdir");
         git_in(work.path(), &["init", "-q", "-b", "main"]);
         if let Some(cfg) = config {
             let quire_dir = work.path().join(".quire");
@@ -303,10 +300,7 @@ mod tests {
         }
         git_in(work.path(), &["add", "."]);
         git_in(work.path(), &["commit", "-q", "-m", "init"]);
-        git_in(
-            work.path(),
-            &["push", "-q", &bare.to_string_lossy(), "main"],
-        );
+        git_in(work.path(), &["push", "-q", bare.as_str(), "main"]);
 
         (dir, quire, name.to_string())
     }
