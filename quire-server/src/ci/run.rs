@@ -6,7 +6,8 @@
 //! log files, but state lives in the database.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+
+use camino::{Utf8Path, Utf8PathBuf};
 
 use super::error::{Error, Result};
 use jiff::Timestamp;
@@ -42,13 +43,13 @@ impl std::fmt::Display for Executor {
 /// [`crate::db::open`]. Obtain one via `Ci::runs()`.
 #[derive(Debug)]
 pub struct Runs {
-    db_path: PathBuf,
+    db_path: Utf8PathBuf,
     repo: String,
-    base_dir: PathBuf,
+    base_dir: Utf8PathBuf,
 }
 
 impl Runs {
-    pub fn new(db_path: PathBuf, repo: String, base_dir: PathBuf) -> Self {
+    pub fn new(db_path: Utf8PathBuf, repo: String, base_dir: Utf8PathBuf) -> Self {
         Self {
             db_path,
             repo,
@@ -156,7 +157,7 @@ impl Runs {
 /// Move every queued or active run to `failed-orphaned`. Called once at
 /// server startup to clean up runs left behind by a prior instance.
 /// Operates across all repos — orphans aren't a per-repo concern.
-pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
+pub fn reconcile_orphans(db_path: &Utf8Path) -> Result<()> {
     let now = Timestamp::now().as_millisecond();
     let db = crate::db::open(db_path)?;
     let count = db.execute(
@@ -179,18 +180,18 @@ pub fn reconcile_orphans(db_path: &Path) -> Result<()> {
 /// Reads and writes go through SQL. The run directory on disk holds
 /// the workspace and per-job log files.
 pub struct Run {
-    db_path: PathBuf,
+    db_path: Utf8PathBuf,
     id: String,
     /// Whether `dispatched_at` has been set (run is active or resolved).
     dispatched: bool,
     /// Whether `resolved_at` has been set (run is terminal).
     resolved: bool,
-    base_dir: PathBuf,
+    base_dir: Utf8PathBuf,
 }
 
 impl Run {
     /// The resolved path to this run's directory on disk.
-    pub fn path(&self) -> PathBuf {
+    pub fn path(&self) -> Utf8PathBuf {
         self.base_dir.join(&self.id)
     }
 
@@ -200,7 +201,7 @@ impl Run {
     }
 
     /// Open an existing run from the database by ID.
-    pub fn open(db_path: PathBuf, id: String, base_dir: PathBuf) -> Result<Self> {
+    pub fn open(db_path: Utf8PathBuf, id: String, base_dir: Utf8PathBuf) -> Result<Self> {
         let db = crate::db::open(&db_path)?;
         let (dispatched_at, resolved_at): (Option<i64>, Option<i64>) = db.query_row(
             "SELECT dispatched_at, resolved_at FROM runs WHERE id = ?1",
@@ -231,8 +232,8 @@ impl Run {
     /// partial progress.
     pub fn execute(
         mut self,
-        git_dir: &Path,
-        workspace: &Path,
+        git_dir: &Utf8Path,
+        workspace: &Utf8Path,
         traceparent: Option<&str>,
         sentry_dsn: Option<&str>,
         session: Option<&ApiSession>,
@@ -259,8 +260,8 @@ impl Run {
 
         tracing::info!(
             run_id = %self.id,
-            log = %log_path.display(),
-            events = %events_path.display(),
+            log = %log_path,
+            events = %events_path,
             "dispatching run to quire-ci",
         );
 
@@ -345,7 +346,7 @@ impl Run {
     /// `(run_id, job_id)` in `jobs`, and the wire format interleaves
     /// sh events with their owning job. Pass 1 inserts every job row
     /// (paired by `job_id`); pass 2 inserts sh events.
-    fn ingest_events(&self, path: &Path) -> Result<Option<quire_core::ci::event::RunOutcome>> {
+    fn ingest_events(&self, path: &Utf8Path) -> Result<Option<quire_core::ci::event::RunOutcome>> {
         use quire_core::ci::event::{Event, EventKind, JobOutcome, RunOutcome};
 
         let bytes = match fs_err::read(path) {
@@ -425,17 +426,11 @@ impl Run {
     /// Called by `execute` when the API transport is active, before spawning
     /// quire-ci. quire-ci fetches this via `GET /api/runs/:id/bootstrap`
     /// instead of reading a file.
-    fn store_bootstrap_data(&self, git_dir: &Path, traceparent: Option<&str>) -> Result<()> {
-        let git_dir_str = git_dir.to_str().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "git_dir path is not valid UTF-8",
-            )
-        })?;
+    fn store_bootstrap_data(&self, git_dir: &Utf8Path, traceparent: Option<&str>) -> Result<()> {
         let db = crate::db::open(&self.db_path)?;
         db.execute(
             "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir_str, traceparent, &self.id],
+            rusqlite::params![git_dir.as_str(), traceparent, &self.id],
         )?;
         Ok(())
     }
@@ -534,7 +529,7 @@ impl Run {
 /// sanitize it for use as the tag segment in `quire-ci/<segment>:<id>`.
 /// Materialize a working tree at `sha` into `workspace` via
 /// `git archive | tar -x`. Creates the workspace dir if needed.
-pub fn materialize_workspace(git_dir: &Path, sha: &str, workspace: &Path) -> Result<()> {
+pub fn materialize_workspace(git_dir: &Utf8Path, sha: &str, workspace: &Utf8Path) -> Result<()> {
     use std::process::{Command, Stdio};
 
     fs_err::create_dir_all(workspace)?;
@@ -573,8 +568,8 @@ mod tests {
     use super::*;
     use crate::Quire;
 
-    fn tmp_quire() -> (tempfile::TempDir, Quire) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn tmp_quire() -> (camino_tempfile::Utf8TempDir, Quire) {
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // Initialize the database.
         let mut db = crate::db::open(&quire.db_path()).expect("init db");
@@ -602,7 +597,7 @@ mod tests {
 
     #[test]
     fn materialize_workspace_extracts_archive_at_sha() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let src_repo = dir.path().join("src");
         fs_err::create_dir_all(&src_repo).expect("mkdir src");
 
@@ -671,7 +666,7 @@ mod tests {
 
     #[test]
     fn materialize_workspace_errors_on_unknown_sha() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let src_repo = dir.path().join("src");
         fs_err::create_dir_all(&src_repo).expect("mkdir src");
 

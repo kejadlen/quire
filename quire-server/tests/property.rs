@@ -79,7 +79,7 @@ fn secret_string_plain_json_round_trips(tc: TestCase) {
 #[hegel::test]
 fn secret_string_from_file_strips_one_trailing_newline(tc: TestCase) {
     let content = tc.draw(text());
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = camino_tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("secret");
     fs_err::write(&path, &content).expect("write");
 

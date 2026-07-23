@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+camino = { workspace = true }
 fs-err = { workspace = true }
 jiff = { workspace = true }
 miette = { workspace = true }
@@ -25,4 +26,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+camino-tempfile = { workspace = true }

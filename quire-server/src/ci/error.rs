@@ -51,10 +51,10 @@ pub enum Error {
     #[error(transparent)]
     Secret(#[from] secret::Error),
 
-    #[error("command spawn failed: {program} in {}: {source}", cwd.display())]
+    #[error("command spawn failed: {program} in {cwd}: {source}")]
     CommandSpawnFailed {
         program: String,
-        cwd: std::path::PathBuf,
+        cwd: camino::Utf8PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -62,9 +62,9 @@ pub enum Error {
     #[error("quire-ci exited with status {exit:?}")]
     ProcessFailed { exit: Option<i32> },
 
-    #[error("failed to parse quire-ci event stream at {}: {source}", path.display())]
+    #[error("failed to parse quire-ci event stream at {path}: {source}")]
     EventStreamParse {
-        path: std::path::PathBuf,
+        path: camino::Utf8PathBuf,
         #[source]
         source: serde_json::Error,
     },

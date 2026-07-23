@@ -36,18 +36,15 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
 
     let std_listener = StdUnixListener::bind(&socket_path)
         .into_diagnostic()
-        .context(format!(
-            "failed to bind event socket at {}",
-            socket_path.display()
-        ))?;
+        .context(format!("failed to bind event socket at {socket_path}"))?;
     std_listener.set_nonblocking(true).into_diagnostic()?;
     let listener = tokio::net::UnixListener::from_std(std_listener).into_diagnostic()?;
 
-    tracing::info!(path = %socket_path.display(), "listening on event socket");
+    tracing::info!(path = %socket_path, "listening on event socket");
 
     // Open and migrate the database.
     let db_path = quire.db_path();
-    tracing::info!(path = %db_path.display(), "opening database");
+    tracing::info!(path = %db_path, "opening database");
     let mut db = quire::db::open(&db_path).into_diagnostic()?;
     if let Err(e) = quire::db::migrate(&mut db) {
         tracing::error!(

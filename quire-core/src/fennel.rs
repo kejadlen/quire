@@ -1,5 +1,4 @@
-use std::path::Path;
-
+use camino::Utf8Path;
 use miette::{Diagnostic, NamedSource, SourceOffset};
 use mlua::Lua;
 use thiserror::Error;
@@ -184,14 +183,14 @@ impl Fennel {
     /// `on_unknown` is forwarded to [`load_string`] — see its docs.
     pub fn load_file<T>(
         &self,
-        path: &Path,
+        path: &Utf8Path,
         on_unknown: impl FnMut(&serde_ignored::Path<'_>),
     ) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
         let source = fs_err::read_to_string(path)?;
-        self.load_string(&source, &path.display().to_string(), on_unknown)
+        self.load_string(&source, path.as_str(), on_unknown)
     }
 
     /// Create a fresh Fennel VM and load `path` into `T`.
@@ -199,12 +198,12 @@ impl Fennel {
     /// Convenience wrapper for callers that only need a one-shot config load
     /// and don't need to reuse the VM. Warns via `tracing::warn!` for any
     /// unknown fields (all in a single message).
-    pub fn load_config<T>(path: &Path) -> Result<T, FennelError>
+    pub fn load_config<T>(path: &Utf8Path) -> Result<T, FennelError>
     where
         T: serde::de::DeserializeOwned,
     {
         let source = fs_err::read_to_string(path)?;
-        Self::load_config_str(&source, &path.display().to_string())
+        Self::load_config_str(&source, path.as_str())
     }
 
     /// Create a fresh Fennel VM and parse `source` into `T`.
@@ -467,7 +466,7 @@ mod tests {
 
     #[test]
     fn load_file_reads_from_disk() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.fnl");
         fs_err::write(
             &path,
@@ -492,7 +491,8 @@ mod tests {
     #[test]
     fn load_file_rejects_missing_file() {
         let f = fennel();
-        let result: Result<MirrorConfig, _> = f.load_file(Path::new("/no/such/file.fnl"), |_| {});
+        let result: Result<MirrorConfig, _> =
+            f.load_file(Utf8Path::new("/no/such/file.fnl"), |_| {});
         let err = result.unwrap_err();
         assert!(
             matches!(&err, FennelError::Io(e) if e.kind() == std::io::ErrorKind::NotFound),

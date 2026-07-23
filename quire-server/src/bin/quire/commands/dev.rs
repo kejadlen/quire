@@ -58,14 +58,14 @@ struct Seeder {
 
 impl Seeder {
     fn new() -> Result<Self> {
-        let dir = tempfile::tempdir()
+        let dir = camino_tempfile::tempdir()
             .into_diagnostic()
             .context("failed to create tempdir")?;
 
         // Leak the TempDir so it outlives the function. The server will
         // clean up on shutdown, or the OS will when the process exits.
         let base_dir = dir.keep();
-        tracing::info!(path = %base_dir.display(), "seeded tempdir");
+        tracing::info!(path = %base_dir, "seeded tempdir");
 
         let quire = Quire::load(base_dir)?;
 

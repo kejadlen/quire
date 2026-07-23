@@ -5,7 +5,7 @@
 //! is created and stored in `runs.run_token`. The bearer token itself
 //! identifies the run — no run ID appears in the path.
 
-use std::path::PathBuf;
+use camino::Utf8PathBuf;
 
 use serde::Deserialize;
 
@@ -174,7 +174,10 @@ async fn get_bootstrap(
                 return Err(ApiError::Gone);
             }
 
-            let git_dir: PathBuf = row.git_dir.map(PathBuf::from).ok_or(ApiError::NotFound)?;
+            let git_dir: Utf8PathBuf = row
+                .git_dir
+                .map(Utf8PathBuf::from)
+                .ok_or(ApiError::NotFound)?;
 
             let meta = RunMeta {
                 sha: row.sha,
@@ -241,13 +244,13 @@ mod tests {
     use crate::ci::{ApiSession, RunMeta, Runs};
 
     struct TestEnv {
-        _dir: tempfile::TempDir,
+        _dir: camino_tempfile::Utf8TempDir,
         quire: Quire,
     }
 
     impl TestEnv {
         fn new() -> Self {
-            let dir = tempfile::tempdir().expect("tempdir");
+            let dir = camino_tempfile::tempdir().expect("tempdir");
             let quire = Quire::load(dir.path().to_path_buf()).expect("load");
             let mut db = crate::db::open(&quire.db_path()).expect("db open");
             crate::db::migrate(&mut db).expect("migrate");
@@ -256,7 +259,7 @@ mod tests {
         }
 
         fn with_config_fnl(content: &str) -> Self {
-            let dir = tempfile::tempdir().expect("tempdir");
+            let dir = camino_tempfile::tempdir().expect("tempdir");
             fs_err::write(dir.path().join("config.fnl"), content).expect("write config");
             let quire = crate::Quire::load(dir.path().to_path_buf()).expect("load config");
             let mut db = crate::db::open(&quire.db_path()).expect("db open");

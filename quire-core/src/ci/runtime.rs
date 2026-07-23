@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use camino::{Utf8Path, Utf8PathBuf};
 use jiff::Timestamp;
 use mlua::{IntoLua, Lua, LuaSerdeExt};
 
@@ -31,10 +32,10 @@ pub enum RuntimeError {
     #[error(transparent)]
     Lua(Box<mlua::Error>),
 
-    #[error("command spawn failed: {program} in {}: {source}", cwd.display())]
+    #[error("command spawn failed: {program} in {cwd}: {source}")]
     CommandSpawnFailed {
         program: String,
-        cwd: std::path::PathBuf,
+        cwd: Utf8PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -42,9 +43,9 @@ pub enum RuntimeError {
     #[error("git error: {0}")]
     Git(String),
 
-    #[error("failed to write CRI log at {}: {source}", path.display())]
+    #[error("failed to write CRI log at {path}: {source}")]
     LogWriteFailed {
-        path: std::path::PathBuf,
+        path: Utf8PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -119,10 +120,10 @@ pub struct Runtime {
     /// Directory under which [`Runtime::sh`] writes per-sh CRI log
     /// files at `<log_dir>/jobs/<job_id>/sh-<n>.log`. Set at
     /// construction time; callers manage the directory's lifetime.
-    log_dir: std::path::PathBuf,
+    log_dir: Utf8PathBuf,
     /// The materialized workspace for this run. Every `(sh …)` call
     /// runs here.
-    workspace: std::path::PathBuf,
+    workspace: Utf8PathBuf,
 }
 
 impl Runtime {
@@ -142,9 +143,9 @@ impl Runtime {
         pipeline: Pipeline,
         registry: SecretRegistry,
         meta: &RunMeta,
-        git_dir: &std::path::Path,
-        workspace: std::path::PathBuf,
-        log_dir: std::path::PathBuf,
+        git_dir: &Utf8Path,
+        workspace: Utf8PathBuf,
+        log_dir: Utf8PathBuf,
     ) -> Self {
         let transitive = pipeline.transitive_inputs();
         let lua = pipeline.fennel().lua();
@@ -158,8 +159,7 @@ impl Runtime {
         // `git-dir` is environmental rather than a fact about the push;
         // it may belong on an ambient context alongside `sh`/`secret`
         // instead of on this table.
-        push.set("git-dir", git_dir.to_string_lossy().as_ref())
-            .expect("set git-dir");
+        push.set("git-dir", git_dir.as_str()).expect("set git-dir");
         let push_value = push.into_lua(lua).expect("push table to value");
 
         // Build per-job input views from transitive reachability.
@@ -336,7 +336,7 @@ impl Runtime {
 #[cfg(test)]
 impl Runtime {
     /// Test-only accessor for the runtime's log directory.
-    pub(crate) fn log_dir(&self) -> &std::path::Path {
+    pub(crate) fn log_dir(&self) -> &Utf8Path {
         &self.log_dir
     }
 
@@ -345,7 +345,7 @@ impl Runtime {
     /// land under a fresh tempdir each call (leaked into the system
     /// temp area, since tests don't share a TempDir handle).
     fn for_test(pipeline: Pipeline, secrets: HashMap<String, SecretString>) -> Self {
-        let log_dir = tempfile::tempdir()
+        let log_dir = camino_tempfile::tempdir()
             .expect("tempdir for runtime logs")
             .keep();
         Self {
@@ -357,7 +357,8 @@ impl Runtime {
             sh_timings: RefCell::new(HashMap::new()),
             event_callback: RefCell::new(noop_event_callback()),
             log_dir,
-            workspace: std::env::current_dir().expect("cwd"),
+            workspace: Utf8PathBuf::try_from(std::env::current_dir().expect("cwd"))
+                .expect("cwd is valid UTF-8"),
         }
     }
 }
@@ -573,7 +574,7 @@ impl Cmd {
     // Also revisit the `from_utf8_lossy` calls below — non-UTF-8 bytes
     // are silently replaced with U+FFFD and `:stdout` / `:stderr` end
     // up as mojibake with no signal that anything was lost.
-    pub fn run(self, opts: ShOpts, cwd: &std::path::Path) -> std::io::Result<ShOutput> {
+    pub fn run(self, opts: ShOpts, cwd: &Utf8Path) -> std::io::Result<ShOutput> {
         let cmd_str = format!("{self}");
         let mut command: std::process::Command = self.into();
         for (k, v) in opts.env {
@@ -1013,7 +1014,7 @@ mod tests {
     /// Run `git` once with the standard test env. Asserts success and
     /// returns stdout. Used by the mirror fixture below to set up the
     /// source and target bare repos.
-    fn git(args: &[&str], cwd: &std::path::Path) -> String {
+    fn git(args: &[&str], cwd: &Utf8Path) -> String {
         let env_vars: [(&str, &str); 6] = [
             ("GIT_AUTHOR_NAME", "test"),
             ("GIT_AUTHOR_EMAIL", "test@test"),
@@ -1041,12 +1042,12 @@ mod tests {
     /// bare repo in the same tempdir. Returns (tempdir, source bare,
     /// target bare, head sha).
     fn bare_repo_with_target() -> (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        std::path::PathBuf,
+        camino_tempfile::Utf8TempDir,
+        Utf8PathBuf,
+        Utf8PathBuf,
         String,
     ) {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let work = dir.path().join("work");
         let bare = dir.path().join("repo.git");
         let target = dir.path().join("target.git");
@@ -1056,15 +1057,10 @@ mod tests {
         git(&["commit", "--allow-empty", "-m", "initial"], &work);
         let sha = git(&["rev-parse", "HEAD"], &work).trim().to_string();
         git(
-            &[
-                "clone",
-                "--bare",
-                work.to_str().unwrap(),
-                bare.to_str().unwrap(),
-            ],
+            &["clone", "--bare", work.as_str(), bare.as_str()],
             dir.path(),
         );
-        git(&["init", "--bare", target.to_str().unwrap()], dir.path());
+        git(&["init", "--bare", target.as_str()], dir.path());
 
         (dir, bare, target, sha)
     }
@@ -1090,9 +1086,9 @@ mod tests {
                :sha "{sha}"
                :tag "v1"
                :git-dir "{git_dir}"}}))))"#,
-            url = format!("file://{}", target.display()),
+            url = format!("file://{target}"),
             sha = sha,
-            git_dir = bare.display(),
+            git_dir = bare,
         );
 
         let (runtime, run_fn, _guard) = rt(&source, secrets);

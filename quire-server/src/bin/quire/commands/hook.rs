@@ -40,8 +40,8 @@ fn post_receive(quire: &Quire) -> Result<()> {
         .into_diagnostic()
         .context("GIT_DIR not set — hook must run inside a bare repo")
         .and_then(|git_dir| {
-            std::path::Path::new(&git_dir)
-                .canonicalize()
+            camino::Utf8Path::new(&git_dir)
+                .canonicalize_utf8()
                 .into_diagnostic()
                 .context("failed to resolve GIT_DIR")
         })?;
@@ -88,7 +88,6 @@ fn post_receive(quire: &Quire) -> Result<()> {
         .strip_prefix(quire.repos_dir())
         .into_diagnostic()
         .context("repo path not under repos dir")?
-        .to_string_lossy()
         .to_string();
 
     let event = quire::event::PushEvent::new(repo_name, refs);
@@ -99,10 +98,7 @@ fn post_receive(quire: &Quire) -> Result<()> {
 
     let socket_path = quire.socket_path();
     if !socket_path.exists() {
-        eprintln!(
-            "quire: server not running ({}), skipping event",
-            socket_path.display()
-        );
+        eprintln!("quire: server not running ({socket_path}), skipping event");
         return Ok(());
     }
 

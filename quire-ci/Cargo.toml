@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+camino = { workspace = true }
+camino-tempfile = { workspace = true }
 facet = { workspace = true }
 figue = "*"
 fs-err = { workspace = true }
@@ -15,7 +17,6 @@ reqwest = { version = "*", features = ["blocking", "json", "rustls"], default-fe
 sentry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 opentelemetry = { workspace = true }

@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-
+use camino::Utf8PathBuf;
 use miette::{IntoDiagnostic, Result};
 use quire::ci::{Ci, CommitRef, RunMeta, Runs};
 
@@ -52,7 +51,7 @@ pub async fn run(maybe_sha: Option<&str>) -> Result<()> {
     // Tempdir for run artifacts. TODO: switch to an XDG cache dir
     // (e.g. $XDG_CACHE_HOME/quire/local-runs) so logs survive past the
     // command and `tail -f` becomes useful.
-    let tmp = tempfile::tempdir().into_diagnostic()?;
+    let tmp = camino_tempfile::tempdir().into_diagnostic()?;
     let db_path = tmp.path().join("quire.db");
     let mut db = quire::db::open(&db_path).into_diagnostic()?;
     quire::db::migrate(&mut db)?;
@@ -83,7 +82,7 @@ pub async fn run(maybe_sha: Option<&str>) -> Result<()> {
     match fs_err::read_to_string(&log_path) {
         Ok(log) => print!("{log}"),
         Err(e) => tracing::debug!(
-            path = %log_path.display(),
+            path = %log_path,
             error = %e,
             "quire-ci log not found (binary may have failed to start)",
         ),
@@ -118,7 +117,7 @@ fn resolve_commit(maybe_sha: Option<&str>) -> Result<CommitRef> {
     }
 }
 
-fn discover_repo() -> Result<PathBuf> {
+fn discover_repo() -> Result<Utf8PathBuf> {
     let output = std::process::Command::new("jj")
         .args(["root"])
         .output()
@@ -130,7 +129,7 @@ fn discover_repo() -> Result<PathBuf> {
     }
 
     let path = String::from_utf8(output.stdout).into_diagnostic()?;
-    Ok(PathBuf::from(path.trim()))
+    Ok(Utf8PathBuf::from(path.trim()))
 }
 
 /// Get the git commit ID of the working copy revision via jj.

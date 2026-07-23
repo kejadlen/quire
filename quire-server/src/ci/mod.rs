@@ -25,7 +25,7 @@ pub struct CommitRef {
     pub display: String,
 }
 
-use std::path::{Path, PathBuf};
+use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::event::{PushEvent, PushRef};
 use crate::quire::Repo;
@@ -39,11 +39,11 @@ pub const CI_FNL: &str = ".quire/ci.fnl";
 /// repo. Obtain one via `Repo::ci()`. Run lifecycle is on `Runs`,
 /// obtainable via `Repo::runs()`.
 pub struct Ci {
-    repo_path: PathBuf,
+    repo_path: Utf8PathBuf,
 }
 
 impl Ci {
-    pub fn new(repo_path: PathBuf) -> Self {
+    pub fn new(repo_path: Utf8PathBuf) -> Self {
         Self { repo_path }
     }
 
@@ -108,7 +108,7 @@ struct TriggerContext<'a> {
 /// Repo-level context passed into the inner execution function.
 struct RunContext<'a> {
     repo: &'a Repo,
-    db_path: &'a Path,
+    db_path: &'a Utf8Path,
     executor: Executor,
 }
 
@@ -250,9 +250,8 @@ mod tests {
     use super::*;
     use crate::Quire;
     use crate::event::PushRef;
-    use std::path::Path;
 
-    fn git_in(cwd: &Path, args: &[&str]) {
+    fn git_in(cwd: &Utf8Path, args: &[&str]) {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -269,8 +268,8 @@ mod tests {
 
     /// Create a bare repo with one commit containing `.quire/ci.fnl`.
     /// Returns the tempdir, the Quire, and the repo name.
-    fn bare_repo_with_ci(source: &str) -> (tempfile::TempDir, Quire, String) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn bare_repo_with_ci(source: &str) -> (camino_tempfile::Utf8TempDir, Quire, String) {
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let work = dir.path().join("work");
         let bare = dir.path().join("repos").join("test.git");
 
@@ -286,12 +285,7 @@ mod tests {
 
         git_in(
             work.parent().unwrap(),
-            &[
-                "clone",
-                "--bare",
-                work.to_str().unwrap(),
-                bare.to_str().unwrap(),
-            ],
+            &["clone", "--bare", work.as_str(), bare.as_str()],
         );
 
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
@@ -302,8 +296,8 @@ mod tests {
         (dir, quire, "test.git".to_string())
     }
 
-    fn bare_repo_without_ci() -> (tempfile::TempDir, Quire, String) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn bare_repo_without_ci() -> (camino_tempfile::Utf8TempDir, Quire, String) {
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let work = dir.path().join("work");
         let bare = dir.path().join("repos").join("test.git");
 
@@ -312,12 +306,7 @@ mod tests {
         git_in(&work, &["commit", "--allow-empty", "-m", "initial"]);
         git_in(
             work.parent().unwrap(),
-            &[
-                "clone",
-                "--bare",
-                work.to_str().unwrap(),
-                bare.to_str().unwrap(),
-            ],
+            &["clone", "--bare", work.as_str(), bare.as_str()],
         );
 
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
@@ -329,7 +318,7 @@ mod tests {
 
     fn head_sha(repo: &crate::quire::Repo) -> String {
         let output = std::process::Command::new("git")
-            .args(["-C", repo.path().to_str().unwrap(), "rev-parse", "HEAD"])
+            .args(["-C", repo.path().as_str(), "rev-parse", "HEAD"])
             .output()
             .expect("rev-parse");
         String::from_utf8(output.stdout).unwrap().trim().to_string()
@@ -387,7 +376,7 @@ mod tests {
         assert!(result.is_err(), "bad Fennel should fail");
     }
 
-    fn run_ctx<'a>(repo: &'a crate::quire::Repo, db_path: &'a std::path::Path) -> RunContext<'a> {
+    fn run_ctx<'a>(repo: &'a crate::quire::Repo, db_path: &'a Utf8Path) -> RunContext<'a> {
         RunContext {
             repo,
             db_path,
@@ -402,8 +391,8 @@ mod tests {
     /// Create a temp directory containing a fake `quire-ci` that exits
     /// with the given code. Returns the temp dir (for lifetime) and the
     /// new PATH value.
-    fn fake_quire_ci(exit_code: i32) -> (tempfile::TempDir, std::ffi::OsString) {
-        let dir = tempfile::tempdir().expect("tempdir for fake quire-ci");
+    fn fake_quire_ci(exit_code: i32) -> (camino_tempfile::Utf8TempDir, std::ffi::OsString) {
+        let dir = camino_tempfile::tempdir().expect("tempdir for fake quire-ci");
         if cfg!(unix) {
             let path = dir.path().join("quire-ci");
             // For a clean exit, write RunFinished(success) to the --events
@@ -611,7 +600,7 @@ exit 0
 
     #[test]
     fn trigger_skips_nonexistent_repo() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         let event = push_event("no-such.git", "abc123");
         // Should not panic — just logs and returns.
@@ -620,7 +609,7 @@ exit 0
 
     #[test]
     fn trigger_skips_repo_not_on_disk() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // repo name is valid but directory doesn't exist.
         let event = push_event("missing.git", "abc123");
@@ -629,7 +618,7 @@ exit 0
 
     #[test]
     fn trigger_skips_invalid_repo_name() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = camino_tempfile::tempdir().expect("tempdir");
         let quire = Quire::load(dir.path().to_path_buf()).expect("load");
         // Repo name with path traversal — quire.repo() returns Err.
         let event = push_event("../evil.git", "abc123");

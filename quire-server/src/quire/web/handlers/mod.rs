@@ -63,13 +63,13 @@ mod tests {
     use crate::Quire;
 
     struct TestEnv {
-        _dir: tempfile::TempDir,
+        _dir: camino_tempfile::Utf8TempDir,
         quire: Quire,
     }
 
     impl TestEnv {
         fn new() -> Self {
-            let dir = tempfile::tempdir().expect("tempdir");
+            let dir = camino_tempfile::tempdir().expect("tempdir");
             let quire = Quire::load(dir.path().to_path_buf()).expect("load");
 
             let repos_dir = quire.repos_dir();

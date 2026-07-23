@@ -164,12 +164,12 @@ pub async fn run_detail(
     Ok(render(&tmpl))
 }
 
-async fn read_log(path: &std::path::Path) -> String {
+async fn read_log(path: &camino::Utf8Path) -> String {
     match fs_err::tokio::read_to_string(path).await {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
-            tracing::warn!(path = %path.display(), error = &e as &(dyn std::error::Error + 'static), "failed to read CRI log");
+            tracing::warn!(path = %path, error = &e as &(dyn std::error::Error + 'static), "failed to read CRI log");
             String::new()
         }
     }
