@@ -82,7 +82,8 @@ enum RepoCommands {
     /// Create a new bare repository.
     New {
         /// Repository name (e.g. foo.git or work/foo.git).
-        name: RepoName,
+        /// The .git suffix is added automatically if omitted.
+        name: String,
     },
 
     /// List all repositories.

@@ -5,8 +5,16 @@ use miette::{IntoDiagnostic, Result, ensure};
 use quire::Quire;
 use quire::quire::{Repo, RepoName};
 
-pub async fn new(quire: &Quire, name: &RepoName) -> Result<()> {
-    let repo = Repo::new(&quire.repos_dir(), name);
+pub async fn new(quire: &Quire, raw: &str) -> Result<()> {
+    // Accept names with or without the .git suffix.
+    let normalized = if raw.ends_with(".git") {
+        raw.to_string()
+    } else {
+        format!("{raw}.git")
+    };
+    let name: RepoName = normalized.parse()?;
+
+    let repo = Repo::new(&quire.repos_dir(), &name);
     ensure!(!repo.exists(), "repository already exists: {name}");
 
     // Create parent directory for grouped repos (e.g. work/foo.git).
