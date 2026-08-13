@@ -87,19 +87,29 @@ needs the container ID for replacement and cleanup.
 The argv builder lives in `quire-core` and both callers share it.
 `Executor::Process` is deleted; the axis becomes `Launcher::{Native, Docker}`.
 
-### 3. The pipeline image moves to `.quire/config.fnl`
+### 3. The pipeline image comes from `.quire/Dockerfile`
 
 `(ci.image …)` cannot survive containerization. The declaration lives in the
 file `quire-ci` compiles, and `quire-ci` runs inside the container that
 declaration is supposed to start.
 
-Reading the image from `.quire/config.fnl` resolves this. The server already
-reads that file with `git show` at the pushed SHA, without materializing a
-workspace, so container startup stays single-phase.
+The declaration goes away rather than moving somewhere the server can read it
+earlier. `.quire/Dockerfile` already carries the image for docker runs, built
+per run from the workspace at the pushed SHA, and it is the only mechanism the
+executor honors today. A repo without one gets a published `quire-ci` image
+carrying the binary and a base toolchain. The resolution order is
+`.quire/Dockerfile` → default image, with no third case to fall through to.
 
 The alternative — compiling `ci.fnl` host-side to learn the image — means
 pipeline top-level code executes unsandboxed on the host on every run, which
-would quietly undo the isolation containerization is meant to buy.
+would quietly undo the isolation containerization is meant to buy. Relocating
+the declaration to `.quire/config.fnl` avoids that, but buys a second place to
+say what the image is when `.quire/Dockerfile` already says it.
+
+Unresolved: decision 1 mounts `quire-ci` into the container precisely so any
+image works. A default image that already carries the binary makes that mount
+redundant in the default case, and whether it becomes conditional is left to
+the task.
 
 ### 4. Communicate over a per-run Unix socket
 
@@ -239,7 +249,7 @@ The `ready` queue carries this design in implementation order:
 | Key | Task |
 |---|---|
 | `xvtxxmoz` | Remove mirroring from CI |
-| `pkpkursx` | Move the pipeline image declaration to `.quire/config.fnl` |
+| `pkpkursx` | Drop the pipeline image declaration for `.quire/Dockerfile` |
 | `sxxrppsm` | Rename the superseded run outcome to replaced |
 | `psuumwvs` | Add a server-side run queue |
 | `llrqwovp` | Replace the HTTP transport with a per-run Unix socket |
@@ -263,6 +273,10 @@ Archived: `wzmkkkon` (chunked log POST) and `xkyuzkoz` (resolve image from
 0010 replaced all of it with `created_at`, `dispatched_at`, `resolved_at`,
 and an `outcome` enum. It needs rewriting against this design rather than
 patching.
+
+`docs/CI-FENNEL.md` documents `(ci.image …)` and a three-step resolution
+order. Decision 3 removes both; the section becomes a note that the image
+comes from `.quire/Dockerfile` or the default.
 
 `docs/CI.md` presents per-run Docker containers, the queue, and
 `:allow-failure` as locked-in v1 decisions. The first two become true under
