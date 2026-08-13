@@ -221,33 +221,6 @@ The execute VM is sandboxed (no `io`/`os`/`debug`), so `runtime.sh` is the docum
 
 `runtime` is also reachable as a module: `(let [{: sh : secret} (require :quire.runtime)] …)`. Same table, same closures — useful for library code that wants its dependencies explicit.
 
-## Stdlib (`quire.stdlib`)
-
-Helpers that compose runtime primitives into common recipes. Embedded into the binary; available via `(require :quire.stdlib)` from any run-fn.
-
-The kernel (`sh`/`secret`/`jobs`) stays small. Higher-level operations like tag-and-push live in Fennel where they're easier to read and evolve.
-
-```
-(local {: mirror} (require :quire.stdlib))
-
-(ci.job :mirror [:quire/push :test]
-  (fn [{: jobs : secret}]
-    (let [push (jobs :quire/push)
-          auth (secret :github_auth_header)]
-      (mirror {:url         "https://github.com/example/repo.git"
-               :auth-header auth
-               :sha         push.sha
-               :tag         (.. "quire-" (string.sub push.sha 1 8))
-               :git-dir     (. push :git-dir)
-               :refs        ["refs/heads/main"]}))))
-```
-
-Available helpers:
-
-* `(mirror opts)` — tag a commit and push it (plus optional refs) to a remote. `opts.url`, `opts.auth-header`, `opts.sha`, `opts.tag`, and `opts.git-dir` are required; `opts.refs` defaults to `[]`. The caller resolves the credential (typically via `runtime.secret`) and passes the full HTTP header line as `:auth-header`; mirror passes it to git via `GIT_CONFIG_*` env vars rather than `-c http.extraHeader=…` in argv, so it doesn't appear in `ps` listings. Returns `{:tag :pushed_refs}`. Raises on missing required opts or non-zero git exits.
-
-Use the stdlib form to mirror conditionally or as part of a larger run-fn.
-
 ## A worked example
 
 ```

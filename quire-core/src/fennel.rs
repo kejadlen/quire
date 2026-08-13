@@ -537,12 +537,14 @@ mod tests {
     #[test]
     fn stdlib_module_preloaded_at_construction() {
         let f = fennel();
-        let module: mlua::Table = f
+        // `quire.stdlib` is the home for run-fn helpers composed from
+        // runtime primitives. The module loads even when it ships no
+        // helpers, so a future addition needs no loader changes.
+        let _: mlua::Table = f
             .lua()
             .load(r#"return require("quire.stdlib")"#)
             .eval()
             .expect("require quire.stdlib");
-        let _: mlua::Function = module.get("mirror").expect("mirror should be a function");
     }
 
     #[test]

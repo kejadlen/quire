@@ -278,7 +278,7 @@ impl Run {
                 cmd.arg("--local").arg("--git-dir").arg(git_dir);
             }
             Some(s) => {
-                self.store_bootstrap_data(git_dir, traceparent)?;
+                self.store_bootstrap_data(traceparent)?;
                 cmd.env("QUIRE__SERVER_URL", &s.server_url);
                 cmd.env("QUIRE__RUN_TOKEN", &s.run_token);
             }
@@ -425,17 +425,11 @@ impl Run {
     /// Called by `execute` when the API transport is active, before spawning
     /// quire-ci. quire-ci fetches this via `GET /api/runs/:id/bootstrap`
     /// instead of reading a file.
-    fn store_bootstrap_data(&self, git_dir: &Path, traceparent: Option<&str>) -> Result<()> {
-        let git_dir_str = git_dir.to_str().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "git_dir path is not valid UTF-8",
-            )
-        })?;
+    fn store_bootstrap_data(&self, traceparent: Option<&str>) -> Result<()> {
         let db = crate::db::open(&self.db_path)?;
         db.execute(
-            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir_str, traceparent, &self.id],
+            "UPDATE runs SET traceparent = ?1 WHERE id = ?2",
+            rusqlite::params![traceparent, &self.id],
         )?;
         Ok(())
     }

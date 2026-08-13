@@ -5,8 +5,6 @@
 //! is created and stored in `runs.run_token`. The bearer token itself
 //! identifies the run — no run ID appears in the path.
 
-use std::path::PathBuf;
-
 use serde::Deserialize;
 
 use axum::extract::{FromRequestParts, State};
@@ -137,11 +135,8 @@ async fn verify_run_token(
 ///
 /// Returns the bootstrap payload for a run. One-shot: the server marks
 /// bootstrap as fetched on the first successful read and returns 410 on
-/// any subsequent call. Auth is handled by [`verify_run_token`] middleware.
-///
-/// Returns 404 if the run does not have API bootstrap data (e.g. the run
-/// was created with filesystem transport and `store_bootstrap_data` was
-/// never called).
+/// any subsequent call. Auth is handled by [`verify_run_token`] middleware,
+/// which resolves the run from the bearer token before this handler runs.
 async fn get_bootstrap(
     State(quire): State<Quire>,
     axum::Extension(run_id): axum::Extension<String>,
@@ -155,7 +150,6 @@ async fn get_bootstrap(
                 sha: String,
                 ref_name: String,
                 pushed_at_ms: i64,
-                git_dir: Option<String>,
                 traceparent: Option<String>,
                 dispatched_at: Option<i64>,
                 repo: String,
@@ -163,7 +157,7 @@ async fn get_bootstrap(
 
             let row: RunRow = db
                 .prepare(
-                    "SELECT sha, ref_name, pushed_at_ms, git_dir, traceparent, dispatched_at, repo
+                    "SELECT sha, ref_name, pushed_at_ms, traceparent, dispatched_at, repo
                      FROM runs WHERE id = ?1",
                 )?
                 .query_and_then(rusqlite::params![run_id], serde_rusqlite::from_row)?
@@ -173,8 +167,6 @@ async fn get_bootstrap(
             if row.dispatched_at.is_some() {
                 return Err(ApiError::Gone);
             }
-
-            let git_dir: PathBuf = row.git_dir.map(PathBuf::from).ok_or(ApiError::NotFound)?;
 
             let meta = RunMeta {
                 sha: row.sha,
@@ -191,7 +183,6 @@ async fn get_bootstrap(
 
             Ok(Bootstrap {
                 meta,
-                git_dir,
                 repo: row.repo,
                 run_id,
                 traceparent: row.traceparent,
@@ -295,7 +286,6 @@ mod tests {
     async fn create_run_with_bootstrap(
         env: &TestEnv,
         session: &ApiSession,
-        git_dir: &str,
         traceparent: Option<&str>,
     ) -> String {
         let run = env
@@ -306,8 +296,8 @@ mod tests {
 
         let db = crate::db::open(&env.quire.db_path()).expect("db open");
         db.execute(
-            "UPDATE runs SET git_dir = ?1, traceparent = ?2 WHERE id = ?3",
-            rusqlite::params![git_dir, traceparent, &run_id],
+            "UPDATE runs SET traceparent = ?1 WHERE id = ?2",
+            rusqlite::params![traceparent, &run_id],
         )
         .expect("update bootstrap data");
         run_id
@@ -317,7 +307,7 @@ mod tests {
     async fn bootstrap_returns_401_without_auth() {
         let env = TestEnv::new();
         let session = ApiSession::new(3000);
-        create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
+        create_run_with_bootstrap(&env, &session, None).await;
 
         let resp = get(env.app(), "/run/bootstrap", None).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -335,7 +325,7 @@ mod tests {
     async fn bootstrap_returns_payload_on_first_fetch() {
         let env = TestEnv::new();
         let session = ApiSession::new(3000);
-        let run_id = create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
+        let run_id = create_run_with_bootstrap(&env, &session, None).await;
 
         let resp = get(env.app(), "/run/bootstrap", Some(&session.run_token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -343,7 +333,6 @@ mod tests {
         use http_body_util::BodyExt;
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
-        assert_eq!(parsed["git_dir"], "/repos/test.git");
         assert_eq!(parsed["repo"], "test.git");
         assert_eq!(parsed["run_id"], run_id);
     }
@@ -352,7 +341,7 @@ mod tests {
     async fn bootstrap_returns_410_on_second_fetch() {
         let env = TestEnv::new();
         let session = ApiSession::new(3000);
-        create_run_with_bootstrap(&env, &session, "/repos/test.git", None).await;
+        create_run_with_bootstrap(&env, &session, None).await;
         let token = &session.run_token;
 
         let first = get(env.app(), "/run/bootstrap", Some(token)).await;

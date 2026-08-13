@@ -142,7 +142,6 @@ impl Runtime {
         pipeline: Pipeline,
         registry: SecretRegistry,
         meta: &RunMeta,
-        git_dir: &std::path::Path,
         workspace: std::path::PathBuf,
         log_dir: std::path::PathBuf,
     ) -> Self {
@@ -155,11 +154,6 @@ impl Runtime {
         push.set("ref", meta.r#ref.as_str()).expect("set ref");
         push.set("pushed-at", meta.pushed_at.to_string().as_str())
             .expect("set pushed-at");
-        // `git-dir` is environmental rather than a fact about the push;
-        // it may belong on an ambient context alongside `sh`/`secret`
-        // instead of on this table.
-        push.set("git-dir", git_dir.to_string_lossy().as_ref())
-            .expect("set git-dir");
         let push_value = push.into_lua(lua).expect("push table to value");
 
         // Build per-job input views from transitive reachability.
@@ -1005,117 +999,6 @@ mod tests {
         assert!(
             msg.contains("string or sequence"),
             "expected type error, got: {msg}"
-        );
-    }
-
-    // --- quire.stdlib mirror tests ---
-
-    /// Run `git` once with the standard test env. Asserts success and
-    /// returns stdout. Used by the mirror fixture below to set up the
-    /// source and target bare repos.
-    fn git(args: &[&str], cwd: &std::path::Path) -> String {
-        let env_vars: [(&str, &str); 6] = [
-            ("GIT_AUTHOR_NAME", "test"),
-            ("GIT_AUTHOR_EMAIL", "test@test"),
-            ("GIT_COMMITTER_NAME", "test"),
-            ("GIT_COMMITTER_EMAIL", "test@test"),
-            ("GIT_CONFIG_GLOBAL", "/dev/null"),
-            ("GIT_CONFIG_SYSTEM", "/dev/null"),
-        ];
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .envs(env_vars)
-            .output()
-            .expect("git");
-        assert!(
-            out.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).expect("utf8")
-    }
-
-    /// Build a source bare repo with one commit and an empty target
-    /// bare repo in the same tempdir. Returns (tempdir, source bare,
-    /// target bare, head sha).
-    fn bare_repo_with_target() -> (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        std::path::PathBuf,
-        String,
-    ) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let work = dir.path().join("work");
-        let bare = dir.path().join("repo.git");
-        let target = dir.path().join("target.git");
-
-        fs_err::create_dir_all(&work).expect("mkdir work");
-        git(&["init", "-b", "main"], &work);
-        git(&["commit", "--allow-empty", "-m", "initial"], &work);
-        let sha = git(&["rev-parse", "HEAD"], &work).trim().to_string();
-        git(
-            &[
-                "clone",
-                "--bare",
-                work.to_str().unwrap(),
-                bare.to_str().unwrap(),
-            ],
-            dir.path(),
-        );
-        git(&["init", "--bare", target.to_str().unwrap()], dir.path());
-
-        (dir, bare, target, sha)
-    }
-
-    #[test]
-    fn stdlib_mirror_tags_and_pushes() {
-        let (_dir, bare, target, sha) = bare_repo_with_target();
-
-        let mut secrets = HashMap::new();
-        secrets.insert(
-            "github_token".to_string(),
-            SecretString::from("Authorization: Bearer test-token"),
-        );
-
-        let source = format!(
-            r#"(local {{: job : runtime}} (require :quire.ci))
-(local {{: mirror}} (require :quire.stdlib))
-(job :go [:quire/push]
-  (fn []
-    (let [auth (runtime.secret :github_token)]
-      (mirror {{:url "{url}"
-               :auth-header auth
-               :sha "{sha}"
-               :tag "v1"
-               :git-dir "{git_dir}"}}))))"#,
-            url = format!("file://{}", target.display()),
-            sha = sha,
-            git_dir = bare.display(),
-        );
-
-        let (runtime, run_fn, _guard) = rt(&source, secrets);
-        let _: mlua::Value = call_fn(&runtime, &run_fn).expect("mirror should succeed");
-
-        // Tag landed in the target repo, pointing at the head SHA.
-        let resolved = git(&["rev-parse", "refs/tags/v1"], &target);
-        assert_eq!(resolved.trim(), sha);
-    }
-
-    #[test]
-    fn stdlib_mirror_errors_on_missing_required_opt() {
-        let source = r#"(local {: job} (require :quire.ci))
-(local {: mirror} (require :quire.stdlib))
-(job :go [:quire/push]
-  (fn []
-    (mirror {:auth-header "x" :sha "x" :tag "v1" :git-dir "/tmp"})))"#;
-        let (_runtime, run_fn, _guard) = rt(source, HashMap::new());
-        let err = run_fn.call::<mlua::Value>(()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("Missing argument url"),
-            "expected missing-:url error, got: {msg}"
         );
     }
 }

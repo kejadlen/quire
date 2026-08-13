@@ -160,7 +160,7 @@ sequenceDiagram
     Run->>CI: spawn (QUIRE__SERVER_URL, QUIRE__RUN_TOKEN, --events, --out-dir)
     CI->>Bootstrap: GET /api/run/bootstrap (bearer token)
     Bootstrap->>DB: UPDATE runs SET state='active', started_at_ms=now
-    Bootstrap-->>CI: git_dir, meta, sentry_trace_id
+    Bootstrap-->>CI: meta, sentry_trace_id
     CI->>CI: compile .quire/ci.fnl
     loop per job in topo order
       CI->>CI: enter_job / run-fn / leave_job
@@ -234,7 +234,6 @@ Two things in `CI.md` that the code does *not* yet implement at this layer:
 | `started_at_ms` | `transition(Active)`, also stamped as fallback in `Succeeded/Failed/Canceled` | `read_started_at`, web handlers |
 | `finished_at_ms` | `transition(Succeeded/Failed/Canceled)` | `read_finished_at`, web handlers |
 | `run_token` | `Runs::create` (API sessions only) | `verify_run_token` middleware |
-| `git_dir` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
 | `traceparent` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
 
 Migration 0007 dropped eight columns that carried no live data with the Process executor: `container_id`, `workspace_path`, `image_tag`, `build_started_at_ms`, `build_finished_at_ms`, `container_started_at_ms`, `container_stopped_at_ms`, and `sentry_trace_id`. The first five were Docker-executor placeholders; `workspace_path` was written at create time but reconstructable from `<base_dir>/<run_id>/workspace`; `sentry_trace_id` was added in migration 0004 and superseded by `traceparent` before it was ever used.

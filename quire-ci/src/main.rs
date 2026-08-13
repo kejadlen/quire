@@ -240,12 +240,11 @@ impl RunClient {
     ///
     /// One-shot: the server marks the bootstrap as fetched after the first
     /// successful call and returns 410 on any subsequent call.
-    fn fetch_bootstrap(&self) -> Result<(PathBuf, RunMeta, TelemetryContext)> {
+    fn fetch_bootstrap(&self) -> Result<(RunMeta, TelemetryContext)> {
         let bootstrap: Bootstrap =
             (|| -> reqwest::Result<_> { self.get("bootstrap")?.error_for_status()?.json() })()
                 .into_diagnostic()?;
         Ok((
-            bootstrap.git_dir,
             bootstrap.meta,
             TelemetryContext {
                 traceparent: bootstrap.traceparent,
@@ -352,7 +351,7 @@ fn main() -> Result<()> {
             // before the Sentry client flushes to the server.
             let _guard = telemetry::init_telemetry(miette_layer, FmtMode::Plain, None, VERSION)?;
 
-            let (git_dir, meta, sentry_ctx) = if local {
+            let (meta, sentry_ctx) = if local {
                 let Some(git_dir) = git_dir else {
                     bail!("--git-dir is required for local runs");
                 };
@@ -363,7 +362,7 @@ fn main() -> Result<()> {
                     r#ref: git_ref,
                     pushed_at: jiff::Timestamp::now(),
                 };
-                (git_dir, meta, TelemetryContext::default())
+                (meta, TelemetryContext::default())
             } else {
                 client.fetch_bootstrap().inspect_err(|e| {
                     tracing::error!(error = %e, "bootstrap fetch failed");
@@ -386,7 +385,7 @@ fn main() -> Result<()> {
 
             let registry = SecretRegistry::new(move |name| client.fetch_secret(name));
 
-            run_pipeline(workspace, sink, log_dir, git_dir, meta, registry)
+            run_pipeline(workspace, sink, log_dir, meta, registry)
         }
     }
 }
@@ -493,7 +492,6 @@ fn run_pipeline(
     workspace: PathBuf,
     mut sink: Box<dyn EventSink>,
     log_dir: PathBuf,
-    git_dir: PathBuf,
     meta: RunMeta,
     registry: SecretRegistry,
 ) -> Result<()> {
@@ -535,9 +533,7 @@ fn run_pipeline(
 
     let sink: Rc<RefCell<Box<dyn EventSink>>> = Rc::new(RefCell::new(sink));
 
-    let runtime = Rc::new(Runtime::new(
-        pipeline, registry, &meta, &git_dir, workspace, log_dir,
-    ));
+    let runtime = Rc::new(Runtime::new(pipeline, registry, &meta, workspace, log_dir));
 
     // Active job pointer, shared between the main loop and the
     // runtime callback. The callback translates RuntimeEvent into
