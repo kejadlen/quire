@@ -236,7 +236,7 @@ Two things in `CI.md` that the code does *not* yet implement at this layer:
 | `run_token` | `Runs::create` (API sessions only) | `verify_run_token` middleware |
 | `traceparent` | `Run::store_bootstrap_data` (API sessions only) | bootstrap endpoint |
 
-Migration 0007 dropped eight columns that carried no live data with the Process executor: `container_id`, `workspace_path`, `image_tag`, `build_started_at_ms`, `build_finished_at_ms`, `container_started_at_ms`, `container_stopped_at_ms`, and `sentry_trace_id`. The first five were Docker-executor placeholders; `workspace_path` was written at create time but reconstructable from `<base_dir>/<run_id>/workspace`; `sentry_trace_id` was added in migration 0004 and superseded by `traceparent` before it was ever used.
+Migration 0007 dropped eight columns that carried no live data with the Process executor: `container_id`, `workspace_path`, `image_tag`, `build_started_at_ms`, `build_finished_at_ms`, `container_started_at_ms`, `container_stopped_at_ms`, and `sentry_trace_id`. The first five were Docker-executor placeholders; `workspace_path` was written at create time but reconstructable from `<base_dir>/<run_id>/workspace`; `sentry_trace_id` was added in migration 0004 and superseded by `traceparent` before it was ever used. Migration 0011 dropped `git_dir`, whose only consumer was the CI mirror helper removed in favor of server-side mirroring.
 
 ### `jobs` table
 
