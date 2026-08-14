@@ -11,7 +11,7 @@ const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 const MIN_REDACT_LEN: usize = 8;
 
 #[hegel::composite]
-fn push_ref(tc: TestCase) -> PushRef {
+fn push_ref(tc: &TestCase) -> PushRef {
     PushRef {
         ref_name: tc.draw(text()),
         old_sha: tc.draw(text()),
@@ -21,7 +21,7 @@ fn push_ref(tc: TestCase) -> PushRef {
 }
 
 #[hegel::composite]
-fn push_event(tc: TestCase) -> PushEvent {
+fn push_event(tc: &TestCase) -> PushEvent {
     // jiff::Timestamp range: -377705023201..=253402207200 seconds.
     let secs = tc.draw(
         integers::<i64>()
@@ -126,7 +126,7 @@ fn secret_name(i: usize) -> String {
 }
 
 #[hegel::composite]
-fn unique_secret_entries(tc: TestCase) -> Vec<(String, String)> {
+fn unique_secret_entries(tc: &TestCase) -> Vec<(String, String)> {
     let count = tc.draw(integers::<usize>().min_value(1).max_value(8));
     let mut seen = std::collections::HashSet::new();
     let mut entries = Vec::new();
@@ -141,7 +141,7 @@ fn unique_secret_entries(tc: TestCase) -> Vec<(String, String)> {
 }
 
 #[hegel::composite]
-fn resolved_registry(tc: TestCase) -> SecretRegistry {
+fn resolved_registry(tc: &TestCase) -> SecretRegistry {
     let entries = tc.draw(unique_secret_entries());
     let mut map = HashMap::new();
     for (name, value) in &entries {
@@ -156,7 +156,7 @@ fn resolved_registry(tc: TestCase) -> SecretRegistry {
 }
 
 #[hegel::composite]
-fn text_with_secrets(tc: TestCase) -> (SecretRegistry, String) {
+fn text_with_secrets(tc: &TestCase) -> (SecretRegistry, String) {
     let entries = tc.draw(unique_secret_entries());
     let mut map = HashMap::new();
     let mut long_values: Vec<String> = Vec::new();
