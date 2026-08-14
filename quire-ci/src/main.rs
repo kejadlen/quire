@@ -376,10 +376,12 @@ fn main() -> Result<()> {
             if let Some(tp) = sentry_ctx.traceparent.as_deref() {
                 let mut extractor = std::collections::HashMap::new();
                 extractor.insert("traceparent".to_string(), tp.to_string());
-                run_span.set_parent(
+                if let Err(error) = run_span.set_parent(
                     opentelemetry_sdk::propagation::TraceContextPropagator::new()
                         .extract(&extractor),
-                );
+                ) {
+                    tracing::warn!(%error, "failed to attach trace context to run span");
+                }
             }
             let _run_span = run_span.entered();
 

@@ -5,7 +5,7 @@
 //! metadata and session credentials the runtime needs at execute time.
 
 use jiff::Timestamp;
-use rand::Rng as _;
+use rand::RngExt;
 use rand::distr::Alphanumeric;
 
 /// Immutable metadata for a CI run. Passed to `Runs::create` at

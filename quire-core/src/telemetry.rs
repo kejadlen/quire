@@ -200,11 +200,10 @@ pub enum FmtMode {
 ///
 /// [`ClientOptions`]: sentry::ClientOptions
 pub fn sentry_client_options(release: &'static str) -> sentry::ClientOptions {
-    sentry::ClientOptions {
-        release: Some(release.into()),
-        before_send: Some(std::sync::Arc::new(before_send)),
-        ..Default::default()
-    }
+    let mut options = sentry::ClientOptions::default();
+    options.release = Some(release.into());
+    options.before_send = Some(std::sync::Arc::new(before_send));
+    options
 }
 
 /// Returned by `init_telemetry`; shuts down both tracing and Sentry on drop.
