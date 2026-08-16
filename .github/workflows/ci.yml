@@ -28,7 +28,7 @@ jobs:
       - run: just clippy test
       # Coverage and mutation testing disabled during early exploratory work.
       # When re-enabling: add llvm-tools component, install grcov + cargo-mutants,
-      # add astral-sh/setup-uv, and uncomment the recipes below.
+      # and uncomment the recipes below.
       # - run: just coverage
       # - run: just mutants
 
