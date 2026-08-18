@@ -59,9 +59,10 @@ jobs:
         with:
           persist-credentials: false
       - id: version
+        # CalVer with HH:MM so multiple pushes a day sort chronologically.
         run: |
           short_sha="${GITHUB_SHA::7}"
-          date=$(date -u +%Y-%m-%d)
+          date=$(date -u +%Y-%m-%dT%H%M)
           echo "version=${date}-${short_sha}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
       - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0

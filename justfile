@@ -87,14 +87,14 @@ install:
     cargo install --locked --path quire-server
 
 # Manual release: tag a revision (default: closest_pushable()) as
-# v<UTC-date>-<short-sha> and push to github. Use this when the normal CI path
+# v<UTC-date>T<HHMM>-<short-sha> and push to github. Use this when the normal CI path
 # is not working. Triggers the release workflow.
 # manual-release rev="@-":
 #     #!/usr/bin/env bash
 #     set -euo pipefail
 #     sha=$(jj log -r "{{rev}}" --no-graph -T commit_id --limit 1)
 #     short=${sha:0:8}
-#     date=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y-%m-%d "$sha")
+#     date=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y-%m-%dT%H%M "$sha")
 #     tag="v${date}-${short}"
 #     jj tag set "$tag" -r "{{rev}}"
 #     git push github "$tag"
