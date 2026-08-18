@@ -37,7 +37,9 @@ jj git remote add origin git@host:foo.git
 jj git push
 ```
 
-Other management commands: `quire repo list` and `quire repo rm foo.git`, invoked the same way via SSH.
+Other management commands: `quire repo list`, `quire repo rm foo.git`, and
+`quire mirror push foo.git refs/heads/main` (re-trigger mirroring of a ref),
+invoked the same way via SSH.
 
 ## Design principles
 

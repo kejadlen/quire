@@ -64,9 +64,36 @@ fn dispatch_git(quire: &Quire, git_cmd: &str, args: &[String]) -> Result<()> {
 fn dispatch_quire(args: &[String]) -> Result<()> {
     ensure!(!args.is_empty(), "no quire subcommand provided");
 
-    ensure!(args[0] == "repo", "unsupported quire command: {}", args[0]);
+    // Allowlist: `repo <any>` and `mirror push <repo> <ref>`. An explicit mirror
+    // push grants no new capability over SSH — pushing already mirrors every
+    // updated ref — it just re-triggers after a mirror-side failure.
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    ensure!(
+        matches!(words.as_slice(), ["repo", ..] | ["mirror", "push", ..]),
+        "unsupported quire command: {}",
+        args.join(" ")
+    );
 
-    tracing::info!(subcmd = "repo", "dispatching quire command");
-    let err = Command::new("quire").arg("repo").args(&args[1..]).exec();
+    tracing::info!(subcmd = %args[0], "dispatching quire command");
+    let err = Command::new("quire").args(args).exec();
     bail!("exec failed: {err}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mirror_dispatch_requires_push_subcommand() {
+        assert!(dispatch_quire(&["mirror".into()]).is_err());
+        assert!(dispatch_quire(&["mirror".into(), "status".into()]).is_err());
+    }
+
+    #[test]
+    fn non_allowlisted_quire_commands_are_rejected() {
+        // `serve` and `ci` are real subcommands that must stay undispatchable
+        // over SSH; the accept paths exec and can't run in-process.
+        assert!(dispatch_quire(&["serve".into()]).is_err());
+        assert!(dispatch_quire(&["ci".into(), "run".into()]).is_err());
+    }
 }

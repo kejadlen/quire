@@ -122,7 +122,7 @@ Things most likely to go wrong here:
 
 ### 2. `quire exec` dispatch subcommand
 
-Replace the ad-hoc shell dispatch from step 1 with `docker exec -i quire-container quire exec "$SSH_ORIGINAL_COMMAND"`. The `quire exec` subcommand takes the original command string, parses it properly (shell-style with a real parser, not regex), validates it against a strict allowlist — `git-receive-pack`, `git-upload-pack`, `git-upload-archive`, and a specific set of `quire` subcommands (`new`, `list`, `rm`) — and execs the appropriate binary.
+Replace the ad-hoc shell dispatch from step 1 with `docker exec -i quire-container quire exec "$SSH_ORIGINAL_COMMAND"`. The `quire exec` subcommand takes the original command string, parses it properly (shell-style with a real parser, not regex), validates it against a strict allowlist — `git-receive-pack`, `git-upload-pack`, `git-upload-archive`, and a specific set of `quire` subcommands (`repo new`, `repo list`, `repo rm`, `mirror push`) — and execs the appropriate binary.
 
 **This is the only dispatch surface into the container.** There's no sshd in the container to backstop a permissive parser; anything that gets past `quire exec` runs as trusted. The allowlist is the security boundary — not a UX convenience, the actual boundary. Treat it that way: explicit enumeration, reject by default, no regex-based "looks safe enough," tests for the rejection paths as well as the accept paths.
 

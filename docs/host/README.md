@@ -63,9 +63,10 @@ Reference configs for dispatching SSH connections into the quire container.
 
 SSH dispatch is handled by `quire exec` inside the container. The sshd
 ForceCommand passes `$SSH_ORIGINAL_COMMAND` directly to the binary,
-which validates the git command against an allowlist (git-receive-pack,
-git-upload-pack, git-upload-archive) and sanitizes the repository path
-before exec'ing the git subprocess.
+which validates the command against an allowlist (git-receive-pack,
+git-upload-pack, git-upload-archive, and the `quire repo`/`quire mirror
+push` subcommands) and sanitizes the repository path
+before exec'ing the appropriate subprocess.
 
 The container image doesn't bake in a `quire` user — it runs as whatever
 uid/gid the host passes via `--user`. This avoids "dubious ownership"
