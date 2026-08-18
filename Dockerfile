@@ -97,7 +97,7 @@ COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 RUN git config --system hook.quire.event "post-receive" \
  && git config --system hook.quire.command "quire hook post-receive"
 
-# Volume layout per PLAN.md. Ownership is set on the host; the container
+# Volume layout per docs/ARCHITECTURE.md. Ownership is set on the host; the container
 # runs as the host uid/gid passed via `docker exec --user`, so no user
 # is created in the image.
 RUN mkdir -p /var/quire/repos /var/quire/runs

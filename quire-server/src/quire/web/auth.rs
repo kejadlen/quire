@@ -41,7 +41,7 @@ pub async fn inject_dev_user(mut request: axum::extract::Request, next: Next) ->
 
 /// Middleware that rejects unauthenticated requests.
 ///
-/// CI routes require auth per the access matrix in PLAN.md.
+/// CI routes require auth per the access matrix in docs/ARCHITECTURE.md.
 /// Returns 401 so the client knows auth is required.
 pub async fn require_auth(request: axum::extract::Request, next: Next) -> Response {
     let user = request

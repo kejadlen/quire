@@ -81,12 +81,19 @@ should reach it directly.
 
 ## CI: docker-out-of-docker
 
-The CI runner shells out to docker against the **host** daemon —
-`docker run` to start a per-run container with the pipeline's image,
-`docker exec` for each `(sh ...)` call, `docker stop` at the end.
+> **Not yet in effect.** CI currently runs the pipeline as a plain host
+> subprocess inside the quire container — no docker involved, so the
+> socket mount and `docker` group membership below aren't required to
+> run CI today. They become required when per-run containers land (see
+> [the re-architecture plan](../plans/2026-08-12-ci-rearchitecture.md));
+> the setup is documented here because it's the deployment shape being
+> built toward.
+
+The CI runner will shell out to docker against the **host** daemon,
+starting a per-run container that `quire-ci` itself runs inside.
 Architecture and trade-offs in [docs/CI.md](../CI.md).
 
-For this to work the quire container needs:
+For this the quire container needs:
 
 - The docker CLI (baked into the image; the host daemon does the work).
 - The host's `/var/run/docker.sock` bind-mounted in.

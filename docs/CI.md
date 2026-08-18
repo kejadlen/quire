@@ -1,6 +1,8 @@
 # quire — CI design
 
-How CI works in quire. Slots alongside PLAN.md; will likely fold in once the open questions settle. For the run/job state machines and what each state means in the database, see [CI-STATE.md](./CI-STATE.md).
+How CI works in quire. Slots alongside [ARCHITECTURE.md](./ARCHITECTURE.md). For the run/job state machines and what each state means in the database, see [CI-STATE.md](./CI-STATE.md).
+
+> **Status:** this is the target design; the implementation is partway there. Today the pipeline runs in a `quire-ci` host subprocess with no container, no queue, and `(sh …)` executing directly on the host — [CI-STATE.md](./CI-STATE.md) documents that current state. [`plans/2026-08-12-ci-rearchitecture.md`](./plans/2026-08-12-ci-rearchitecture.md) is the decided path to the containerized shape described here, and supersedes this doc on a few points: the image comes from `.quire/Dockerfile` (not `(ci.image …)`), quire-ci ↔ server communication moves to a per-run Unix socket (not HTTP), and mirroring is server-side rather than a CI concern.
 
 ## Shape
 
@@ -80,38 +82,15 @@ Cheap to get right *if* the run record stores the ref it's building from the sta
 
 ## The job DAG
 
-Jobs declare dependencies via `:needs`. Missing `:needs` means no dependencies — ready immediately. Failure of a job marks all transitive dependents as `skipped`, unless the failing job has `:allow-failure true` (in which case dependents proceed normally).
+Jobs form a dependency graph derived from each job's **inputs list** — the concrete syntax and semantics live in [CI-FENNEL.md](./CI-FENNEL.md). (Earlier drafts of this section used a `:needs` field on data-table jobs; that schema was abandoned when the spec settled on `(job id inputs run)`.)
 
-```
-{:jobs
- [{:id "setup"
-   :image "rust:1.75"
-   :run "rustup component add clippy rustfmt"}
+With max-concurrency 1, the executor topo-sorts and picks one ready job at a time (FIFO among ready jobs = spec order). Failure of a job should mark all transitive dependents as `skipped` — today the executor simply stops at the first failure and downstream jobs record nothing (see the Gaps table in CI-STATE.md).
 
-  {:id "lint"
-   :image "rust:1.75"
-   :needs ["setup"]
-   :allow-failure true
-   :run "cargo clippy -- -D warnings"}
+Decisions baked in:
 
-  {:id "test"
-   :image "rust:1.75"
-   :needs ["setup"]
-   :run "cargo test"}
-
-  {:id "deploy"
-   :image "alpine"
-   :needs ["test"]
-   :run "scp target/release/quire host:/usr/local/bin/"}]}
-```
-
-With max-concurrency 1, executor topo-sorts and picks one ready job at a time (FIFO among ready jobs = spec order). `lint` and `test` are both ready after `setup`; lint runs first, then test, then deploy. If `setup` fails, all three skip.
-
-Schema decisions baked in:
-
-* `:needs` is `needs-all` (job runs only when *all* listed jobs succeed). `needs-any` is a real but rare want; the schema can grow `:needs-any` later without breaking existing specs.
-* Job ids are arbitrary non-empty strings. Cycle detection at parse time via Kahn's algorithm — fails closed, error message names the cycle.
-* `:allow-failure` exists from v1. Without it, the only way to express "lint can fail and we still want to deploy" is to remove the dependency, which loses the ordering signal.
+* Dependencies are needs-all (a job runs only when *all* its input jobs succeed). A needs-any variant is a real but rare want; the spec can grow one later without breaking existing pipelines.
+* Cycle detection at registration via Kahn's algorithm — fails closed, error message names the cycle.
+* `:allow-failure` — "lint can fail and we still want to deploy" without dropping the ordering edge — is designed but **not implemented**; today every job failure is fatal to the run.
 
 ## Fennel evaluation
 
@@ -152,20 +131,19 @@ The reason this is the chosen path rather than "subprocess + rlimit, no bwrap" �
 2. **Runner picks up** the entry from the queue. Single `UPDATE runs SET state = 'active'` in SQLite.
 3. **Materialize workspace.** `git --git-dir=repos/foo.git archive <sha> | tar -x -C workspace/`. No worktree, no checkout state on the bare repo. Workspace is throwaway; deleted at end of run.
 4. **Evaluate `.quire/ci.fnl`** in the host process (see above). Pipeline image is read from the `(ci.image ...)` registration; jobs are registered via `(ci.job ...)`; the run-fns are not yet invoked.
-5. **Start the run container.** `docker run -d --rm --mount type=bind,src=<run-dir>,dst=/work -w /work <image> sleep infinity`. Container ID written to the `runs` row. The run's container hosts every `(sh ...)` call from every job in the run.
+5. **Start the run container.** `docker run -d --rm --mount type=bind,src=<run-dir>,dst=/work -w /work <image> sleep infinity`. The run's container hosts every `(sh ...)` call from every job in the run.
 6. **Per ready job:** invoke its run-fn in topological order. Each `(sh ...)` call inside the run-fn issues `docker exec` (no TTY) into the run container, captures stdout/stderr and exit code, and returns `{exit, stdout, stderr, cmd}` to Lua.
-7. **Tear down the run container.** `docker stop` + `docker rm`. Even on error paths — no orphaned containers if a run-fn errors. `container_stopped_at_ms` written to the `runs` row.
-8. **Aggregate.** Write final status via `UPDATE runs SET state = 'complete'` (or `'failed'`). Per-`(sh ...)` log files are written to `jobs/<job-id>/sh-<n>.log` on disk before the final transition.
+7. **Tear down the run container.** `docker stop` + `docker rm`. Even on error paths — no orphaned containers if a run-fn errors.
+8. **Aggregate.** Resolve the run: stamp `resolved_at` and an `outcome` (`succeeded` or a `failed-*` value — see CI-STATE.md for the taxonomy). Per-`(sh ...)` log files are written to `jobs/<job-id>/sh-<n>.log` on disk before the final transition.
 
 ## Run record schema
 
 ```
 quire.db
-  runs table: id, repo, ref_name, sha, pushed_at_ms, state, failure_kind,
-              queued_at_ms, started_at_ms, finished_at_ms, container_id,
-              image_tag, build_started_at_ms, build_finished_at_ms,
-              container_started_at_ms, container_stopped_at_ms, workspace_path
-  jobs table:  run_id, job_id, state, exit_code, started_at_ms, finished_at_ms
+  runs table: id, repo, ref_name, sha, pushed_at_ms, created_at,
+              dispatched_at, resolved_at, outcome, run_token, traceparent
+  jobs table: run_id, job_id, state, exit_code, started_at_ms, finished_at_ms
+  sh table:   run_id, job_id, started_at_ms, finished_at_ms, exit_code, cmd
 
 runs/<repo>/<run-id>/
   workspace/               # materialized checkout
@@ -255,12 +233,12 @@ Punt on cache invalidation until it actually annoys. "Delete the cache dir" is a
 * **SQLite is the primary store for run and job state.** Migrations under `migrations/`, embedded into the binary. The filesystem holds workspaces and per-job log files only.
 * **Per-run container**, not per-job and not long-lived runners. One `docker run` at run start, `docker exec` per `(sh ...)` call from each job, `docker stop` at run end. Per-job container differentiation is a deferred extension.
 * **`(sh ...)` is the only host-effect primitive in the Lua VM.** No `(container ...)` primitive. The execute VM is hardened (no `io`/`os`/`debug`) so `sh` becomes the documented chokepoint — every effect is auditable, persistable, redactable in one place.
-* **Pipeline-level image declaration via `(ci.image ...)`.** Single image per pipeline; per-job override deferred until pipelines actually need heterogeneity.
+* **Pipeline image from `.quire/Dockerfile`, falling back to a default image.** Single image per pipeline; per-job override deferred until pipelines actually need heterogeneity. (An earlier `(ci.image ...)` declaration is being removed — it can't survive containerized eval; see the re-architecture plan, decision 3.)
 * **DooD for v1**; OCI+bwrap as planned migration path.
 * **Workspace materialized via `git archive`**, not worktree.
 * **Max concurrency 1** across the whole forge. Escape valve is `max_concurrent_runs` config + per-repo cache file lock; not building it now.
 * **Jobs are a DAG** with `:needs` (needs-all). Executor schedules serially in topological order under max-concurrency 1; lifting that constraint changes the executor, not the spec.
-* **`:allow-failure`** flag exists from v1.
+* **`:allow-failure`** flag is part of the design; not yet implemented (see CI-STATE.md Gaps).
 * **Supersede on same `(repo, ref)`**: replace queued, kill running.
 * **`.quire/ci.fnl` is executed**, returns the DAG.
 * **Eval runs in-process; the execute VM is sandboxed.** Compile VM keeps full Lua 5.4 (Fennel macroexpand/traceback need `debug`); execute VM removes `io`/`os`/`debug` and exposes only `{sh, secret, jobs, string, table, math}`. Trusted-code threat model — no external isolation. Bwrap-based eval sandbox stays available as an opt-in for the day quire runs `ci.fnl` from someone other than the operator. Not built; not v1.

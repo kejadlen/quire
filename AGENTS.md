@@ -33,11 +33,14 @@ Always run `just all` and verify everything passes before committing. No excepti
 
 ## Updating docs
 
-When changing behavior (mirroring, config, hook dispatch, Docker layout, CI workflows), update the corresponding docs in the same commit. The docs to check:
+When changing behavior (mirroring, config, hook dispatch, Docker layout, CI workflows), update the corresponding docs in the same commit. `docs/README.md` indexes the whole tree; the docs to check:
 
 - `README.md` — feature descriptions and project status.
-- `docs/PLAN.md` — build sequence, architecture, and locked-in design decisions.
+- `docs/ARCHITECTURE.md` — architecture and locked-in design decisions.
+- `docs/CI.md`, `docs/CI-STATE.md`, `docs/CI-FENNEL.md` — CI design, run/job lifecycle, and the pipeline DSL. `CI-STATE.md` tracks what the code actually does; keep it honest when CI behavior changes.
 - `docs/config.md` — config file schemas and how they're loaded.
 - `.github/workflows/` — workflow changes must be self-documenting (comments on permissions, triggers).
+
+Documents under `docs/plans/` and `docs/notes/` are dated historical records. Don't retro-edit them to match new behavior; write a new one instead.
 
 If you're unsure whether a doc needs updating, it probably does.

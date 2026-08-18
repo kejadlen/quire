@@ -13,6 +13,7 @@ pick up changes.
 | Key                       | Type           | Required | Purpose                                                  |
 |---------------------------|----------------|----------|----------------------------------------------------------|
 | `:port`                   | integer        | no       | TCP port the HTTP server binds to (on `0.0.0.0`). Default: `3000`. |
+| `:host`                   | string         | no       | Hostname used in the clone URL shown in the repo sidebar, e.g. `"quire.local"` renders `https://quire.local/{repo}.git`. |
 | `:sentry :dsn`            | `SecretString` | no       | Sentry DSN for error reporting from both `quire` and `quire-ci`. Omit to disable. |
 | `:secrets`                | table          | no       | Named secrets exposed to `ci.fnl` jobs as `(secret :name)` and referenced by per-repo mirror targets. |
 
@@ -45,8 +46,9 @@ Files quire reads from a checked-in `.quire/` directory in the working
 tree:
 
 - `.quire/ci.fnl` — pipeline definition (jobs, image).
-- `.quire/Dockerfile` — image built per run when the CI executor is
-  `docker` and no other image is supplied.
+- `.quire/Dockerfile` — will supply the per-run container image once CI
+  runs in containers (see `plans/2026-08-12-ci-rearchitecture.md`); not
+  consumed yet.
 - `.quire/config.fnl` — per-repo settings; read at the pushed commit's
   SHA on every push.
 
@@ -115,5 +117,5 @@ Limits worth knowing:
 ## See also
 
 - [`fennel.md`](fennel.md) — how Fennel files are loaded into Rust structs.
-- `src/quire.rs` — `GlobalConfig` definition.
-- `src/secret.rs` — `SecretString` implementation and tests.
+- `quire-server/src/quire/mod.rs` — `GlobalConfig` and `RepoConfig` definitions.
+- `quire-core/src/secret.rs` — `SecretString` implementation and tests.

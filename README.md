@@ -10,9 +10,9 @@ A Rust binary that runs in a Docker container, fronted by the host's sshd and a 
 
 - **Git hosting over SSH**, via the host's sshd dispatching into the container. Explicit repo creation (`ssh git@host quire repo new <name>`).
 - **A read-only web view** for browsing README, tree, history, blame, diffs, and refs.
-- **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Unsandboxed by default since every pipeline is code I've written; a bubblewrap-based opt-in is available for the day quire ever runs code I haven't.
-- **Automatic mirroring** to GitHub, Gitea, or any HTTPS remote on every push. Map each remote URL to a push token in `.quire/config.fnl` under `:mirrors` (the value names an entry in the global `:secrets`); quire force-pushes every updated ref to all of them independently of CI.
-- **Email notifications** for CI failures and recoveries. SMTP via `msmtp`; plain text; per-repo config for what to send and to whom.
+- **Fennel-based CI** (Fennel is a Lisp that compiles to Lua), with pipelines defined in `.quire/ci.fnl`. Unsandboxed since every pipeline is code I've written; a sandboxed opt-in is planned for the day quire ever runs code I haven't.
+- **Automatic mirroring** to GitHub, Gitea, or any HTTPS remote on every push. Map each remote URL to a push token in `.quire/config.fnl` under `:mirrors` (the value names an entry in the global `:secrets`); quire pushes every updated ref to all of them independently of CI.
+- **Email notifications** (planned) for CI failures and recoveries. SMTP via `msmtp`; plain text; per-repo config for what to send and to whom.
 
 No issues, no PRs, no user management, no webhooks. Use the GitHub mirror for the social stuff; quire is your forge.
 
@@ -48,7 +48,7 @@ Quire holds to a few principles:
 - **The container is pure quire.** SSH auth and TLS/web auth both live on the host (host sshd, reverse proxy). The container runs `quire`, git, and msmtp. One job per surface.
 - **Don't own ssh.** The host's sshd handles auth, channels, and key management; `ForceCommand` dispatches authenticated invocations into the container via `docker exec`. Quire's integration point is git hooks and the `quire exec` dispatch target.
 - **Web auth at the reverse proxy.** The proxy (Caddy or equivalent) handles authentication and injects a trusted identity header. Quire reads the header and applies per-repo visibility: public repos are world-readable, private repos and CI logs require auth. Any auth mechanism the proxy supports (basic, OAuth, SSO) Just Works — quire stays scheme-agnostic.
-- **Git's filesystem is the source of truth.** Bare repos under `/var/quire/repos/` are the primary artifact. CI run history is directories on disk, not a database. A database comes back only if the filesystem approach visibly fails.
+- **Git's filesystem is the source of truth for repos.** Bare repos under `/var/quire/repos/` are the primary artifact. CI run and job state lives in SQLite at `/var/quire/quire.db`; the filesystem holds per-run workspaces and logs only.
 - **Built for jj.** The primary client is Jujutsu, which means routine force-pushes, short-lived refs, and unstable SHAs. No git-flow-shaped assumptions in the UI or CI.
 - **Push should fail fast, loudly, and correctly.** No silent drift between quire and GitHub. No accepted-but-unreplicated state.
 - **Config is code.** Global config is Fennel. CI pipelines are Fennel. If you're going to have a scripting language, have one.
@@ -59,13 +59,14 @@ Quire's data lives under one volume:
 
 ```
 /var/quire/
+  quire.db         SQLite database: CI run, job, and sh state
   repos/           bare git repos; per-repo config lives in-tree at .quire/config.fnl
-  runs/            CI run metadata, artifacts, and logs; retention-policied
+  runs/            per-run workspaces and CI logs
   config.fnl       global config; see docs/config.md for the schema
 ```
 
-Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `docs/PLAN.md` for the reference layout, `docs/config.md` for the global and per-repo Fennel schemas.
+Host-side config (sshd_config block, Caddyfile, docker-compose file) lives on the host, version-controlled separately. See `docs/host/` for reference configs, `docs/ARCHITECTURE.md` for the overall shape, and `docs/config.md` for the global and per-repo Fennel schemas.
 
 ## Status
 
-Early development. SSH dispatch, repo management, Fennel config loading, and mirror push via event socket work; web view, CI, and notifications are still ahead. See `docs/PLAN.md` for the build sequence and open questions.
+Early development. SSH dispatch, repo management, server-side mirroring, the web view, and the Fennel CI MVP work; CI currently runs pipelines as an unsandboxed host subprocess — per-run containers are the next step (see `docs/plans/2026-08-12-ci-rearchitecture.md`) — and email notifications are still ahead. See `docs/ARCHITECTURE.md` for the design and open questions.

@@ -27,9 +27,9 @@ Top-level form, called once before any `(ci.job ...)`. Declares the image used t
 
 Calling `ci.image` more than once errors with the same shape as other duplicate-registration errors.
 
-A pipeline can also build its image from a checked-in `.quire/Dockerfile` instead of declaring a public image. The resolution order is `(ci.image ...)` → `.quire/Dockerfile` → error.
+A pipeline can also build its image from a checked-in `.quire/Dockerfile` instead of declaring a public image.
 
-> **v0 status:** the docker executor only honors `.quire/Dockerfile` today; `(ci.image ...)` is parsed and validated but not yet wired into the executor. Pipelines targeting docker need a `.quire/Dockerfile` until the declared-image path lands.
+> **v0 status:** no container executor exists yet — `(sh ...)` runs on the host, and neither `(ci.image ...)` nor `.quire/Dockerfile` is consumed by anything. `(ci.image ...)` is parsed and validated but slated for removal: the decided design sources the image from `.quire/Dockerfile` with a default-image fallback, because the declaration can't survive containerized eval (see [`plans/2026-08-12-ci-rearchitecture.md`](./plans/2026-08-12-ci-rearchitecture.md), decision 3).
 
 ## The `job` primitive
 
@@ -215,7 +215,7 @@ Each of these blocks the Fennel function until it returns. Multi-`sh`-call paral
 
 `sh` is the only host-effect channel. There is no `(container ...)` primitive — the run's container is started by the runner before any run-fn executes (with the image declared via `(ci.image ...)` at the pipeline level), and every `sh` call execs into it via `docker exec`. Stdout and stderr stay separated (no TTY); ordering is approximate but each chunk has its own timestamp in the JSONL log.
 
-> **v0 status:** `sh`, `secret`, and `jobs` are bound today. `sh` currently shells out on the host; the per-run container + `docker exec` tunneling is planned (see backlog `lpmoszxo`, `knmkqkvx`). `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
+> **v0 status:** `sh`, `secret`, and `jobs` are bound today. `sh` currently shells out on the host. Under the decided re-architecture, `quire-ci` itself runs inside the per-run container and `sh` stays a local subprocess — the `docker exec` tunneling described in this doc's prose is the older design. `read-file`/`read-json`/`write-file`, `log`, and `env` are planned and tracked separately.
 
 The execute VM is sandboxed (no `io`/`os`/`debug`), so `runtime.sh` is the documented chokepoint for any host effect — `os.execute` and `io.open` are not available alternates. See CI.md for the full sandbox shape and the bwrap opt-in for the untrusted-code threat model.
 
