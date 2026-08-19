@@ -38,7 +38,7 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
   /* Light palette */
-  --bg: #f8f4ea;
+  --bg: #f7f7f6;
   --ink: #1d1a15;
   --muted: #6b6257;
   --mutedFaint: #9a9184;
@@ -194,7 +194,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 @media (prefers-color-scheme: dark) {
   :root:not(.dark-override-light) {
-    --bg: #14120f;
+    --bg: #131313;
     --ink: #e8e2d2;
     --muted: #8a8173;
     --mutedFaint: #5a5347;
@@ -208,7 +208,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 }
 
 html.dark {
-  --bg: #14120f;
+  --bg: #131313;
   --ink: #e8e2d2;
   --muted: #8a8173;
   --mutedFaint: #5a5347;
