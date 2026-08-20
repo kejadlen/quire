@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::response::Response;
 
 use super::super::error::WebError;
-use super::super::templates::{CommitId, LogTemplate, nav_sections};
+use super::super::templates::{CommitId, nav_sections};
 use super::git::RepoView;
 use super::render;
 use crate::Quire;
@@ -32,13 +32,13 @@ pub async fn log_view(
     })
     .await?;
 
-    let tmpl = LogTemplate {
-        sections: nav_sections(&repo_display, "log", auth.is_authenticated()),
-        repo: repo_display,
-        crumbs: None,
-        changes,
-        bookmark,
-        head,
-    };
-    Ok(render(&tmpl))
+    let sections = nav_sections(&repo_display, "log", auth.is_authenticated());
+    Ok(render(super::super::templates::log(
+        &repo_display,
+        None,
+        &sections,
+        &changes,
+        &bookmark,
+        &head,
+    )))
 }
