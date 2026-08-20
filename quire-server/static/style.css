@@ -829,9 +829,10 @@ html.dark {
 
 /* ── Arborium syntax highlighting integration ──────────────────── */
 
-/* Left-rail accent only for standalone code blocks, not the file view grid. */
-pre:not(.code-body):has(code[class*="language-"]),
-pre:not(.code-body):has(code[data-lang]) {
+/* Left-rail accent only for standalone code blocks, not the file view grid
+   or the commit diff — both bring their own surface. */
+pre:not(.code-body):not(.commit-diff):has(code[class*="language-"]),
+pre:not(.code-body):not(.commit-diff):has(code[data-lang]) {
   border-left: 2px solid var(--accent) !important;
   background: var(--bg) !important;
   border-radius: 0 !important;
@@ -1283,6 +1284,29 @@ pre code[data-lang] {
   overflow: auto;
   border-left: 2px solid var(--accent);
 }
+
+/* arborium's `diff` grammar wraps one element per significant line:
+   a-v the `diff --git` command, a-co the index blob hashes, a-k deletions
+   and the `---` header, a-s additions and the `+++` header, a-at the `@@`
+   hunk location. The arborium theme reaches these with bare element
+   selectors, so scoping ours to .commit-diff wins on specificity and the
+   diff reads in quire's palette whichever theme is loaded. The `+`/`-`
+   prefix carries the same distinction as the color. */
+.commit-diff a-v {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.commit-diff a-co { color: var(--mutedFaint); }
+
+.commit-diff a-at { color: var(--muted); }
+
+.commit-diff a-s { color: var(--ok); }
+
+.commit-diff a-k { color: var(--bad); }
+
+/* Nothing inside the diff gets its own surface. */
+.commit-diff * { background: transparent; }
 
 /* ── Repo list ──────────────────────────────────────────────────── */
 

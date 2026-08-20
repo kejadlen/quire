@@ -212,8 +212,8 @@ PALETTE_INK.dark = {
   links, and the left-rail of code blocks. Nowhere else.
 - All accents are low-chroma so prose still reads quiet. Do not introduce
   saturated hues.
-- `ok`/`bad` are reserved for CI status and conflict markers. Do not use
-  them as decorative color.
+- `ok`/`bad` are reserved for CI status, conflict markers, and diff
+  additions/deletions. Do not use them as decorative color.
 - Hairlines use `rule` between major bands and `rule2` between rows or as
   dotted underlines on links.
 
@@ -361,6 +361,25 @@ overflow: auto;
 ```
 
 Inline code: same `code` background, `1px 5px` padding, mono 13px.
+
+### Commit diff
+
+A unified diff is a code block (same surface, same left rail) syntax
+highlighted as `diff` — never as the language of the files it touches.
+Colors come from the palette, not from the highlighter's theme:
+
+| Line | Color |
+|---|---|
+| `diff --git …` | `ink`, weight 500 |
+| `index <old>..<new>` blob hashes | `mutedFaint` |
+| `--- a/…` and removed lines | `bad` |
+| `+++ b/…` and added lines | `ok` |
+| `@@ … @@` hunk location | `muted` |
+
+No tinted line backgrounds — the `+`/`-` prefix carries the distinction
+alongside the color, so the surface stays a plain page. Highlighting is
+progressive enhancement: with JavaScript off the diff renders as plain
+monospace text on the same surface.
 
 ### Keyboard hint (`kbd`)
 
