@@ -247,9 +247,16 @@ is `font-mono`, eyebrow + content blocks, separated by 24px.
 
 ### Single-column (file/code)
 
-File views go full-width. Use a 2-column grid inside (line-number gutter
-+ code body) with `gridTemplateColumns: 'auto 1fr'`. The gutter has
-`background: code` and a `1px solid rule2` right border.
+File views go full-width. The server renders a 2-column grid (line-number
+gutter + code body) with `gridTemplateColumns: 'auto 1fr'`; the gutter has
+`background: code` and a `1px solid rule2` right border, and each gutter
+number carries `id="L<n>"` so `#L42` works without JavaScript.
+
+After highlighting settles, `static/file-view.js` replaces that pair with
+per-line rows (`[number link | content]`, `--quire-gutter-w` keeping the
+number column a shared width). Rows are the anchor targets, keep the gutter
+aligned across wrapped lines, and carry the `.selected` class for the line
+range in the URL hash.
 
 ### Prose width
 

@@ -35,11 +35,19 @@
           localStorage.setItem('quire-dark', this.darkMode ? '1' : '0');
           this._highlight();
         },
-        _highlight() {
+        async _highlight() {
           const arborium = window.arborium;
-          if (!arborium) return;
-          const theme = this.darkMode ? 'github-dark' : 'github-light';
-          arborium.highlightAll({ theme });
+          try {
+            if (arborium) {
+              const theme = this.darkMode ? 'github-dark' : 'github-light';
+              await arborium.highlightAll({ theme });
+            }
+          } finally {
+            // file-view.js restructures the file view after highlighting
+            // settles — success or failure — so it must always hear this.
+            window.quireHighlightSettled = true;
+            document.dispatchEvent(new Event('quire:highlight-settled'));
+          }
         }
       }
     }

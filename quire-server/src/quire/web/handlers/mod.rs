@@ -46,6 +46,15 @@ pub async fn stylesheet() -> Response {
         .into_response()
 }
 
+/// Serve the compiled-in file-view script (line permalinks).
+pub async fn file_view_script() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../../../../static/file-view.js"),
+    )
+        .into_response()
+}
+
 pub async fn config(State(quire): State<Quire>) -> Response {
     let tmpl = ConfigTemplate {
         crumbs: None,
@@ -81,6 +90,26 @@ mod tests {
             drop(db);
 
             Self { _dir: dir, quire }
+        }
+
+        /// Init the bare repo and push a single-file commit from a scratch
+        /// work tree, so tree/file views have real content to read.
+        fn populate_repo(&self, name: &str, content: &str) {
+            let bare = self.quire.repos_dir().join("example.git");
+            let run_bare = |args: &[&str]| git(bare.as_path(), args);
+            run_bare(&["init", "--bare"]);
+
+            let work = tempfile::tempdir().expect("workdir");
+            let workdir = work.path().to_path_buf();
+            let git_dir = |args: &[&str]| git(&workdir, args);
+            git_dir(&["init", "-b", "main"]);
+            git_dir(&["config", "user.email", "test@example.com"]);
+            git_dir(&["config", "user.name", "Test"]);
+            fs_err::write(workdir.join(name), content).expect("write file");
+            git_dir(&["add", "."]);
+            git_dir(&["commit", "-m", "seed"]);
+            git_dir(&["push", bare.to_str().expect("utf-8 path"), "main"]);
+            run_bare(&["symbolic-ref", "HEAD", "refs/heads/main"]);
         }
 
         fn insert_run(
@@ -129,6 +158,20 @@ mod tests {
 
     const UUID1: &str = "aaaaaaaa-0000-0000-0000-000000000001";
     const SHA1: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     #[tokio::test]
     async fn repo_home_returns_ok_for_known_repo() {
@@ -302,5 +345,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn file_view_renders_line_anchors_and_script() {
+        let env = TestEnv::new();
+        env.populate_repo("hello.txt", "alpha\nbeta\n");
+        let resp = env
+            .app()
+            .oneshot(
+                Request::builder()
+                    .uri("/example/tree/hello.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("id=\"L1\""), "missing anchor for line 1");
+        assert!(html.contains("id=\"L2\""), "missing anchor for line 2");
+        assert!(!html.contains("id=\"L3\""), "unexpected anchor past EOF");
+        assert!(
+            html.contains("/file-view.js"),
+            "file-view script not included"
+        );
     }
 }

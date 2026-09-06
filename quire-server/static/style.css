@@ -846,6 +846,46 @@ pre code[data-lang] {
   font-size: 13px !important;
 }
 
+/* Per-line rows — file-view.js swaps the gutter/blob pair above for rows
+   after highlighting, so each line anchors (#L42) and wrapped lines keep
+   the gutter aligned. */
+.code-surface.code-surface--rows { display: block; }
+
+.code-row {
+  display: grid;
+  grid-template-columns: var(--quire-gutter-w, 4ch) minmax(0, 1fr);
+}
+
+.code-row.selected { background: var(--code); }
+
+.code-line-num {
+  box-sizing: border-box;
+  display: block;
+  padding: 0 10px 0 12px;
+  text-align: right;
+  color: var(--mutedFaint);
+  text-decoration: none;
+  border-right: 1px solid var(--rule);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
+
+a.code-line-num:hover,
+.code-row.selected .code-line-num { color: var(--ink); }
+
+.code-line-content {
+  padding: 0 16px 0 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.code-lines .code-row:first-child .code-line-num,
+.code-lines .code-row:first-child .code-line-content { padding-top: 16px; }
+
+.code-lines .code-row:last-child .code-line-num,
+.code-lines .code-row:last-child .code-line-content { padding-bottom: 16px; }
+
 /* ── Tree browser ──────────────────────────────────────────────── */
 
 .tree-path-crumb {
