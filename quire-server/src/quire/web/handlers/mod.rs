@@ -11,7 +11,7 @@ mod tree;
 pub use ci::{run_detail, run_list};
 pub use commit::commit_view;
 pub use log_view::log_view;
-pub use repo::repo_home;
+pub use repo::{repo_home, repo_home_slash};
 pub use repo_list::repo_list;
 pub use tree::{tree_view, tree_view_path};
 
@@ -203,6 +203,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn repo_home_redirects_trailing_slash() {
+        let env = TestEnv::new();
+        let resp = env
+            .app()
+            .oneshot(
+                Request::builder()
+                    .uri("/example/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(resp.headers()[axum::http::header::LOCATION], "/example");
     }
 
     #[tokio::test]

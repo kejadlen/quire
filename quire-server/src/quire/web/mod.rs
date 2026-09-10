@@ -20,8 +20,8 @@ use axum_extra::routing::RouterExt;
 use crate::{
     Quire,
     quire::web::handlers::{
-        commit_view, config, file_view_script, log_view, repo_home, repo_list, run_detail,
-        run_list, stylesheet, tree_view, tree_view_path,
+        commit_view, config, file_view_script, log_view, repo_home, repo_home_slash, repo_list,
+        run_detail, run_list, stylesheet, tree_view, tree_view_path,
     },
 };
 
@@ -95,6 +95,7 @@ pub fn public_router(quire: Quire) -> Router {
         .route("/style.css", get(stylesheet))
         .route("/file-view.js", get(file_view_script))
         .typed_get(repo_home)
+        .route("/{repo}/", get(repo_home_slash))
         .typed_get(tree_view)
         .typed_get(tree_view_path)
         .typed_get(log_view)

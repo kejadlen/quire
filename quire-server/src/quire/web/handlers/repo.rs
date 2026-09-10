@@ -1,7 +1,7 @@
 //! Handler for the repository home page.
 
-use axum::extract::State;
-use axum::response::Response;
+use axum::extract::{Path, State};
+use axum::response::{Redirect, Response};
 
 use super::super::auth::Auth;
 use super::super::db;
@@ -11,6 +11,13 @@ use super::git::RepoView;
 use super::render;
 use crate::Quire;
 use crate::quire::web::paths::RepoPath;
+
+/// Redirect `/{repo}/` to the canonical `/{repo}`.
+///
+/// Nothing links to the trailing-slash form, but people type it and paste it.
+pub async fn repo_home_slash(Path(repo): Path<String>) -> Redirect {
+    Redirect::permanent(&format!("/{repo}"))
+}
 
 pub async fn repo_home(
     RepoPath { repo }: RepoPath,
