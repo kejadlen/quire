@@ -120,7 +120,7 @@
       if (selected && !first) first = rows[i];
     }
     if (first) {
-      first.scrollIntoView({ block: initial ? "center" : "nearest" });
+      if (initial) first.scrollIntoView({ block: "center" });
       document.dispatchEvent(
         new CustomEvent("quire:lines-selected", {
           detail: { start: start, end: end },
@@ -132,18 +132,28 @@
   surface.addEventListener("click", function (ev) {
     var num = ev.target.closest(".code-line-num");
     if (!num) return;
+    // The href exists so the number can be copied as a link; following it
+    // would scroll the clicked line under the viewport edge.
+    ev.preventDefault();
     var line = parseInt(num.dataset.line, 10);
+    var hash;
     if (ev.shiftKey && anchorLine !== null) {
-      ev.preventDefault();
       var a = Math.min(anchorLine, line);
       var b = Math.max(anchorLine, line);
-      window.location.hash = a === b ? "#L" + a : "#L" + a + "-L" + b;
+      hash = a === b ? "#L" + a : "#L" + a + "-L" + b;
     } else {
-      anchorLine = line; // plain click: the href sets the hash natively
+      anchorLine = line;
+      hash = "#L" + line;
     }
+    history.pushState(null, "", hash);
+    applySelection(false);
   });
 
+  // pushState skips hashchange; history traversal can fire either or both.
   window.addEventListener("hashchange", function () {
+    applySelection(false);
+  });
+  window.addEventListener("popstate", function () {
     applySelection(false);
   });
 
