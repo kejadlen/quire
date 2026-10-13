@@ -105,7 +105,11 @@ mod tests {
             git_dir(&["init", "-b", "main"]);
             git_dir(&["config", "user.email", "test@example.com"]);
             git_dir(&["config", "user.name", "Test"]);
-            fs_err::write(workdir.join(name), content).expect("write file");
+            let file = workdir.join(name);
+            if let Some(parent) = file.parent() {
+                fs_err::create_dir_all(parent).expect("mkdir parent");
+            }
+            fs_err::write(&file, content).expect("write file");
             git_dir(&["add", "."]);
             git_dir(&["commit", "-m", "seed"]);
             git_dir(&["push", bare.to_str().expect("utf-8 path"), "main"]);
@@ -220,6 +224,65 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::PERMANENT_REDIRECT);
         assert_eq!(resp.headers()[axum::http::header::LOCATION], "/example");
+    }
+
+    #[tokio::test]
+    async fn repo_home_lists_configured_mirrors() {
+        let env = TestEnv::new();
+        env.populate_repo(
+            ".quire/config.fnl",
+            r#"{:mirrors {"https://github.com/u/r.git" :github-mirror
+                       "https://gitea.example/u/r.git" :gitea-mirror}}"#,
+        );
+        let resp = env
+            .app()
+            .oneshot(
+                Request::builder()
+                    .uri("/example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let html = String::from_utf8_lossy(&body);
+        assert!(
+            html.contains(r#"href="https://github.com/u/r.git""#),
+            "missing github mirror link"
+        );
+        assert!(
+            html.contains(">github.com/u/r</a>"),
+            "missing trimmed github mirror label"
+        );
+        assert!(
+            html.contains(">gitea.example/u/r</a>"),
+            "missing gitea mirror label"
+        );
+    }
+
+    #[tokio::test]
+    async fn repo_home_hides_mirrors_block_without_config() {
+        let env = TestEnv::new();
+        env.populate_repo("README.md", "# example\n");
+        let resp = env
+            .app()
+            .oneshot(
+                Request::builder()
+                    .uri("/example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let html = String::from_utf8_lossy(&body);
+        assert!(!html.contains(">Mirrors<"), "mirrors block rendered");
     }
 
     #[tokio::test]

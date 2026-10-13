@@ -53,6 +53,17 @@
       <div class="clone-url">{{ clone_url() }}</div>
     </div>
 
+    {% if !mirrors.is_empty() %}
+    <div class="side-block">
+      <div class="side-block-title">Mirrors</div>
+      <div class="mirror-list">
+        {% for m in mirrors %}
+        <a class="mirror-link" href="{{ m.url }}" title="{{ m.url }}">{{ m.label }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
     {% if !recent_runs.is_empty() %}
     <div class="side-block">
       <div class="side-block-title">CI</div>

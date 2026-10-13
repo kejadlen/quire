@@ -338,6 +338,21 @@ Mono, 12.5px:
 - Dot: 6×6, `border-radius: 3`. `ok` for pass, `bad` for fail.
 - Change column shows the first 4 chars of the change-id in `accent`.
 
+### Mirror list (sidebar)
+
+Mono, 12.5px, line-height 1.8, one link per configured mirror remote:
+
+```
+[github.com/u/r                              ]
+[gitea.example/u/r                           ]
+```
+
+- Label is the mirror URL with the scheme and trailing `.git` stripped;
+  the full URL is the `href` and hover `title`.
+- `ink` at rest, `accent` on hover, no underline.
+- Long labels ellipsize; the block is hidden entirely when no mirrors
+  are configured.
+
 ### ChangeList row
 
 Grid: `3px 74px 1fr auto auto`, gap 16, padding `6px 56px 6px 53px`.

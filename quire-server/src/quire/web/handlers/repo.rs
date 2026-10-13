@@ -51,8 +51,13 @@ pub async fn repo_home(
     };
 
     let rd = repo_display.clone();
-    let (head, readme_html, recent_changes) =
-        tokio::task::spawn_blocking(move || RepoView::new(&git_repo).read_all(&rd)).await?;
+    let (head, readme_html, recent_changes, mirrors) = tokio::task::spawn_blocking(move || {
+        let view = RepoView::new(&git_repo);
+        let (head, readme_html, recent_changes) = view.read_all(&rd);
+        let mirrors = view.mirrors(head.as_ref());
+        (head, readme_html, recent_changes, mirrors)
+    })
+    .await?;
 
     let tmpl = RepoHomeTemplate {
         sections: nav_sections(&repo_display, "overview", is_authed),
@@ -63,6 +68,7 @@ pub async fn repo_home(
         recent_runs,
         recent_changes,
         clone_host: quire.config.host.clone(),
+        mirrors,
     };
     Ok(render(&tmpl))
 }

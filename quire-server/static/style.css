@@ -487,6 +487,20 @@ html.dark {
   margin-bottom: 4px;
 }
 
+/* Mirror block */
+.mirror-list { line-height: 1.8; }
+
+.mirror-link {
+  display: block;
+  color: var(--ink);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirror-link:hover { color: var(--accent); }
+
 /* Bookmark list */
 .bookmark-list { line-height: 1.8; }
 

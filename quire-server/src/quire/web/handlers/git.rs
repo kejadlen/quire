@@ -1,6 +1,6 @@
 //! Shared git-reading helpers used by multiple handlers.
 
-use super::super::templates::{ChangeRow, CommitId, HeadInfo};
+use super::super::templates::{ChangeRow, CommitId, HeadInfo, MirrorLink};
 use crate::quire::Repo;
 
 pub(super) type GitData = (Option<HeadInfo>, Option<String>, Vec<ChangeRow>);
@@ -29,6 +29,32 @@ impl<'a> RepoView<'a> {
     /// Read all summary data from the repo for the home page.
     pub(super) fn read_all(&self, repo: &str) -> GitData {
         (self.head_info(), self.readme(), self.recent_changes(repo))
+    }
+
+    /// Mirror remotes configured at HEAD, as sidebar links.
+    ///
+    /// An unreadable or unparsable config yields no links — a broken
+    /// config.fnl must not take the repo page down with it — but is logged
+    /// so operators see it.
+    pub(super) fn mirrors(&self, head: Option<&HeadInfo>) -> Vec<MirrorLink> {
+        let Some(head) = head else {
+            return Vec::new();
+        };
+        match self.repo.repo_config(&head.id.sha) {
+            Ok(config) => {
+                let mut links: Vec<MirrorLink> =
+                    config.mirrors.into_keys().map(MirrorLink::new).collect();
+                links.sort_by(|a, b| a.label.cmp(&b.label));
+                links
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = &error as &(dyn std::error::Error + 'static),
+                    "reading repo config for mirrors failed",
+                );
+                Vec::new()
+            }
+        }
     }
 
     pub(super) fn head_info(&self) -> Option<HeadInfo> {

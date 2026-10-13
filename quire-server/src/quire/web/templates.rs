@@ -343,6 +343,7 @@ pub struct RepoHomeTemplate {
     pub recent_changes: Vec<ChangeRow>,
     pub sections: Vec<SectionLink>,
     pub clone_host: String,
+    pub mirrors: Vec<MirrorLink>,
 }
 
 impl RepoHomeTemplate {
@@ -381,6 +382,28 @@ pub struct ChangeRow {
     pub description: String,
     pub age: String,
     pub commit_url: String,
+}
+
+/// A mirror remote linked from the repo sidebar.
+pub struct MirrorLink {
+    /// The configured push URL, used as the link target.
+    pub url: String,
+    /// Display form: scheme and trailing `.git` stripped.
+    pub label: String,
+}
+
+impl MirrorLink {
+    pub fn new(url: String) -> Self {
+        let stripped = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .unwrap_or(&url);
+        let label = stripped
+            .trim_end_matches(".git")
+            .trim_end_matches('/')
+            .to_owned();
+        Self { url, label }
+    }
 }
 
 // ── Config ─────────────────────────────────────────────────────────
