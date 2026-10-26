@@ -81,10 +81,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
             ApiError::Gone => StatusCode::GONE.into_response(),
-            e => {
-                tracing::error!(error = %e, "api error");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
+            e => super::error::ResponseError::internal(e),
         }
     }
 }

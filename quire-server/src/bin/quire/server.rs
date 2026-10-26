@@ -15,10 +15,6 @@ use quire::mirror;
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
 
-/// Carries an error message through response extensions so TraceLayer can log it.
-#[derive(Clone)]
-pub struct RequestError(pub String);
-
 async fn health() -> &'static str {
     "ok"
 }
@@ -77,15 +73,12 @@ pub async fn run(quire: &Quire, web_routes: axum::Router, api_routes: axum::Rout
                         .map(MatchedPath::as_str);
                     info_span!("http_request", method = ?request.method(), matched_path)
                 })
+                // Every 5xx is logged here, once, with the cause the handler
+                // attached; on_failure would only repeat it without one.
                 .on_response(|response: &Response, _: Duration, _: &tracing::Span| {
-                    if let Some(RequestError(error)) = response.extensions().get::<RequestError>() {
-                        if response.status().is_server_error() {
-                            tracing::error!(%error);
-                        } else {
-                            tracing::warn!(%error);
-                        }
-                    }
-                }),
+                    quire::quire::web::error::log_server_error(response);
+                })
+                .on_failure(()),
         );
 
     tracing::info!(%addr, "starting HTTP server");

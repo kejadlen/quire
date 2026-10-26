@@ -17,9 +17,10 @@ pub use tree::{tree_view, tree_view_path};
 
 use askama::Template;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 
+use super::error::ResponseError;
 use super::templates::ConfigTemplate;
 use crate::Quire;
 
@@ -27,13 +28,7 @@ use crate::Quire;
 pub(super) fn render<T: Template>(tmpl: &T) -> Response {
     match tmpl.render() {
         Ok(body) => Html(body).into_response(),
-        Err(e) => {
-            tracing::error!(
-                error = &e as &(dyn std::error::Error + 'static),
-                "template render failed"
-            );
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
+        Err(e) => ResponseError::internal(e),
     }
 }
 
