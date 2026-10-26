@@ -197,7 +197,14 @@ impl Repo {
         let path = format!("{sha}:.quire/config.fnl");
 
         // cat-file -e: exit 0 if the object exists, non-zero if absent.
-        if !self.git(&["cat-file", "-e", &path]).status()?.success() {
+        // Absence is the expected case; silence git's "fatal: path ... does
+        // not exist" so it doesn't land in the server log.
+        let exists = self
+            .git(&["cat-file", "-e", &path])
+            .stderr(std::process::Stdio::null())
+            .status()?
+            .success();
+        if !exists {
             return Ok(RepoConfig::default());
         }
 
